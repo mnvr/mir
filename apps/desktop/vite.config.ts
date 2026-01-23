@@ -3,6 +3,9 @@ import path from 'node:path'
 import electron from 'vite-plugin-electron/simple'
 import react from '@vitejs/plugin-react'
 
+const workspaceRoot = path.resolve(__dirname, '../..')
+const coreSrc = path.join(workspaceRoot, 'packages/core/src')
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
@@ -26,4 +29,17 @@ export default defineConfig({
         : {},
     }),
   ],
+  resolve: {
+    alias: {
+      'mir-core': coreSrc,
+    },
+  },
+  server: {
+    fs: {
+      allow: [workspaceRoot],
+    },
+  },
+  optimizeDeps: {
+    exclude: ['mir-core'],
+  },
 })

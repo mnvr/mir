@@ -2,40 +2,42 @@
 
 This is Mir, a new way to interface with LLMs.
 
-## Repo layout
+## Repository layout 🧭
 
 - `apps/desktop`: Electron + React desktop app.
 - `apps/mobile`: Expo + React Native mobile app.
 - `packages/core`: Shared TypeScript types/logic.
 
-## Requirements
+## Requirements 🧩
 
-### All platforms
+### All platforms 🌍
 
 - Node.js 20+ (includes Corepack).
 - pnpm 10+ (`corepack enable` and `corepack prepare pnpm@10.26.2 --activate`, or install pnpm globally).
 
-### macOS desktop
+### macOS desktop 🍎
 
 - No extra system dependencies for `pnpm dev:desktop`.
 
-### iOS (macOS)
+### iOS (macOS) 📱
 
 - Xcode (for iOS Simulator and native builds).
 - CocoaPods (required for `expo run:ios` / dev client builds; install with `brew install cocoapods` or `sudo gem install cocoapods`).
 
-### Android
+### Android 🤖
 
-- Android Studio + Android SDK.
+- Android Studio + Android SDK (for Android emulator and native builds).
 - `ANDROID_HOME` set, with `platform-tools` on your PATH.
 
-## Setup
+## Setup 🛠️
 
 ```sh
 pnpm install
 ```
 
-## Desktop (macOS)
+## Running 🚀
+
+### Desktop (Electron) 🖥️
 
 ```sh
 pnpm dev:desktop
@@ -45,45 +47,41 @@ pnpm dev:desktop
 pnpm build:desktop
 ```
 
-## Mobile (Expo)
+### Mobile (Expo) 📲
 
-Start the Metro bundler:
+Start Metro, then press `i` in the Metro terminal to run the app in the iOS Simulator, or `a` to run it on the Android emulator.
 
 ```sh
 pnpm dev:mobile
 ```
 
-Launch iOS Simulator (requires Xcode):
+Alternatively, you can start Metro + iOS Simulator in one command:
 
 ```sh
 pnpm ios
 ```
 
-Launch Android emulator/device (requires Android Studio):
+Or launch Metro + Android emulator similarly with:
 
 ```sh
 pnpm android
 ```
 
-## Native builds (optional)
+These run the app inside Expo Go on the simulator/emulator.
 
-For native builds or when you need custom native modules, use Expo's run commands.
-These generate native projects on first run.
+To run on a physical device (or when you need to recompile any of the custom native modules), use:
 
 ```sh
-cd apps/mobile
-npx expo run:ios
+pnpm ios:device
 ```
 
 ```sh
-cd apps/mobile
-npx expo run:android
+pnpm android:device
 ```
 
-## Shared core package
+These will create native builds. Hot reload will still work.
 
-Build the shared TypeScript package:
+### Shared core package 🧰
 
-```sh
-pnpm --filter mir-core build
-```
+`mir-core` is consumed from source in both apps, so changes should hot reload.
+If the mobile bundler misses updates, restart Metro.

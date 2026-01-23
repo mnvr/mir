@@ -7,6 +7,8 @@
     "dev:mobile": "pnpm --filter mir-mobile start",
     "ios": "pnpm --filter mir-mobile ios",
     "android": "pnpm --filter mir-mobile android",
+    "ios:device": "pnpm --filter mir-mobile ios:device",
+    "android:device": "pnpm --filter mir-mobile android:device",
     "build:desktop": "pnpm --filter mir-desktop build",
     "lint": "pnpm -r --if-present lint"
   }
