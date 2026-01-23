@@ -1,0 +1,13 @@
+{
+  "name": "mir",
+  "private": true,
+  "packageManager": "pnpm@10.26.2",
+  "scripts": {
+    "dev:desktop": "pnpm --filter mir-desktop dev",
+    "dev:mobile": "pnpm --filter mir-mobile start",
+    "ios": "pnpm --filter mir-mobile ios",
+    "android": "pnpm --filter mir-mobile android",
+    "build:desktop": "pnpm --filter mir-desktop build",
+    "lint": "pnpm -r --if-present lint"
+  }
+}
