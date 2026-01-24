@@ -114,6 +114,12 @@ function App() {
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
   const autoScrollRef = useRef(false)
   const maxRows = 9
+  const hasNewline = draft.includes('\n')
+  const modifierLabel =
+    typeof navigator !== 'undefined' &&
+    navigator.platform.toUpperCase().includes('MAC')
+      ? 'Cmd'
+      : 'Ctrl'
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.baseUrl, baseUrl)
@@ -523,19 +529,35 @@ function App() {
             spellCheck={false}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (
-                event.key === 'Enter' &&
-                (event.metaKey || event.ctrlKey) &&
-                !isSending
-              ) {
+              if (event.key !== 'Enter') {
+                return
+              }
+
+              if (event.shiftKey) {
+                return
+              }
+
+              if (event.metaKey || event.ctrlKey) {
                 event.preventDefault()
                 void sendMessage()
+                return
               }
+
+              if (hasNewline || isSending) {
+                return
+              }
+
+              event.preventDefault()
+              void sendMessage()
             }}
             rows={1}
           />
           <div className="composer-actions">
-            <span className="hint">Cmd + Enter</span>
+            <span className="hint">
+              {hasNewline
+                ? `${modifierLabel} + Enter to generate`
+                : 'Enter to generate · Shift + Enter for newline'}
+            </span>
             <span
               className={`tooltip tooltip-hover-only${draft.trim() && !isSending ? ' tooltip-suppressed' : ''}`}
               data-tooltip={isSending ? 'Stop request' : 'Add to context'}
