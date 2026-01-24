@@ -27,6 +27,7 @@ const STORAGE_KEYS = {
 }
 
 const REQUEST_TIMEOUT_MS = 60_000
+const SCROLL_THRESHOLD_PX = 120
 
 const seedMessages: Message[] = [
   {
@@ -111,6 +112,7 @@ function App() {
   const endRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
+  const autoScrollRef = useRef(false)
   const maxRows = 9
 
   useEffect(() => {
@@ -226,9 +228,19 @@ function App() {
     }
   }, [apiKey, settingsReady, storageMode])
 
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
-  }, [messages])
+  const isNearBottom = () => {
+    const doc = document.documentElement
+    const scrollTop = window.scrollY ?? doc.scrollTop
+    const scrollHeight = doc.scrollHeight
+    const clientHeight = window.innerHeight
+    return scrollHeight - (scrollTop + clientHeight) <= SCROLL_THRESHOLD_PX
+  }
+
+  const queueScrollToBottom = () => {
+    window.requestAnimationFrame(() => {
+      endRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+    })
+  }
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -284,6 +296,12 @@ function App() {
 
     setMessages((prev) => [...prev, userMessage, assistantMessage])
     setDraft('')
+    const shouldAutoScroll = isNearBottom()
+    autoScrollRef.current = shouldAutoScroll
+
+    if (shouldAutoScroll) {
+      queueScrollToBottom()
+    }
 
     if (!endpoint) {
       setMessages((prev) =>
@@ -317,6 +335,7 @@ function App() {
         signal: timeoutController.signal,
       })
 
+      const shouldAutoScroll = autoScrollRef.current && isNearBottom()
       setMessages((prev) =>
         prev.map((message) =>
           message.id === assistantMessage.id
@@ -324,8 +343,12 @@ function App() {
             : message,
         ),
       )
+      if (shouldAutoScroll) {
+        queueScrollToBottom()
+      }
     } catch (error) {
       if (isAbortError(error)) {
+        const shouldAutoScroll = autoScrollRef.current && isNearBottom()
         setMessages((prev) =>
           prev.map((item) =>
             item.id === assistantMessage.id
@@ -333,10 +356,14 @@ function App() {
               : item,
           ),
         )
+        if (shouldAutoScroll) {
+          queueScrollToBottom()
+        }
         return
       }
       const message =
         error instanceof Error ? error.message : 'Unknown error occurred.'
+      const shouldAutoScroll = autoScrollRef.current && isNearBottom()
       setMessages((prev) =>
         prev.map((item) =>
           item.id === assistantMessage.id
@@ -344,10 +371,14 @@ function App() {
             : item,
         ),
       )
+      if (shouldAutoScroll) {
+        queueScrollToBottom()
+      }
     } finally {
       setIsSending(false)
       timeoutController.clear()
       abortControllerRef.current = null
+      autoScrollRef.current = false
     }
   }
 

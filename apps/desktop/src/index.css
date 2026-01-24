@@ -6,7 +6,7 @@
   font-size: 13px;
   line-height: 1.5;
   font-weight: 400;
-  color-scheme: light;
+  color-scheme: light dark;
   color: #1a1a1a;
   background-color: #ffffff;
   font-synthesis: none;
@@ -26,6 +26,25 @@ body {
   background: #ffffff;
 }
 
+::selection {
+  background: #add6ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #e6e6e6;
+    background-color: #1a1a1e;
+  }
+
+  body {
+    background: #1a1a1e;
+  }
+
+  ::selection {
+    background: #2c3f5c;
+  }
+}
+
 button,
 input,
 select,
@@ -37,8 +56,4 @@ textarea {
 
 #root {
   min-height: 100vh;
-}
-
-::selection {
-  background: #add6ff;
 }
