@@ -8,7 +8,7 @@ Mir is a new way to interface with large language models. It is currently _work-
 
 ### How do I configure settings?
 
-The _Settings_ panel can be opened using the gear icon in the top right of the application window, or the "Settings..." menu option in the Application menu. There is also a keyboard shortcut - `Cmd + ,` (macOS) / `Ctrl + ,` (Windows, Linux).
+The _Settings_ panel can be opened using the gear icon in the top right of the application window, or the "Settings..." menu option in the Application menu.
 
 Note that the Settings panel is shown automatically on app launch until a connection is configured.
 
@@ -38,7 +38,7 @@ If secure storage is not available, Mir keeps your key only for the current sess
 
 The base URL is saved on your device so you do not need to re-enter it.
 
-## What data is sent to the API?
+### What data is sent to the API?
 
 Mir sends the current conversation context to the configured endpoint in a chat-completions format, along with your API key if provided.
 
@@ -54,8 +54,19 @@ Delete the API key from the Connection section. If secure storage is available, 
 
 - Press `Enter` to generate a response.
 - Use `Shift + Enter` for a newline.
-- If your draft has newlines, use `Cmd + Enter` on macOS or `Ctrl + Enter` on Windows/Linux to generate.
+- If your draft has newlines, use `Ctrl + Enter` on Linux/Windows or `Cmd + Enter` on macOS to generate.
 
 ## Other features
 
 - Mir follows your system light/dark mode automatically.
+- Mir is keyboard friendly with handy and documented keyboard shortcuts for various functions.
+
+## Keyboard shortcuts
+
+| Action | Linux/Windows | macOS |
+| --- | --- | --- |
+| Open Settings | Ctrl + , | Cmd + , |
+| Toggle Side Bar | Ctrl + B | Cmd + B |
+| Generate response | Enter | Enter |
+| New line | Shift + Enter | Shift + Enter |
+| Generate response (multi-line draft) | Ctrl + Enter | Cmd + Enter |

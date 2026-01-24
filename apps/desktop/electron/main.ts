@@ -33,6 +33,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 app.setName('Mir')
 
 let win: BrowserWindow | null
+let isSidebarOpen = false
 
 const isMac = process.platform === 'darwin'
 
@@ -68,12 +69,37 @@ function registerSecretHandlers() {
   })
 }
 
+function updateSidebarMenuState(nextState: boolean) {
+  isSidebarOpen = nextState
+  const menu = Menu.getApplicationMenu()
+  const sidebarItem = menu?.getMenuItemById('sidebar-toggle')
+  if (sidebarItem) {
+    sidebarItem.checked = isSidebarOpen
+  }
+}
+
+function registerSidebarHandlers() {
+  ipcMain.on('sidebar:state', (_event, isOpen) => {
+    updateSidebarMenuState(Boolean(isOpen))
+  })
+}
+
 function setAppMenu() {
   const settingsItem: MenuItemConstructorOptions = {
     label: isMac ? 'Preferences...' : 'Settings...',
     accelerator: 'CmdOrCtrl+,',
     click: () => {
       win?.webContents.send('open-settings')
+    },
+  }
+  const sidebarItem: MenuItemConstructorOptions = {
+    id: 'sidebar-toggle',
+    label: 'Side Bar',
+    type: 'checkbox',
+    checked: isSidebarOpen,
+    accelerator: 'CmdOrCtrl+B',
+    click: () => {
+      win?.webContents.send('sidebar:toggle')
     },
   }
 
@@ -117,6 +143,16 @@ function setAppMenu() {
       fileSubmenu.insert(0, new MenuItem(settingsItem))
       fileSubmenu.insert(1, new MenuItem({ type: 'separator' }))
     }
+  }
+
+  const viewMenuItem = menu.items.find(
+    (item) => item.role === 'viewMenu' || item.label === 'View',
+  )
+  const viewSubmenu = viewMenuItem?.submenu
+
+  if (viewSubmenu) {
+    viewSubmenu.insert(0, new MenuItem(sidebarItem))
+    viewSubmenu.insert(1, new MenuItem({ type: 'separator' }))
   }
 
   const windowMenuItem = menu.items.find(
@@ -190,5 +226,6 @@ app.on('activate', () => {
 
 app.whenReady().then(() => {
   registerSecretHandlers()
+  registerSidebarHandlers()
   createWindow()
 })

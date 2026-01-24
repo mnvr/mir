@@ -4,7 +4,14 @@ import {
   createTimeoutController,
   type ChatCompletionMessage,
 } from 'mir-core'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+  useState,
+  type MouseEvent,
+} from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
@@ -107,8 +114,14 @@ function App() {
   const [showKey, setShowKey] = useState(false)
   const [suppressKeyTooltip, setSuppressKeyTooltip] = useState(false)
   const [suppressSettingsTooltip, setSuppressSettingsTooltip] = useState(false)
+  const [suppressSidebarTooltip, setSuppressSidebarTooltip] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [settingsReady, setSettingsReady] = useState(false)
+  const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
+  const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect'>(
+    'chats',
+  )
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const endRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
@@ -120,6 +133,28 @@ function App() {
     navigator.platform.toUpperCase().includes('MAC')
       ? 'Cmd'
       : 'Ctrl'
+  const activeMessage =
+    messages.find((message) => message.id === activeMessageId) ?? null
+  const inspectorStats = activeMessage
+    ? {
+        role: activeMessage.role,
+        characters: activeMessage.content.length,
+        words: activeMessage.content.trim()
+          ? activeMessage.content.trim().split(/\s+/).length
+          : 0,
+      }
+    : null
+
+  const updateSidebarOpen = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) => {
+      setIsSidebarOpen((prev) => {
+        const resolved = typeof next === 'function' ? next(prev) : next
+        window.ipcRenderer?.send?.('sidebar:state', resolved)
+        return resolved
+      })
+    },
+    [],
+  )
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.baseUrl, baseUrl)
@@ -150,6 +185,50 @@ function App() {
       window.ipcRenderer.off('open-settings', handleOpenSettings)
     }
   }, [])
+
+  useEffect(() => {
+    if (!window.ipcRenderer?.on) {
+      return
+    }
+
+    const handleToggleSidebar = () => {
+      updateSidebarOpen((prev) => !prev)
+    }
+
+    window.ipcRenderer.on('sidebar:toggle', handleToggleSidebar)
+
+    return () => {
+      window.ipcRenderer.off('sidebar:toggle', handleToggleSidebar)
+    }
+  }, [updateSidebarOpen])
+
+  useEffect(() => {
+    if (!activeMessageId) {
+      return
+    }
+
+    setSidebarTab('inspect')
+    updateSidebarOpen(true)
+  }, [activeMessageId, updateSidebarOpen])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.key.toLowerCase() !== 'b'
+      ) {
+        return
+      }
+
+      event.preventDefault()
+      updateSidebarOpen((prev) => !prev)
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [updateSidebarOpen])
 
   useEffect(() => {
     let isMounted = true
@@ -272,6 +351,11 @@ function App() {
     setSuppressSettingsTooltip(true)
   }
 
+  const handleToggleSidebar = () => {
+    updateSidebarOpen((prev) => !prev)
+    setSuppressSidebarTooltip(true)
+  }
+
   const stopRequest = () => {
     abortControllerRef.current?.abort()
   }
@@ -388,29 +472,78 @@ function App() {
     }
   }
 
+  const handleCopyActiveMessage = async () => {
+    if (!activeMessage) {
+      return
+    }
+
+    try {
+      await navigator.clipboard?.writeText(activeMessage.content)
+    } catch {
+    }
+  }
+
+  const handleChatClick = (event: MouseEvent<HTMLElement>) => {
+    if (event.target === event.currentTarget) {
+      setActiveMessageId(null)
+    }
+  }
+
+  const handleSidebarTabClick = (tab: 'chats' | 'inspect') => {
+    setSidebarTab(tab)
+    updateSidebarOpen(true)
+  }
+
   return (
     <div className="app">
       <header className="header">
         <div className="header-meta">
           <div className="header-subtitle">Sat Jan 24th, 2027</div>
         </div>
-        <span
-          className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
-          data-tooltip="Settings"
-          onMouseLeave={() => setSuppressSettingsTooltip(false)}
-        >
-          <button
-            className="settings-toggle"
-            type="button"
-            onClick={handleToggleSettings}
-            aria-label="Toggle settings"
-            aria-expanded={isSettingsOpen}
-            aria-controls="settings-panel"
-            onBlur={() => setSuppressSettingsTooltip(false)}
+        <div className="header-actions">
+          <span
+            className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
+            data-tooltip="Settings"
+            onMouseLeave={() => setSuppressSettingsTooltip(false)}
           >
-            <span className="codicon codicon-gear" aria-hidden="true" />
-          </button>
-        </span>
+            <button
+              className="settings-toggle"
+              type="button"
+              onClick={handleToggleSettings}
+              aria-label="Toggle settings"
+              aria-expanded={isSettingsOpen}
+              aria-controls="settings-panel"
+              onBlur={() => setSuppressSettingsTooltip(false)}
+            >
+              <span className="codicon codicon-gear" aria-hidden="true" />
+            </button>
+          </span>
+          <span
+            className={`tooltip tooltip-bottom tooltip-hover-only${suppressSidebarTooltip ? ' tooltip-suppressed' : ''}`}
+            data-tooltip={isSidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+            onMouseLeave={() => setSuppressSidebarTooltip(false)}
+          >
+            <button
+              className="sidebar-toggle"
+              type="button"
+              onClick={handleToggleSidebar}
+              aria-label="Toggle sidebar"
+              aria-pressed={isSidebarOpen}
+              aria-expanded={isSidebarOpen}
+              aria-controls="sidebar"
+              onBlur={() => setSuppressSidebarTooltip(false)}
+            >
+              <span
+                className={`codicon ${
+                  isSidebarOpen
+                    ? 'codicon-layout-sidebar-right'
+                    : 'codicon-layout-sidebar-right-off'
+                }`}
+                aria-hidden="true"
+              />
+            </button>
+          </span>
+        </div>
       </header>
 
       {isSettingsOpen ? (
@@ -492,92 +625,175 @@ function App() {
         </section>
       ) : null}
 
-      <main className="chat">
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={`message ${message.role}${
-              message.status ? ` ${message.status}` : ''
-            }`}
-          >
-            {message.role === 'user' ? (
-              <blockquote className="user-quote">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {message.content}
-                </ReactMarkdown>
-              </blockquote>
-            ) : (
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                className="assistant-markdown"
+      <div className={`main-layout${isSidebarOpen ? ' sidebar-open' : ''}`}>
+        <div className="main-column">
+          <main className="chat" onClick={handleChatClick}>
+            {messages.map((message) => (
+              <div
+                key={message.id}
+                className={`message ${message.role}${
+                  message.status ? ` ${message.status}` : ''
+                }${message.id === activeMessageId ? ' selected' : ''}`}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setActiveMessageId((prev) =>
+                    prev === message.id ? null : message.id,
+                  )
+                }}
               >
-                {message.content}
-              </ReactMarkdown>
+                {message.role === 'user' ? (
+                  <blockquote className="user-quote">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {message.content}
+                    </ReactMarkdown>
+                  </blockquote>
+                ) : (
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    className="assistant-markdown"
+                  >
+                    {message.content}
+                  </ReactMarkdown>
+                )}
+              </div>
+            ))}
+            <div ref={endRef} />
+          </main>
+
+          <footer className="composer">
+            <div className="composer-box">
+              <textarea
+                ref={textareaRef}
+                className="composer-input"
+                placeholder="Add a message to the context"
+                value={draft}
+                spellCheck={false}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') {
+                    return
+                  }
+
+                  if (event.shiftKey) {
+                    return
+                  }
+
+                  if (event.metaKey || event.ctrlKey) {
+                    event.preventDefault()
+                    void sendMessage()
+                    return
+                  }
+
+                  if (hasNewline || isSending) {
+                    return
+                  }
+
+                  event.preventDefault()
+                  void sendMessage()
+                }}
+                rows={1}
+              />
+              <div className="composer-actions">
+                <span className="hint">
+                  {hasNewline
+                    ? `${modifierLabel} + Enter to generate`
+                    : 'Enter to generate · Shift + Enter for newline'}
+                </span>
+                <span
+                  className={`tooltip tooltip-hover-only${draft.trim() && !isSending ? ' tooltip-suppressed' : ''}`}
+                  data-tooltip={isSending ? 'Stop request' : 'Add to context'}
+                >
+                  <button
+                    className="send-button"
+                    type="button"
+                    onClick={isSending ? stopRequest : () => void sendMessage()}
+                    disabled={!isSending && !draft.trim()}
+                    aria-label={isSending ? 'Stop request' : 'Add to context'}
+                  >
+                    <span
+                      className={`codicon ${isSending ? 'codicon-debug-stop' : 'codicon-add'}`}
+                      aria-hidden="true"
+                    />
+                  </button>
+                </span>
+              </div>
+            </div>
+          </footer>
+        </div>
+
+        <aside className="sidebar" id="sidebar" aria-hidden={!isSidebarOpen}>
+          <div className="sidebar-header">
+            <div className="sidebar-title">
+              {sidebarTab === 'chats' ? 'Chats' : 'Inspector'}
+              {sidebarTab === 'inspect' && activeMessage ? (
+                <span className="sidebar-meta">{activeMessage.role}</span>
+              ) : null}
+            </div>
+            <div className="sidebar-tabs" role="tablist" aria-label="Sidebar panels">
+              <button
+                className={`sidebar-tab${sidebarTab === 'chats' ? ' active' : ''}`}
+                type="button"
+                onClick={() => handleSidebarTabClick('chats')}
+                role="tab"
+                aria-selected={sidebarTab === 'chats'}
+                aria-controls="sidebar-panel"
+                aria-label="Chats panel"
+              >
+                <span className="codicon codicon-list-unordered" aria-hidden="true" />
+              </button>
+              <button
+                className={`sidebar-tab${sidebarTab === 'inspect' ? ' active' : ''}`}
+                type="button"
+                onClick={() => handleSidebarTabClick('inspect')}
+                role="tab"
+                aria-selected={sidebarTab === 'inspect'}
+                aria-controls="sidebar-panel"
+                aria-label="Inspector panel"
+              >
+                <span className="codicon codicon-inspect" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+
+          <div
+            className="sidebar-body"
+            role="tabpanel"
+            id="sidebar-panel"
+            aria-live="polite"
+          >
+            {sidebarTab === 'chats' ? (
+              <div className="sidebar-empty">
+                Chat history and search will appear here.
+              </div>
+            ) : activeMessage && inspectorStats ? (
+              <div className="sidebar-section">
+                <div className="sidebar-row">
+                  <span>Characters</span>
+                  <span>{inspectorStats.characters}</span>
+                </div>
+                <div className="sidebar-row">
+                  <span>Words</span>
+                  <span>{inspectorStats.words}</span>
+                </div>
+                <div className="sidebar-actions">
+                  <button
+                    className="sidebar-action"
+                    type="button"
+                    onClick={handleCopyActiveMessage}
+                  >
+                    <span className="codicon codicon-copy" aria-hidden="true" />
+                    Copy
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="sidebar-empty">
+                Select a message to inspect.
+              </div>
             )}
           </div>
-        ))}
-        <div ref={endRef} />
-      </main>
-
-      <footer className="composer">
-        <div className="composer-box">
-          <textarea
-            ref={textareaRef}
-            className="composer-input"
-            placeholder="Add a message to the context"
-            value={draft}
-            spellCheck={false}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter') {
-                return
-              }
-
-              if (event.shiftKey) {
-                return
-              }
-
-              if (event.metaKey || event.ctrlKey) {
-                event.preventDefault()
-                void sendMessage()
-                return
-              }
-
-              if (hasNewline || isSending) {
-                return
-              }
-
-              event.preventDefault()
-              void sendMessage()
-            }}
-            rows={1}
-          />
-          <div className="composer-actions">
-            <span className="hint">
-              {hasNewline
-                ? `${modifierLabel} + Enter to generate`
-                : 'Enter to generate · Shift + Enter for newline'}
-            </span>
-            <span
-              className={`tooltip tooltip-hover-only${draft.trim() && !isSending ? ' tooltip-suppressed' : ''}`}
-              data-tooltip={isSending ? 'Stop request' : 'Add to context'}
-            >
-              <button
-                className="send-button"
-                type="button"
-                onClick={isSending ? stopRequest : () => void sendMessage()}
-                disabled={!isSending && !draft.trim()}
-                aria-label={isSending ? 'Stop request' : 'Add to context'}
-              >
-                <span
-                  className={`codicon ${isSending ? 'codicon-debug-stop' : 'codicon-add'}`}
-                  aria-hidden="true"
-                />
-              </button>
-            </span>
-          </div>
-        </div>
-      </footer>
+        </aside>
+      </div>
     </div>
   )
 }
