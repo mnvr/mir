@@ -3,12 +3,12 @@
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {
-    "start": "expo start",
-    "android": "expo run:android",
-    "ios:device": "expo run:ios --device",
-    "ios": "expo run:ios",
-    "web": "expo start --web",
-    "android:device": "expo run:android --device"
+    "start": "expo start --port 5702",
+    "android": "expo run:android --port 5702",
+    "ios:device": "expo run:ios --device --port 5702",
+    "ios": "expo run:ios --port 5702",
+    "web": "expo start --web --port 5702",
+    "android:device": "expo run:android --device --port 5702"
   },
   "dependencies": {
     "expo": "~54.0.32",

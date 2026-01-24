@@ -13,6 +13,11 @@ web-build/
 .expo-shared/
 .metro-health-check*
 
+# Playwright artifacts
+artifacts/
+playwright-report/
+test-results/
+
 # logs
 logs
 *.log

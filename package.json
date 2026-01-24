@@ -11,5 +11,8 @@
     "android:device": "pnpm --filter mir-mobile android:device",
     "build:desktop": "pnpm --filter mir-desktop build",
     "lint": "pnpm -r --if-present lint"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.0"
   }
 }

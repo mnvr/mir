@@ -85,3 +85,26 @@ These will create native builds. Hot reload will still work.
 
 `mir-core` is consumed from source in both apps, so changes should hot reload.
 If the mobile bundler misses updates, restart Metro.
+
+### Playwright (optional) 🔍
+
+Playwright can be used for scripted UI inspection in the desktop renderer (runs in a browser).
+Install the browsers once,
+
+```sh
+pnpm exec playwright install
+```
+
+Start the dev server,
+
+```sh
+pnpm dev:desktop
+```
+
+And then run your playwright script, e.g.:
+
+```sh
+node scripts/inspect-layout.mjs
+```
+
+New scripts can be added as needed. This particular script saves artifacts in `artifacts/`, and the target URL can be overridden by setting the `INSPECT_URL` environment variable.

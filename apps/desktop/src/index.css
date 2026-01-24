@@ -1,23 +1,16 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Source+Serif+4:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600&display=swap');
 
 :root {
-  font-family: "Space Grotesk", "Helvetica Neue", Arial, sans-serif;
+  font-family: "Source Serif 4", "Times New Roman", serif;
   line-height: 1.6;
   font-weight: 400;
   color-scheme: light;
-  color: #1d1a16;
-  background-color: #f7f1e8;
+  color: #1a1a1a;
+  background-color: #ffffff;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-
-  --bg: #f7f1e8;
-  --ink: #1d1a16;
-  --muted: #7a675a;
-  --accent: #2a7f62;
-  --paper: #fff9f1;
-  --stroke: #eadfce;
 }
 
 * {
@@ -28,26 +21,13 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background:
-    radial-gradient(1200px 800px at 10% -10%, #fff1dd 0%, rgba(255, 241, 221, 0) 60%),
-    radial-gradient(900px 600px at 110% 20%, #e5f0ea 0%, rgba(229, 240, 234, 0) 55%),
-    var(--bg);
-  color: var(--ink);
+  background: #ffffff;
 }
 
 #root {
   min-height: 100vh;
 }
 
-a {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-a:hover {
-  color: #215f4a;
-}
-
 ::selection {
-  background: #d5f0e5;
+  background: #f1f1f1;
 }
