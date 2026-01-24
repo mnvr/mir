@@ -5,6 +5,7 @@ import {
   MenuItem,
   ipcMain,
   safeStorage,
+  nativeImage,
   type MenuItemConstructorOptions,
 } from 'electron'
 import { fileURLToPath } from 'node:url'
@@ -34,6 +35,7 @@ app.setName('Mir')
 
 let win: BrowserWindow | null
 let isSidebarOpen = false
+const appIconPath = path.join(process.env.VITE_PUBLIC ?? process.env.APP_ROOT, 'Mir-Icon.png')
 
 const isMac = process.platform === 'darwin'
 
@@ -185,11 +187,18 @@ function setAppMenu() {
 
 function createWindow() {
   win = new BrowserWindow({
-    icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
+    icon: appIconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
     },
   })
+
+  if (isMac && app.dock) {
+    const icon = nativeImage.createFromPath(appIconPath)
+    if (!icon.isEmpty()) {
+      app.dock.setIcon(icon)
+    }
+  }
 
   setAppMenu()
 
