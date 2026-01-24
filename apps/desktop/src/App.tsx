@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
@@ -22,10 +22,26 @@ function App() {
   const [messages, setMessages] = useState<Message[]>(seedMessages)
   const [draft, setDraft] = useState('')
   const endRef = useRef<HTMLDivElement | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const maxRows = 9
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages])
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) {
+      return
+    }
+
+    textarea.style.height = 'auto'
+    const computed = window.getComputedStyle(textarea)
+    const lineHeight = Number.parseFloat(computed.lineHeight)
+    const maxHeight = lineHeight ? lineHeight * maxRows : 200
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight)
+    textarea.style.height = `${nextHeight}px`
+  }, [draft, maxRows])
 
   const sendMessage = () => {
     const trimmed = draft.trim()
@@ -77,28 +93,36 @@ function App() {
       </main>
 
       <footer className="composer">
-        <textarea
-          className="composer-input"
-          placeholder="Add a message to the context..."
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault()
-              sendMessage()
-            }
-          }}
-          rows={3}
-        />
-        <div className="composer-actions">
-          <button
-            className="send-button"
-            onClick={sendMessage}
-            disabled={!draft.trim()}
-          >
-            Send
-          </button>
-          <span className="hint">Cmd + Enter</span>
+        <div className="composer-box">
+          <textarea
+            ref={textareaRef}
+            className="composer-input"
+            placeholder="Add a message to the context"
+            value={draft}
+            spellCheck={false}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault()
+                sendMessage()
+              }
+            }}
+            rows={1}
+          />
+          <div className="composer-actions">
+            <span className="hint">Cmd + Enter</span>
+            <span className="send-tooltip" data-tooltip="Add to context">
+              <button
+                className="send-button"
+                type="button"
+                onClick={sendMessage}
+                disabled={!draft.trim()}
+                aria-label="Add to context"
+              >
+                <span className="codicon codicon-add" aria-hidden="true" />
+              </button>
+            </span>
+          </div>
         </div>
       </footer>
     </div>
