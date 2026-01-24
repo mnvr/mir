@@ -52,7 +52,7 @@ function App() {
 
   return (
     <div className="app">
-      <header className="header">Mir</header>
+      <header className="header">Sat Jan 24th, 2027</header>
 
       <main className="chat">
         {messages.map((message) => (

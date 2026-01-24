@@ -8,7 +8,7 @@
 
 .header {
   padding: 20px 24px 12px;
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-weight: 600;
   letter-spacing: 0.02em;
   border-bottom: 1px solid #eeeeee;
@@ -32,14 +32,16 @@
 }
 
 .message.user {
-  color: #555555;
+  color: #5c5c5c;
 }
 
 .user-quote {
   margin: 0;
   padding: 8px 14px;
-  border-left: 3px solid #dddddd;
-  background: #fafafa;
+  border-left: 2px solid #e0e0e0;
+  background: #f7f7f7;
+  border-radius: 6px;
+  font-size: 0.98rem;
 }
 
 .user-quote p {
@@ -99,7 +101,7 @@
   color: #ffffff;
   padding: 8px 16px;
   border-radius: 999px;
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   cursor: pointer;
 }
 

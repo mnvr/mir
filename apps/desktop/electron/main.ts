@@ -1,9 +1,13 @@
-import { app, BrowserWindow } from 'electron'
-import { createRequire } from 'node:module'
+import {
+  app,
+  BrowserWindow,
+  Menu,
+  MenuItem,
+  type MenuItemConstructorOptions,
+} from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
-const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // The built directory structure
@@ -24,7 +28,50 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
+app.setName('Mir')
+
 let win: BrowserWindow | null
+
+const isMac = process.platform === 'darwin'
+
+function setAppMenu() {
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac ? [{ role: 'appMenu' } as const] : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    { role: 'help' },
+  ]
+
+  const menu = Menu.buildFromTemplate(template)
+  const windowMenuItem = menu.items.find(
+    (item) => item.role === 'windowMenu' || item.label === 'Window',
+  )
+  const windowSubmenu = windowMenuItem?.submenu
+
+  if (windowSubmenu) {
+    const targetIndex = windowSubmenu.items.findIndex(
+      (item) => item.role === 'front',
+    )
+    const insertIndex =
+      targetIndex === -1 ? windowSubmenu.items.length : targetIndex
+    const alwaysOnTopItem = new MenuItem({
+      label: 'Always on Top',
+      type: 'checkbox',
+      checked: win?.isAlwaysOnTop() ?? false,
+      click: (menuItem) => {
+        win?.setAlwaysOnTop(menuItem.checked)
+      },
+    })
+
+    windowSubmenu.insert(insertIndex, new MenuItem({ type: 'separator' }))
+    windowSubmenu.insert(insertIndex, alwaysOnTopItem)
+    windowSubmenu.insert(insertIndex, new MenuItem({ type: 'separator' }))
+  }
+
+  Menu.setApplicationMenu(menu)
+}
 
 function createWindow() {
   win = new BrowserWindow({
@@ -33,6 +80,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.mjs'),
     },
   })
+
+  setAppMenu()
 
   // Test active push message to Renderer-process.
   win.webContents.on('did-finish-load', () => {
