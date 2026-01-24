@@ -5,6 +5,8 @@ export type Block = {
   markdown: string
 }
 
+export * from './chat'
+
 export type Branch = {
   id: string
   label: string

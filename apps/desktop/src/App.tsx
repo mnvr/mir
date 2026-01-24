@@ -1,3 +1,9 @@
+import {
+  buildChatCompletionEndpoint,
+  createChatCompletion,
+  createTimeoutController,
+  type ChatCompletionMessage,
+} from 'mir-core'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -7,31 +13,20 @@ type Message = {
   id: string
   role: 'user' | 'assistant'
   content: string
-  status?: 'pending' | 'error'
+  status?: 'pending' | 'error' | 'canceled'
   omitFromContext?: boolean
-}
-
-type ChatCompletionMessage = {
-  role: 'user' | 'assistant' | 'system'
-  content: string
-}
-
-type ChatCompletionResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string
-    }
-    text?: string
-  }>
 }
 
 type StorageMode = 'secure' | 'session'
 
 const STORAGE_KEYS = {
   baseUrl: 'mir.chat.baseUrl',
+  model: 'mir.chat.model',
   apiKeyEncrypted: 'mir.chat.apiKey.encrypted',
   apiKeySession: 'mir.chat.apiKey.session',
 }
+
+const REQUEST_TIMEOUT_MS = 60_000
 
 const seedMessages: Message[] = [
   {
@@ -47,37 +42,6 @@ const toChatMessages = (items: Message[]): ChatCompletionMessage[] =>
   items
     .filter((message) => !message.omitFromContext && !message.status)
     .map(({ role, content }) => ({ role, content }))
-
-const extractAssistantText = (data: ChatCompletionResponse): string | null => {
-  if (!data || typeof data !== 'object') {
-    return null
-  }
-
-  const choice = data.choices?.[0]
-  if (!choice) {
-    return null
-  }
-
-  if (choice.message?.content && typeof choice.message.content === 'string') {
-    return choice.message.content
-  }
-
-  if (choice.text && typeof choice.text === 'string') {
-    return choice.text
-  }
-
-  return null
-}
-
-const buildChatEndpoint = (baseUrl: string) => {
-  const trimmed = baseUrl.trim()
-  if (!trimmed) {
-    return null
-  }
-
-  const normalized = trimmed.replace(/\/+$/, '')
-  return `${normalized}/chat/completions`
-}
 
 const getInitialBaseUrl = () => {
   if (typeof window === 'undefined') {
@@ -130,6 +94,9 @@ function App() {
   const [draft, setDraft] = useState('')
   const initialBaseUrl = getInitialBaseUrl()
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl)
+  const [model, setModel] = useState(
+    () => localStorage.getItem(STORAGE_KEYS.model) ?? '',
+  )
   const [apiKey, setApiKey] = useState('')
   const [isSettingsOpen, setIsSettingsOpen] = useState(
     () => !initialBaseUrl.trim(),
@@ -138,11 +105,12 @@ function App() {
   const [keyError, setKeyError] = useState<string | null>(null)
   const [showKey, setShowKey] = useState(false)
   const [suppressKeyTooltip, setSuppressKeyTooltip] = useState(false)
+  const [suppressSettingsTooltip, setSuppressSettingsTooltip] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [settingsReady, setSettingsReady] = useState(false)
   const endRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
-  const keyTooltipTimeoutRef = useRef<number | null>(null)
+  const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
   const maxRows = 9
 
   useEffect(() => {
@@ -150,12 +118,8 @@ function App() {
   }, [baseUrl])
 
   useEffect(() => {
-    return () => {
-      if (keyTooltipTimeoutRef.current !== null) {
-        window.clearTimeout(keyTooltipTimeoutRef.current)
-      }
-    }
-  }, [])
+    localStorage.setItem(STORAGE_KEYS.model, model)
+  }, [model])
 
   useEffect(() => {
     if (isSettingsOpen) {
@@ -263,7 +227,7 @@ function App() {
   }, [apiKey, settingsReady, storageMode])
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    endRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
   }, [messages])
 
   useLayoutEffect(() => {
@@ -283,13 +247,19 @@ function App() {
   const handleToggleApiKey = () => {
     setShowKey((prev) => !prev)
     setSuppressKeyTooltip(true)
-    if (keyTooltipTimeoutRef.current !== null) {
-      window.clearTimeout(keyTooltipTimeoutRef.current)
-    }
-    keyTooltipTimeoutRef.current = window.setTimeout(() => {
-      setSuppressKeyTooltip(false)
-    }, 400)
   }
+
+  const handleToggleSettings = () => {
+    setIsSettingsOpen((prev) => !prev)
+    setSuppressSettingsTooltip(true)
+  }
+
+  const stopRequest = () => {
+    abortControllerRef.current?.abort()
+  }
+
+  const isAbortError = (error: unknown) =>
+    error instanceof Error && error.name === 'AbortError'
 
   const sendMessage = async () => {
     const trimmed = draft.trim()
@@ -297,7 +267,7 @@ function App() {
       return
     }
 
-    const endpoint = buildChatEndpoint(baseUrl)
+    const endpoint = buildChatCompletionEndpoint(baseUrl)
     const timestamp = Date.now()
     const userMessage: Message = {
       id: `m-${timestamp}-user`,
@@ -332,43 +302,20 @@ function App() {
     }
 
     const contextMessages = toChatMessages([...messages, userMessage])
-    const payload: { messages: ChatCompletionMessage[] } = {
-      messages: contextMessages,
-    }
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    }
-
     const token = apiKey.trim()
-    if (token) {
-      headers.Authorization = `Bearer ${token}`
-    }
-
+    const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
+    abortControllerRef.current = timeoutController
     setIsSending(true)
 
     try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
+      const { content: nextContent } = await createChatCompletion({
+        baseUrl,
+        apiKey: token || undefined,
+        messages: contextMessages,
+        model: model.trim() ? model.trim() : undefined,
+        fetchFn: (input, init) => window.fetch(input, init),
+        signal: timeoutController.signal,
       })
-
-      if (!response.ok) {
-        const detail = await response.text()
-        throw new Error(
-          detail
-            ? `Request failed (${response.status}): ${detail}`
-            : `Request failed (${response.status}).`,
-        )
-      }
-
-      const data = (await response.json()) as ChatCompletionResponse
-      const nextContent = extractAssistantText(data)
-
-      if (!nextContent) {
-        throw new Error('No assistant content returned.')
-      }
 
       setMessages((prev) =>
         prev.map((message) =>
@@ -378,6 +325,16 @@ function App() {
         ),
       )
     } catch (error) {
+      if (isAbortError(error)) {
+        setMessages((prev) =>
+          prev.map((item) =>
+            item.id === assistantMessage.id
+              ? { ...item, content: 'Request stopped.', status: 'canceled' }
+              : item,
+          ),
+        )
+        return
+      }
       const message =
         error instanceof Error ? error.message : 'Unknown error occurred.'
       setMessages((prev) =>
@@ -389,6 +346,8 @@ function App() {
       )
     } finally {
       setIsSending(false)
+      timeoutController.clear()
+      abortControllerRef.current = null
     }
   }
 
@@ -398,14 +357,19 @@ function App() {
         <div className="header-meta">
           <div className="header-subtitle">Sat Jan 24th, 2027</div>
         </div>
-        <span className="tooltip tooltip-bottom" data-tooltip="Settings">
+        <span
+          className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
+          data-tooltip="Settings"
+          onMouseLeave={() => setSuppressSettingsTooltip(false)}
+        >
           <button
             className="settings-toggle"
             type="button"
-            onClick={() => setIsSettingsOpen((prev) => !prev)}
+            onClick={handleToggleSettings}
             aria-label="Toggle settings"
             aria-expanded={isSettingsOpen}
             aria-controls="settings-panel"
+            onBlur={() => setSuppressSettingsTooltip(false)}
           >
             <span className="codicon codicon-gear" aria-hidden="true" />
           </button>
@@ -429,6 +393,17 @@ function App() {
                 />
               </label>
               <label className="settings-field">
+                <span>Model</span>
+                <input
+                  className="settings-input"
+                  type="text"
+                  placeholder="gpt-5.2"
+                  value={model}
+                  spellCheck={false}
+                  onChange={(event) => setModel(event.target.value)}
+                />
+              </label>
+              <label className="settings-field">
                 <span>API key</span>
                 <div className="settings-input-wrap">
                   <input
@@ -444,14 +419,16 @@ function App() {
                     onChange={(event) => setApiKey(event.target.value)}
                   />
                   <span
-                    className={`tooltip tooltip-inline${suppressKeyTooltip ? ' tooltip-suppressed' : ''}`}
+                    className={`tooltip tooltip-inline tooltip-hover-only${suppressKeyTooltip ? ' tooltip-suppressed' : ''}`}
                     data-tooltip={showKey ? 'Hide API key' : 'Show API key'}
+                    onMouseLeave={() => setSuppressKeyTooltip(false)}
                   >
                     <button
                       className="settings-button"
                       type="button"
                       onClick={handleToggleApiKey}
                       aria-label={showKey ? 'Hide API key' : 'Show API key'}
+                      onBlur={() => setSuppressKeyTooltip(false)}
                     >
                       <span
                         className={`codicon ${showKey ? 'codicon-eye-closed' : 'codicon-eye'}`}
@@ -468,7 +445,7 @@ function App() {
               }`}
             >
               {storageMode === 'secure'
-                ? 'API keys are encrypted and stored in secure storage.'
+                ? "API keys are saved using the device safe storage."
                 : 'Secure storage is unavailable. API keys are kept only for this session.'}
             </div>
             {keyError ? (
@@ -528,15 +505,21 @@ function App() {
           />
           <div className="composer-actions">
             <span className="hint">Cmd + Enter</span>
-            <span className="tooltip" data-tooltip="Add to context">
+            <span
+              className={`tooltip tooltip-hover-only${draft.trim() && !isSending ? ' tooltip-suppressed' : ''}`}
+              data-tooltip={isSending ? 'Stop request' : 'Add to context'}
+            >
               <button
                 className="send-button"
                 type="button"
-                onClick={() => void sendMessage()}
-                disabled={!draft.trim() || isSending}
-                aria-label="Add to context"
+                onClick={isSending ? stopRequest : () => void sendMessage()}
+                disabled={!isSending && !draft.trim()}
+                aria-label={isSending ? 'Stop request' : 'Add to context'}
               >
-                <span className="codicon codicon-add" aria-hidden="true" />
+                <span
+                  className={`codicon ${isSending ? 'codicon-debug-stop' : 'codicon-add'}`}
+                  aria-hidden="true"
+                />
               </button>
             </span>
           </div>

@@ -173,6 +173,11 @@
   font-style: italic;
 }
 
+.message.assistant.canceled .assistant-markdown {
+  color: #7a7a7a;
+  font-style: italic;
+}
+
 .message.assistant.error .assistant-markdown {
   color: #a03a3a;
 }
@@ -268,7 +273,7 @@
   pointer-events: none;
 }
 
-.send-button .codicon {
+.send-button .codicon-add {
   font-size: 14px;
   line-height: 1;
   display: block;
@@ -346,22 +351,18 @@
   display: none;
 }
 
-.tooltip-suppressed::after,
-.tooltip-suppressed::before,
-.tooltip-suppressed:hover::after,
-.tooltip-suppressed:hover::before,
-.tooltip-suppressed:focus-within::after,
-.tooltip-suppressed:focus-within::before {
-  opacity: 0;
-  transform: translateY(0);
-}
-
-.tooltip:hover::after,
-.tooltip:hover::before,
-.tooltip:focus-within::after,
-.tooltip:focus-within::before {
+.tooltip:not(.tooltip-suppressed):hover::after,
+.tooltip:not(.tooltip-suppressed):hover::before {
   opacity: 1;
   transform: translateY(0);
+  transition-delay: 150ms;
+}
+
+.tooltip:not(.tooltip-suppressed):not(.tooltip-hover-only):focus-within::after,
+.tooltip:not(.tooltip-suppressed):not(.tooltip-hover-only):focus-within::before {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: 150ms;
 }
 
 @media (max-width: 720px) {
