@@ -3,6 +3,8 @@ import {
   BrowserWindow,
   Menu,
   MenuItem,
+  ipcMain,
+  safeStorage,
   type MenuItemConstructorOptions,
 } from 'electron'
 import { fileURLToPath } from 'node:url'
@@ -34,9 +36,68 @@ let win: BrowserWindow | null
 
 const isMac = process.platform === 'darwin'
 
+function registerSecretHandlers() {
+  ipcMain.handle('secrets:is-available', () =>
+    safeStorage.isEncryptionAvailable(),
+  )
+
+  ipcMain.handle('secrets:encrypt', (_event, plainText) => {
+    if (typeof plainText !== 'string') {
+      throw new Error('Invalid secret payload.')
+    }
+
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('Secure storage is not available.')
+    }
+
+    const encrypted = safeStorage.encryptString(plainText)
+    return encrypted.toString('base64')
+  })
+
+  ipcMain.handle('secrets:decrypt', (_event, cipherText) => {
+    if (typeof cipherText !== 'string') {
+      throw new Error('Invalid secret payload.')
+    }
+
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('Secure storage is not available.')
+    }
+
+    const buffer = Buffer.from(cipherText, 'base64')
+    return safeStorage.decryptString(buffer)
+  })
+}
+
 function setAppMenu() {
+  const settingsItem: MenuItemConstructorOptions = {
+    label: isMac ? 'Preferences...' : 'Settings...',
+    accelerator: 'CmdOrCtrl+,',
+    click: () => {
+      win?.webContents.send('open-settings')
+    },
+  }
+
   const template: MenuItemConstructorOptions[] = [
-    ...(isMac ? [{ role: 'appMenu' } as const] : []),
+    ...(isMac
+      ? [
+          {
+            label: app.getName(),
+            submenu: [
+              { role: 'about' },
+              { type: 'separator' },
+              settingsItem,
+              { type: 'separator' },
+              { role: 'services' },
+              { type: 'separator' },
+              { role: 'hide' },
+              { role: 'hideOthers' },
+              { role: 'unhide' },
+              { type: 'separator' },
+              { role: 'quit' },
+            ],
+          } as MenuItemConstructorOptions,
+        ]
+      : []),
     { role: 'fileMenu' },
     { role: 'editMenu' },
     { role: 'viewMenu' },
@@ -45,6 +106,19 @@ function setAppMenu() {
   ]
 
   const menu = Menu.buildFromTemplate(template)
+
+  if (!isMac) {
+    const fileMenuItem = menu.items.find(
+      (item) => item.role === 'fileMenu' || item.label === 'File',
+    )
+    const fileSubmenu = fileMenuItem?.submenu
+
+    if (fileSubmenu) {
+      fileSubmenu.insert(0, new MenuItem(settingsItem))
+      fileSubmenu.insert(1, new MenuItem({ type: 'separator' }))
+    }
+  }
+
   const windowMenuItem = menu.items.find(
     (item) => item.role === 'windowMenu' || item.label === 'Window',
   )
@@ -114,4 +188,7 @@ app.on('activate', () => {
   }
 })
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  registerSecretHandlers()
+  createWindow()
+})

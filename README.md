@@ -2,6 +2,10 @@
 
 This is Mir, a new way to interface with LLMs.
 
+## Docs 📚
+
+- `docs/user-guide.md`: User-facing documentation.
+
 ## Repository layout 🧭
 
 - `apps/desktop`: Electron + React desktop app.
