@@ -2,6 +2,8 @@ import {
   buildChatCompletionEndpoint,
   createChatCompletion,
   createTimeoutController,
+  demoChat,
+  type DemoChat,
   type ChatCompletionMessage,
 } from 'mir-core'
 import {
@@ -46,10 +48,25 @@ const seedMessages: Message[] = [
   },
 ]
 
+const demoChats = [demoChat]
+
 const toChatMessages = (items: Message[]): ChatCompletionMessage[] =>
   items
     .filter((message) => !message.omitFromContext && !message.status)
     .map(({ role, content }) => ({ role, content }))
+
+const toDemoMessages = (chat: DemoChat): Message[] =>
+  chat.messages
+    .filter(
+      (message): message is ChatCompletionMessage & {
+        role: 'user' | 'assistant'
+      } => message.role === 'user' || message.role === 'assistant',
+    )
+    .map((message, index) => ({
+      id: `${chat.id}-${message.role}-${index}`,
+      role: message.role,
+      content: message.content,
+    }))
 
 const getInitialBaseUrl = () => {
   if (typeof window === 'undefined') {
@@ -118,6 +135,7 @@ function App() {
   const [isSending, setIsSending] = useState(false)
   const [settingsReady, setSettingsReady] = useState(false)
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
+  const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect'>(
     'chats',
   )
@@ -494,6 +512,12 @@ function App() {
     updateSidebarOpen(true)
   }
 
+  const handleSelectChat = (chat: DemoChat) => {
+    setActiveChatId(chat.id)
+    setMessages(toDemoMessages(chat))
+    setActiveMessageId(null)
+  }
+
   return (
     <div className="app">
       <header className="header">
@@ -762,8 +786,24 @@ function App() {
             aria-live="polite"
           >
             {sidebarTab === 'chats' ? (
-              <div className="sidebar-empty">
-                Chat history and search will appear here.
+              <div className="chat-list" role="listbox" aria-label="Chats">
+                {demoChats.map((chat) => (
+                  <button
+                    key={chat.id}
+                    type="button"
+                    className={`chat-list-item${activeChatId === chat.id ? ' active' : ''}`}
+                    onClick={() => handleSelectChat(chat)}
+                    role="option"
+                    aria-selected={activeChatId === chat.id}
+                  >
+                    <div className="chat-list-title">{chat.title}</div>
+                    <div className="chat-list-meta">
+                      <span>{chat.createdAt}</span>
+                      <span>·</span>
+                      <span>{chat.model}</span>
+                    </div>
+                  </button>
+                ))}
               </div>
             ) : activeMessage && inspectorStats ? (
               <div className="sidebar-section">
