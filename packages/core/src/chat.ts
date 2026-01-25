@@ -9,12 +9,22 @@ export type ChatCompletionRequest = {
 }
 
 export type ChatCompletionResponse = {
+  id?: string
+  model?: string
   choices?: Array<{
+    index?: number
+    finish_reason?: string
     message?: {
       content?: string
+      role?: string
     }
     text?: string
   }>
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+  }
 }
 
 export type AbortSignalLike = {

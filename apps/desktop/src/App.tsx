@@ -5,6 +5,15 @@ import {
   demoChat,
   type DemoChat,
   type ChatCompletionMessage,
+  type MessagePayload,
+  type MessageRecord,
+  type MessageUsage,
+  buildMessageRequest,
+  buildMessageResponse,
+  toMessagePayload,
+  formatMessageSource,
+  formatLatency,
+  formatUsage,
 } from 'mir-core'
 import {
   useEffect,
@@ -16,12 +25,18 @@ import {
 } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import {
+  appendMessage,
+  getOrCreateActiveInteraction,
+  listInteractionMessages,
+} from './storage/mir-db'
 import './App.css'
 
 type Message = {
   id: string
   role: 'user' | 'assistant'
   content: string
+  payload?: MessagePayload
   status?: 'pending' | 'error' | 'canceled'
   omitFromContext?: boolean
 }
@@ -49,6 +64,17 @@ const seedMessages: Message[] = [
 ]
 
 const demoChats = [demoChat]
+
+const recordToMessage = (record: MessageRecord): Message => {
+  const role = record.payload?.role === 'user' ? 'user' : 'assistant'
+  return {
+    id: record.id,
+    role,
+    content: record.payload?.content ?? '',
+    payload: record.payload,
+  }
+}
+
 
 const toChatMessages = (items: Message[]): ChatCompletionMessage[] =>
   items
@@ -134,6 +160,7 @@ function App() {
   const [suppressSidebarTooltip, setSuppressSidebarTooltip] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [settingsReady, setSettingsReady] = useState(false)
+  const [interactionId, setInteractionId] = useState<string | null>(null)
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect'>(
@@ -153,6 +180,7 @@ function App() {
       : 'Ctrl'
   const activeMessage =
     messages.find((message) => message.id === activeMessageId) ?? null
+  const activePayload = activeMessage?.payload
   const inspectorStats = activeMessage
     ? {
         role: activeMessage.role,
@@ -160,6 +188,16 @@ function App() {
         words: activeMessage.content.trim()
           ? activeMessage.content.trim().split(/\s+/).length
           : 0,
+      }
+    : null
+  const inspectorMeta = activePayload
+    ? {
+        requestModel: activePayload.request?.model,
+        responseModel: activePayload.response?.model,
+        localTimestamp: activePayload.localTimestamp,
+        latencyMs: activePayload.response?.latencyMs,
+        usage: activePayload.response?.usage,
+        backend: activePayload.request?.backend,
       }
     : null
 
@@ -219,6 +257,32 @@ function App() {
       window.ipcRenderer.off('sidebar:toggle', handleToggleSidebar)
     }
   }, [updateSidebarOpen])
+
+  useEffect(() => {
+    let isMounted = true
+
+    const loadMessages = async () => {
+      try {
+        const interaction = await getOrCreateActiveInteraction()
+        const storedMessages = await listInteractionMessages(interaction.id)
+        if (!isMounted) {
+          return
+        }
+        setInteractionId(interaction.id)
+        if (storedMessages.length > 0) {
+          setMessages(storedMessages.map(recordToMessage))
+          setActiveChatId(null)
+        }
+      } catch {
+      }
+    }
+
+    void loadMessages()
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
 
   useEffect(() => {
     if (!activeMessageId) {
@@ -388,11 +452,16 @@ function App() {
     }
 
     const endpoint = buildChatCompletionEndpoint(baseUrl)
+    const request = buildMessageRequest(baseUrl, model)
     const timestamp = Date.now()
+    const userPayload = toMessagePayload('user', trimmed, {
+      request,
+    })
     const userMessage: Message = {
       id: `m-${timestamp}-user`,
       role: 'user',
       content: trimmed,
+      payload: userPayload,
     }
 
     const assistantMessage: Message = {
@@ -409,6 +478,26 @@ function App() {
 
     if (shouldAutoScroll) {
       queueScrollToBottom()
+    }
+
+    if (!activeChatId && interactionId) {
+      void appendMessage(
+        interactionId,
+        userPayload,
+      )
+        .then((record) => {
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === userMessage.id
+                ? { ...message, id: record.id }
+                : message,
+            ),
+          )
+          setActiveMessageId((prev) =>
+            prev === userMessage.id ? record.id : prev,
+          )
+        })
+        .catch(() => {})
     }
 
     if (!endpoint) {
@@ -432,9 +521,10 @@ function App() {
     const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
     abortControllerRef.current = timeoutController
     setIsSending(true)
+    const requestStart = Date.now()
 
     try {
-      const { content: nextContent } = await createChatCompletion({
+      const { content: nextContent, raw } = await createChatCompletion({
         baseUrl,
         apiKey: token || undefined,
         messages: contextMessages,
@@ -442,15 +532,45 @@ function App() {
         fetchFn: (input, init) => window.fetch(input, init),
         signal: timeoutController.signal,
       })
+      const latencyMs = Date.now() - requestStart
+      const response = buildMessageResponse(raw, latencyMs)
+      const assistantPayload = toMessagePayload('assistant', nextContent, {
+        request,
+        response,
+      })
 
       const shouldAutoScroll = autoScrollRef.current && isNearBottom()
       setMessages((prev) =>
         prev.map((message) =>
           message.id === assistantMessage.id
-            ? { ...message, content: nextContent, status: undefined }
+            ? {
+                ...message,
+                content: nextContent,
+                status: undefined,
+                payload: assistantPayload,
+              }
             : message,
         ),
       )
+      if (!activeChatId && interactionId) {
+        void appendMessage(
+          interactionId,
+          assistantPayload,
+        )
+          .then((record) => {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessage.id
+                  ? { ...message, id: record.id, content: nextContent }
+                  : message,
+              ),
+            )
+            setActiveMessageId((prev) =>
+              prev === assistantMessage.id ? record.id : prev,
+            )
+          })
+          .catch(() => {})
+      }
       if (shouldAutoScroll) {
         queueScrollToBottom()
       }
@@ -520,137 +640,168 @@ function App() {
 
   return (
     <div className="app">
-      <header className="header">
-        <div className="header-meta">
-          <div className="header-subtitle">Sat Jan 24th, 2027</div>
+      <header className={`header${isSidebarOpen ? ' sidebar-open' : ''}`}>
+        <div className="header-left">
+          <div className="header-meta">
+            <div className="header-subtitle">Sat Jan 24th, 2027</div>
+          </div>
+          <div className="header-actions">
+            <span
+              className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
+              data-tooltip="Settings"
+              onMouseLeave={() => setSuppressSettingsTooltip(false)}
+            >
+              <button
+                className="settings-toggle"
+                type="button"
+                onClick={handleToggleSettings}
+                aria-label="Toggle settings"
+                aria-expanded={isSettingsOpen}
+                aria-controls="settings-panel"
+                onBlur={() => setSuppressSettingsTooltip(false)}
+              >
+                <span className="codicon codicon-gear" aria-hidden="true" />
+              </button>
+            </span>
+            <span
+              className={`tooltip tooltip-bottom tooltip-hover-only${suppressSidebarTooltip ? ' tooltip-suppressed' : ''}`}
+              data-tooltip={isSidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+              onMouseLeave={() => setSuppressSidebarTooltip(false)}
+            >
+              <button
+                className="sidebar-toggle"
+                type="button"
+                onClick={handleToggleSidebar}
+                aria-label="Toggle sidebar"
+                aria-pressed={isSidebarOpen}
+                aria-expanded={isSidebarOpen}
+                aria-controls="sidebar"
+                onBlur={() => setSuppressSidebarTooltip(false)}
+              >
+                <span
+                  className={`codicon ${
+                    isSidebarOpen
+                      ? 'codicon-layout-sidebar-right'
+                      : 'codicon-layout-sidebar-right-off'
+                  }`}
+                  aria-hidden="true"
+                />
+              </button>
+            </span>
+          </div>
         </div>
-        <div className="header-actions">
-          <span
-            className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
-            data-tooltip="Settings"
-            onMouseLeave={() => setSuppressSettingsTooltip(false)}
+        <div className="header-right" aria-hidden={!isSidebarOpen}>
+          <div
+            className="sidebar-tabs"
+            role="tablist"
+            aria-label="Sidebar panels"
           >
             <button
-              className="settings-toggle"
+              className={`sidebar-tab${sidebarTab === 'chats' ? ' active' : ''}`}
               type="button"
-              onClick={handleToggleSettings}
-              aria-label="Toggle settings"
-              aria-expanded={isSettingsOpen}
-              aria-controls="settings-panel"
-              onBlur={() => setSuppressSettingsTooltip(false)}
+              onClick={() => handleSidebarTabClick('chats')}
+              role="tab"
+              aria-selected={sidebarTab === 'chats'}
+              aria-controls="sidebar-panel"
+              aria-label="Chats panel"
             >
-              <span className="codicon codicon-gear" aria-hidden="true" />
+              <span className="codicon codicon-list-unordered" aria-hidden="true" />
             </button>
-          </span>
-          <span
-            className={`tooltip tooltip-bottom tooltip-hover-only${suppressSidebarTooltip ? ' tooltip-suppressed' : ''}`}
-            data-tooltip={isSidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
-            onMouseLeave={() => setSuppressSidebarTooltip(false)}
-          >
             <button
-              className="sidebar-toggle"
+              className={`sidebar-tab${sidebarTab === 'inspect' ? ' active' : ''}`}
               type="button"
-              onClick={handleToggleSidebar}
-              aria-label="Toggle sidebar"
-              aria-pressed={isSidebarOpen}
-              aria-expanded={isSidebarOpen}
-              aria-controls="sidebar"
-              onBlur={() => setSuppressSidebarTooltip(false)}
+              onClick={() => handleSidebarTabClick('inspect')}
+              role="tab"
+              aria-selected={sidebarTab === 'inspect'}
+              aria-controls="sidebar-panel"
+              aria-label="Inspector panel"
             >
-              <span
-                className={`codicon ${
-                  isSidebarOpen
-                    ? 'codicon-layout-sidebar-right'
-                    : 'codicon-layout-sidebar-right-off'
-                }`}
-                aria-hidden="true"
-              />
+              <span className="codicon codicon-info" aria-hidden="true" />
             </button>
-          </span>
+          </div>
         </div>
       </header>
 
-      {isSettingsOpen ? (
-        <section className="settings" id="settings-panel">
-          <div className="settings-inner">
-            <div className="settings-heading">Connection</div>
-            <div className="settings-grid">
-              <label className="settings-field">
-                <span>Base URL</span>
-                <input
-                  className="settings-input"
-                  type="url"
-                  placeholder="https://api.openai.com/v1"
-                  value={baseUrl}
-                  spellCheck={false}
-                  onChange={(event) => setBaseUrl(event.target.value)}
-                />
-              </label>
-              <label className="settings-field">
-                <span>Model</span>
-                <input
-                  className="settings-input"
-                  type="text"
-                  placeholder="gpt-5.2"
-                  value={model}
-                  spellCheck={false}
-                  onChange={(event) => setModel(event.target.value)}
-                />
-              </label>
-              <label className="settings-field">
-                <span>API key</span>
-                <div className="settings-input-wrap">
-                  <input
-                    className="settings-input"
-                    type={showKey ? 'text' : 'password'}
-                    placeholder={
-                      storageMode === 'secure'
-                        ? 'Stored securely on this device'
-                        : 'Stored for this session only'
-                    }
-                    value={apiKey}
-                    spellCheck={false}
-                    onChange={(event) => setApiKey(event.target.value)}
-                  />
-                  <span
-                    className={`tooltip tooltip-inline tooltip-hover-only${suppressKeyTooltip ? ' tooltip-suppressed' : ''}`}
-                    data-tooltip={showKey ? 'Hide API key' : 'Show API key'}
-                    onMouseLeave={() => setSuppressKeyTooltip(false)}
-                  >
-                    <button
-                      className="settings-button"
-                      type="button"
-                      onClick={handleToggleApiKey}
-                      aria-label={showKey ? 'Hide API key' : 'Show API key'}
-                      onBlur={() => setSuppressKeyTooltip(false)}
-                    >
-                      <span
-                        className={`codicon ${showKey ? 'codicon-eye-closed' : 'codicon-eye'}`}
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </span>
-                </div>
-              </label>
-            </div>
-            <div
-              className={`settings-note${
-                storageMode === 'session' ? ' warning' : ''
-              }`}
-            >
-              {storageMode === 'secure'
-                ? "API keys are saved using the device safe storage."
-                : 'Secure storage is unavailable. API keys are kept only for this session.'}
-            </div>
-            {keyError ? (
-              <div className="settings-error">{keyError}</div>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
-
       <div className={`main-layout${isSidebarOpen ? ' sidebar-open' : ''}`}>
         <div className="main-column">
+          {isSettingsOpen ? (
+            <section className="settings" id="settings-panel">
+              <div className="settings-inner">
+                <div className="settings-heading">Connection</div>
+                <div className="settings-grid">
+                  <label className="settings-field">
+                    <span>Base URL</span>
+                    <input
+                      className="settings-input"
+                      type="url"
+                      placeholder="https://api.openai.com/v1"
+                      value={baseUrl}
+                      spellCheck={false}
+                      onChange={(event) => setBaseUrl(event.target.value)}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>Model</span>
+                    <input
+                      className="settings-input"
+                      type="text"
+                      placeholder="gpt-5.2"
+                      value={model}
+                      spellCheck={false}
+                      onChange={(event) => setModel(event.target.value)}
+                    />
+                  </label>
+                  <label className="settings-field">
+                    <span>API key</span>
+                    <div className="settings-input-wrap">
+                      <input
+                        className="settings-input"
+                        type={showKey ? 'text' : 'password'}
+                        placeholder={
+                          storageMode === 'secure'
+                            ? 'Stored securely on this device'
+                            : 'Stored for this session only'
+                        }
+                        value={apiKey}
+                        spellCheck={false}
+                        onChange={(event) => setApiKey(event.target.value)}
+                      />
+                      <span
+                        className={`tooltip tooltip-inline tooltip-hover-only${suppressKeyTooltip ? ' tooltip-suppressed' : ''}`}
+                        data-tooltip={showKey ? 'Hide API key' : 'Show API key'}
+                        onMouseLeave={() => setSuppressKeyTooltip(false)}
+                      >
+                        <button
+                          className="settings-button"
+                          type="button"
+                          onClick={handleToggleApiKey}
+                          aria-label={showKey ? 'Hide API key' : 'Show API key'}
+                          onBlur={() => setSuppressKeyTooltip(false)}
+                        >
+                          <span
+                            className={`codicon ${showKey ? 'codicon-eye-closed' : 'codicon-eye'}`}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </span>
+                    </div>
+                  </label>
+                </div>
+                <div
+                  className={`settings-note${
+                    storageMode === 'session' ? ' warning' : ''
+                  }`}
+                >
+                  {storageMode === 'secure'
+                    ? "API keys are saved using the device safe storage."
+                    : 'Secure storage is unavailable. API keys are kept only for this session.'}
+                </div>
+                {keyError ? (
+                  <div className="settings-error">{keyError}</div>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
           <main className="chat" onClick={handleChatClick}>
             {messages.map((message) => (
               <div
@@ -746,39 +897,6 @@ function App() {
         </div>
 
         <aside className="sidebar" id="sidebar" aria-hidden={!isSidebarOpen}>
-          <div className="sidebar-header">
-            <div className="sidebar-title">
-              {sidebarTab === 'chats' ? 'Chats' : 'Inspector'}
-              {sidebarTab === 'inspect' && activeMessage ? (
-                <span className="sidebar-meta">{activeMessage.role}</span>
-              ) : null}
-            </div>
-            <div className="sidebar-tabs" role="tablist" aria-label="Sidebar panels">
-              <button
-                className={`sidebar-tab${sidebarTab === 'chats' ? ' active' : ''}`}
-                type="button"
-                onClick={() => handleSidebarTabClick('chats')}
-                role="tab"
-                aria-selected={sidebarTab === 'chats'}
-                aria-controls="sidebar-panel"
-                aria-label="Chats panel"
-              >
-                <span className="codicon codicon-list-unordered" aria-hidden="true" />
-              </button>
-              <button
-                className={`sidebar-tab${sidebarTab === 'inspect' ? ' active' : ''}`}
-                type="button"
-                onClick={() => handleSidebarTabClick('inspect')}
-                role="tab"
-                aria-selected={sidebarTab === 'inspect'}
-                aria-controls="sidebar-panel"
-                aria-label="Inspector panel"
-              >
-                <span className="codicon codicon-inspect" aria-hidden="true" />
-              </button>
-            </div>
-          </div>
-
           <div
             className="sidebar-body"
             role="tabpanel"
@@ -815,6 +933,41 @@ function App() {
                   <span>Words</span>
                   <span>{inspectorStats.words}</span>
                 </div>
+                {inspectorMeta?.responseModel || inspectorMeta?.requestModel ? (
+                  <div className="sidebar-row">
+                    <span>Model</span>
+                    <span>
+                      {inspectorMeta.responseModel ??
+                        inspectorMeta.requestModel}
+                    </span>
+                  </div>
+                ) : null}
+                {formatMessageSource(inspectorMeta?.backend) ? (
+                  <div className="sidebar-row">
+                    <span>Source</span>
+                    <span>{formatMessageSource(inspectorMeta?.backend)}</span>
+                  </div>
+                ) : null}
+                {formatLatency(inspectorMeta?.latencyMs) ? (
+                  <div className="sidebar-row">
+                    <span>Latency</span>
+                    <span>{formatLatency(inspectorMeta?.latencyMs)}</span>
+                  </div>
+                ) : null}
+                {formatUsage(inspectorMeta?.usage) ? (
+                  <div className="sidebar-row">
+                    <span>Usage</span>
+                    <span>{formatUsage(inspectorMeta?.usage)}</span>
+                  </div>
+                ) : null}
+                {inspectorMeta?.localTimestamp ? (
+                  <div className="sidebar-row">
+                    <span>Time</span>
+                    <span>
+                      {inspectorMeta.localTimestamp}
+                    </span>
+                  </div>
+                ) : null}
                 <div className="sidebar-actions">
                   <button
                     className="sidebar-action"

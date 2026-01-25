@@ -7,6 +7,9 @@ export type Block = {
 
 export * from './chat'
 export * from './demo-chat'
+export * from './message-utils'
+export * from './storage'
+export * from './time'
 
 export type Branch = {
   id: string
