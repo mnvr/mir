@@ -65,6 +65,85 @@ const seedMessages: Message[] = [
 
 const demoChats = [demoChat]
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
+const formatChatGroupLabel = (date: Date, todayStart: Date) => {
+  const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  const diffDays = Math.round(
+    (todayStart.getTime() - dayStart.getTime()) / DAY_MS,
+  )
+
+  if (diffDays === 0) {
+    return 'Today'
+  }
+
+  if (diffDays === 1) {
+    return 'Yesterday'
+  }
+
+  if (diffDays < 7 && diffDays > 0) {
+    return dayStart.toLocaleDateString('en-US', { weekday: 'long' })
+  }
+
+  return dayStart.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+}
+
+const groupChatsByDay = (chats: DemoChat[]) => {
+  const now = new Date()
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const groups = new Map<
+    string,
+    { key: string; label: string; time: number; chats: DemoChat[] }
+  >()
+
+  chats.forEach((chat) => {
+    const parsed = new Date(chat.createdAt)
+    if (Number.isNaN(parsed.getTime())) {
+      const key = 'undated'
+      const existing = groups.get(key)
+      if (existing) {
+        existing.chats.push(chat)
+        return
+      }
+      groups.set(key, { key, label: 'Undated', time: 0, chats: [chat] })
+      return
+    }
+
+    const dayStart = new Date(
+      parsed.getFullYear(),
+      parsed.getMonth(),
+      parsed.getDate(),
+    )
+    const key = dayStart.toISOString()
+    const existing = groups.get(key)
+    if (existing) {
+      existing.chats.push(chat)
+      return
+    }
+    groups.set(key, {
+      key,
+      label: formatChatGroupLabel(dayStart, todayStart),
+      time: dayStart.getTime(),
+      chats: [chat],
+    })
+  })
+
+  return Array.from(groups.values())
+    .sort((a, b) => b.time - a.time)
+    .map((group) => ({
+      ...group,
+      chats: group.chats.slice().sort((a, b) => {
+        const aTime = new Date(a.createdAt).getTime()
+        const bTime = new Date(b.createdAt).getTime()
+        return bTime - aTime
+      }),
+    }))
+}
+
 const recordToMessage = (record: MessageRecord): Message => {
   const role = record.payload?.role === 'user' ? 'user' : 'assistant'
   return {
@@ -181,6 +260,7 @@ function App() {
   const activeMessage =
     messages.find((message) => message.id === activeMessageId) ?? null
   const activePayload = activeMessage?.payload
+  const groupedChats = groupChatsByDay(demoChats)
   const inspectorStats = activeMessage
     ? {
         role: activeMessage.role,
@@ -255,6 +335,26 @@ function App() {
 
     return () => {
       window.ipcRenderer.off('sidebar:toggle', handleToggleSidebar)
+    }
+  }, [updateSidebarOpen])
+
+  useEffect(() => {
+    if (!window.ipcRenderer?.on) {
+      return
+    }
+
+    const handleSidebarTab = (_event: unknown, tab: unknown) => {
+      if (tab !== 'chats' && tab !== 'inspect') {
+        return
+      }
+      setSidebarTab(tab)
+      updateSidebarOpen(true)
+    }
+
+    window.ipcRenderer.on('sidebar:tab', handleSidebarTab)
+
+    return () => {
+      window.ipcRenderer.off('sidebar:tab', handleSidebarTab)
     }
   }, [updateSidebarOpen])
 
@@ -640,263 +740,284 @@ function App() {
 
   return (
     <div className="app">
-      <header className={`header${isSidebarOpen ? ' sidebar-open' : ''}`}>
-        <div className="header-left">
-          <div className="header-meta">
-            <div className="header-subtitle">Sat Jan 24th, 2027</div>
-          </div>
-          <div className="header-actions">
-            <span
-              className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
-              data-tooltip="Settings"
-              onMouseLeave={() => setSuppressSettingsTooltip(false)}
-            >
-              <button
-                className="settings-toggle"
-                type="button"
-                onClick={handleToggleSettings}
-                aria-label="Toggle settings"
-                aria-expanded={isSettingsOpen}
-                aria-controls="settings-panel"
-                onBlur={() => setSuppressSettingsTooltip(false)}
-              >
-                <span className="codicon codicon-gear" aria-hidden="true" />
-              </button>
-            </span>
-            <span
-              className={`tooltip tooltip-bottom tooltip-hover-only${suppressSidebarTooltip ? ' tooltip-suppressed' : ''}`}
-              data-tooltip={isSidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
-              onMouseLeave={() => setSuppressSidebarTooltip(false)}
-            >
-              <button
-                className="sidebar-toggle"
-                type="button"
-                onClick={handleToggleSidebar}
-                aria-label="Toggle sidebar"
-                aria-pressed={isSidebarOpen}
-                aria-expanded={isSidebarOpen}
-                aria-controls="sidebar"
-                onBlur={() => setSuppressSidebarTooltip(false)}
-              >
-                <span
-                  className={`codicon ${
-                    isSidebarOpen
-                      ? 'codicon-layout-sidebar-right'
-                      : 'codicon-layout-sidebar-right-off'
-                  }`}
-                  aria-hidden="true"
-                />
-              </button>
-            </span>
-          </div>
-        </div>
-        <div className="header-right" aria-hidden={!isSidebarOpen}>
-          <div
-            className="sidebar-tabs"
-            role="tablist"
-            aria-label="Sidebar panels"
-          >
-            <button
-              className={`sidebar-tab${sidebarTab === 'chats' ? ' active' : ''}`}
-              type="button"
-              onClick={() => handleSidebarTabClick('chats')}
-              role="tab"
-              aria-selected={sidebarTab === 'chats'}
-              aria-controls="sidebar-panel"
-              aria-label="Chats panel"
-            >
-              <span className="codicon codicon-list-unordered" aria-hidden="true" />
-            </button>
-            <button
-              className={`sidebar-tab${sidebarTab === 'inspect' ? ' active' : ''}`}
-              type="button"
-              onClick={() => handleSidebarTabClick('inspect')}
-              role="tab"
-              aria-selected={sidebarTab === 'inspect'}
-              aria-controls="sidebar-panel"
-              aria-label="Inspector panel"
-            >
-              <span className="codicon codicon-info" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <div className={`main-layout${isSidebarOpen ? ' sidebar-open' : ''}`}>
-        <div className="main-column">
-          {isSettingsOpen ? (
-            <section className="settings" id="settings-panel">
-              <div className="settings-inner">
-                <div className="settings-heading">Connection</div>
-                <div className="settings-grid">
-                  <label className="settings-field">
-                    <span>Base URL</span>
-                    <input
-                      className="settings-input"
-                      type="url"
-                      placeholder="https://api.openai.com/v1"
-                      value={baseUrl}
-                      spellCheck={false}
-                      onChange={(event) => setBaseUrl(event.target.value)}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>Model</span>
-                    <input
-                      className="settings-input"
-                      type="text"
-                      placeholder="gpt-5.2"
-                      value={model}
-                      spellCheck={false}
-                      onChange={(event) => setModel(event.target.value)}
-                    />
-                  </label>
-                  <label className="settings-field">
-                    <span>API key</span>
-                    <div className="settings-input-wrap">
-                      <input
-                        className="settings-input"
-                        type={showKey ? 'text' : 'password'}
-                        placeholder={
-                          storageMode === 'secure'
-                            ? 'Stored securely on this device'
-                            : 'Stored for this session only'
-                        }
-                        value={apiKey}
-                        spellCheck={false}
-                        onChange={(event) => setApiKey(event.target.value)}
-                      />
-                      <span
-                        className={`tooltip tooltip-inline tooltip-hover-only${suppressKeyTooltip ? ' tooltip-suppressed' : ''}`}
-                        data-tooltip={showKey ? 'Hide API key' : 'Show API key'}
-                        onMouseLeave={() => setSuppressKeyTooltip(false)}
-                      >
-                        <button
-                          className="settings-button"
-                          type="button"
-                          onClick={handleToggleApiKey}
-                          aria-label={showKey ? 'Hide API key' : 'Show API key'}
-                          onBlur={() => setSuppressKeyTooltip(false)}
-                        >
-                          <span
-                            className={`codicon ${showKey ? 'codicon-eye-closed' : 'codicon-eye'}`}
-                            aria-hidden="true"
-                          />
-                        </button>
-                      </span>
-                    </div>
-                  </label>
-                </div>
-                <div
-                  className={`settings-note${
-                    storageMode === 'session' ? ' warning' : ''
-                  }`}
-                >
-                  {storageMode === 'secure'
-                    ? "API keys are saved using the device safe storage."
-                    : 'Secure storage is unavailable. API keys are kept only for this session.'}
-                </div>
-                {keyError ? (
-                  <div className="settings-error">{keyError}</div>
-                ) : null}
+      <div className={`layout${isSidebarOpen ? ' sidebar-open' : ''}`}>
+        <div className="main-stack">
+          <header className="header">
+            <div className="header-left">
+              <div className="header-meta">
+                <div className="header-subtitle">Sat Jan 24th, 2027</div>
               </div>
-            </section>
-          ) : null}
-          <main className="chat" onClick={handleChatClick}>
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`message ${message.role}${
-                  message.status ? ` ${message.status}` : ''
-                }${message.id === activeMessageId ? ' selected' : ''}`}
-                onClick={(event) => {
-                  event.stopPropagation()
-                  setActiveMessageId((prev) =>
-                    prev === message.id ? null : message.id,
-                  )
-                }}
-              >
-                {message.role === 'user' ? (
-                  <blockquote className="user-quote">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {message.content}
-                    </ReactMarkdown>
-                  </blockquote>
-                ) : (
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    className="assistant-markdown"
-                  >
-                    {message.content}
-                  </ReactMarkdown>
-                )}
-              </div>
-            ))}
-            <div ref={endRef} />
-          </main>
-
-          <footer className="composer">
-            <div className="composer-box">
-              <textarea
-                ref={textareaRef}
-                className="composer-input"
-                placeholder="Add a message to the context"
-                value={draft}
-                spellCheck={false}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter') {
-                    return
-                  }
-
-                  if (event.shiftKey) {
-                    return
-                  }
-
-                  if (event.metaKey || event.ctrlKey) {
-                    event.preventDefault()
-                    void sendMessage()
-                    return
-                  }
-
-                  if (hasNewline || isSending) {
-                    return
-                  }
-
-                  event.preventDefault()
-                  void sendMessage()
-                }}
-                rows={1}
-              />
-              <div className="composer-actions">
-                <span className="hint">
-                  {hasNewline
-                    ? `${modifierLabel} + Enter to generate`
-                    : 'Enter to generate · Shift + Enter for newline'}
-                </span>
+              <div className="header-actions">
                 <span
-                  className={`tooltip tooltip-hover-only${draft.trim() && !isSending ? ' tooltip-suppressed' : ''}`}
-                  data-tooltip={isSending ? 'Stop request' : 'Add to context'}
+                  className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
+                  data-tooltip="Settings"
+                  onMouseLeave={() => setSuppressSettingsTooltip(false)}
                 >
                   <button
-                    className="send-button"
+                    className="settings-toggle"
                     type="button"
-                    onClick={isSending ? stopRequest : () => void sendMessage()}
-                    disabled={!isSending && !draft.trim()}
-                    aria-label={isSending ? 'Stop request' : 'Add to context'}
+                    onClick={handleToggleSettings}
+                    aria-label="Toggle settings"
+                    aria-expanded={isSettingsOpen}
+                    aria-controls="settings-panel"
+                    onBlur={() => setSuppressSettingsTooltip(false)}
+                  >
+                    <span className="codicon codicon-gear" aria-hidden="true" />
+                  </button>
+                </span>
+                <span
+                  className={`tooltip tooltip-bottom tooltip-hover-only${suppressSidebarTooltip ? ' tooltip-suppressed' : ''}`}
+                  data-tooltip={isSidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+                  onMouseLeave={() => setSuppressSidebarTooltip(false)}
+                >
+                  <button
+                    className="sidebar-toggle"
+                    type="button"
+                    onClick={handleToggleSidebar}
+                    aria-label="Toggle sidebar"
+                    aria-pressed={isSidebarOpen}
+                    aria-expanded={isSidebarOpen}
+                    aria-controls="sidebar"
+                    onBlur={() => setSuppressSidebarTooltip(false)}
                   >
                     <span
-                      className={`codicon ${isSending ? 'codicon-debug-stop' : 'codicon-add'}`}
+                      className={`codicon ${
+                        isSidebarOpen
+                          ? 'codicon-layout-sidebar-right'
+                          : 'codicon-layout-sidebar-right-off'
+                      }`}
                       aria-hidden="true"
                     />
                   </button>
                 </span>
               </div>
             </div>
-          </footer>
+          </header>
+
+          <div className="main-column">
+            {isSettingsOpen ? (
+              <section className="settings" id="settings-panel">
+                <div className="settings-inner">
+                  <div className="settings-heading">Connection</div>
+                  <div className="settings-grid">
+                    <label className="settings-field">
+                      <span>Base URL</span>
+                      <input
+                        className="settings-input"
+                        type="url"
+                        placeholder="https://api.openai.com/v1"
+                        value={baseUrl}
+                        spellCheck={false}
+                        onChange={(event) => setBaseUrl(event.target.value)}
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>Model</span>
+                      <input
+                        className="settings-input"
+                        type="text"
+                        placeholder="gpt-5.2"
+                        value={model}
+                        spellCheck={false}
+                        onChange={(event) => setModel(event.target.value)}
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>API key</span>
+                      <div className="settings-input-wrap">
+                        <input
+                          className="settings-input"
+                          type={showKey ? 'text' : 'password'}
+                          placeholder={
+                            storageMode === 'secure'
+                              ? 'Stored securely on this device'
+                              : 'Stored for this session only'
+                          }
+                          value={apiKey}
+                          spellCheck={false}
+                          onChange={(event) => setApiKey(event.target.value)}
+                        />
+                        <span
+                          className={`tooltip tooltip-inline tooltip-hover-only${suppressKeyTooltip ? ' tooltip-suppressed' : ''}`}
+                          data-tooltip={
+                            showKey ? 'Hide API key' : 'Show API key'
+                          }
+                          onMouseLeave={() => setSuppressKeyTooltip(false)}
+                        >
+                          <button
+                            className="settings-button"
+                            type="button"
+                            onClick={handleToggleApiKey}
+                            aria-label={
+                              showKey ? 'Hide API key' : 'Show API key'
+                            }
+                            onBlur={() => setSuppressKeyTooltip(false)}
+                          >
+                            <span
+                              className={`codicon ${showKey ? 'codicon-eye-closed' : 'codicon-eye'}`}
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </span>
+                      </div>
+                    </label>
+                  </div>
+                  <div
+                    className={`settings-note${
+                      storageMode === 'session' ? ' warning' : ''
+                    }`}
+                  >
+                    {storageMode === 'secure'
+                      ? "API keys are saved using the device safe storage."
+                      : 'Secure storage is unavailable. API keys are kept only for this session.'}
+                  </div>
+                  {keyError ? (
+                    <div className="settings-error">{keyError}</div>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
+            <main className="chat" onClick={handleChatClick}>
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`message ${message.role}${
+                    message.status ? ` ${message.status}` : ''
+                  }${message.id === activeMessageId ? ' selected' : ''}`}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    setActiveMessageId((prev) =>
+                      prev === message.id ? null : message.id,
+                    )
+                  }}
+                >
+                  {message.role === 'user' ? (
+                    <blockquote className="user-quote">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {message.content}
+                      </ReactMarkdown>
+                    </blockquote>
+                  ) : (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      className="assistant-markdown"
+                    >
+                      {message.content}
+                    </ReactMarkdown>
+                  )}
+                </div>
+              ))}
+              <div ref={endRef} />
+            </main>
+
+            <footer className="composer">
+              <div className="composer-box">
+                <textarea
+                  ref={textareaRef}
+                  className="composer-input"
+                  placeholder="Add a message to the context"
+                  value={draft}
+                  spellCheck={false}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter') {
+                      return
+                    }
+
+                    if (event.shiftKey) {
+                      return
+                    }
+
+                    if (event.metaKey || event.ctrlKey) {
+                      event.preventDefault()
+                      void sendMessage()
+                      return
+                    }
+
+                    if (hasNewline || isSending) {
+                      return
+                    }
+
+                    event.preventDefault()
+                    void sendMessage()
+                  }}
+                  rows={1}
+                />
+                <div className="composer-actions">
+                  <span className="hint">
+                    {hasNewline
+                      ? `${modifierLabel} + Enter to generate`
+                      : 'Enter to generate · Shift + Enter for newline'}
+                  </span>
+                  <span
+                    className={`tooltip tooltip-hover-only${draft.trim() && !isSending ? ' tooltip-suppressed' : ''}`}
+                    data-tooltip={isSending ? 'Stop request' : 'Add to context'}
+                  >
+                    <button
+                      className="send-button"
+                      type="button"
+                      onClick={
+                        isSending ? stopRequest : () => void sendMessage()
+                      }
+                      disabled={!isSending && !draft.trim()}
+                      aria-label={isSending ? 'Stop request' : 'Add to context'}
+                    >
+                      <span
+                        className={`codicon ${isSending ? 'codicon-debug-stop' : 'codicon-add'}`}
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </span>
+                </div>
+              </div>
+            </footer>
+          </div>
         </div>
 
         <aside className="sidebar" id="sidebar" aria-hidden={!isSidebarOpen}>
+          <div className="sidebar-header">
+            <div
+              className="sidebar-tabs"
+              role="tablist"
+              aria-label="Sidebar panels"
+            >
+              <span
+                className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
+                data-tooltip="Interactions"
+              >
+                <button
+                  className={`sidebar-tab${sidebarTab === 'chats' ? ' active' : ''}`}
+                  type="button"
+                  onClick={() => handleSidebarTabClick('chats')}
+                  role="tab"
+                  aria-selected={sidebarTab === 'chats'}
+                  aria-controls="sidebar-panel"
+                  aria-label="Interactions panel"
+                >
+                  <span
+                    className="codicon codicon-list-unordered"
+                    aria-hidden="true"
+                  />
+                </button>
+              </span>
+              <span
+                className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
+                data-tooltip="Inspect"
+              >
+                <button
+                  className={`sidebar-tab${sidebarTab === 'inspect' ? ' active' : ''}`}
+                  type="button"
+                  onClick={() => handleSidebarTabClick('inspect')}
+                  role="tab"
+                  aria-selected={sidebarTab === 'inspect'}
+                  aria-controls="sidebar-panel"
+                  aria-label="Inspect panel"
+                >
+                  <span className="codicon codicon-inspect" aria-hidden="true" />
+                </button>
+              </span>
+            </div>
+          </div>
           <div
             className="sidebar-body"
             role="tabpanel"
@@ -905,22 +1026,29 @@ function App() {
           >
             {sidebarTab === 'chats' ? (
               <div className="chat-list" role="listbox" aria-label="Chats">
-                {demoChats.map((chat) => (
-                  <button
-                    key={chat.id}
-                    type="button"
-                    className={`chat-list-item${activeChatId === chat.id ? ' active' : ''}`}
-                    onClick={() => handleSelectChat(chat)}
-                    role="option"
-                    aria-selected={activeChatId === chat.id}
-                  >
-                    <div className="chat-list-title">{chat.title}</div>
-                    <div className="chat-list-meta">
-                      <span>{chat.createdAt}</span>
-                      <span>·</span>
-                      <span>{chat.model}</span>
+                {groupedChats.map((group) => (
+                  <div key={group.key} className="chat-group">
+                    <div className="chat-group-title">{group.label}</div>
+                    <div className="chat-group-list" role="group">
+                      {group.chats.map((chat) => (
+                        <button
+                          key={chat.id}
+                          type="button"
+                          className={`chat-list-item${activeChatId === chat.id ? ' active' : ''}`}
+                          onClick={() => handleSelectChat(chat)}
+                          role="option"
+                          aria-selected={activeChatId === chat.id}
+                        >
+                          <div className="chat-list-title">{chat.title}</div>
+                          <div className="chat-list-meta">
+                            <span>{chat.createdAt}</span>
+                            <span>·</span>
+                            <span>{chat.model}</span>
+                          </div>
+                        </button>
+                      ))}
                     </div>
-                  </button>
+                  </div>
                 ))}
               </div>
             ) : activeMessage && inspectorStats ? (

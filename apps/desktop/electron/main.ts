@@ -104,6 +104,20 @@ function setAppMenu() {
       win?.webContents.send('sidebar:toggle')
     },
   }
+  const interactionsItem: MenuItemConstructorOptions = {
+    label: 'Interactions',
+    accelerator: 'CmdOrCtrl+L',
+    click: () => {
+      win?.webContents.send('sidebar:tab', 'chats')
+    },
+  }
+  const inspectItem: MenuItemConstructorOptions = {
+    label: 'Inspect',
+    accelerator: 'CmdOrCtrl+I',
+    click: () => {
+      win?.webContents.send('sidebar:tab', 'inspect')
+    },
+  }
 
   const template: MenuItemConstructorOptions[] = [
     ...(isMac
@@ -155,6 +169,9 @@ function setAppMenu() {
   if (viewSubmenu) {
     viewSubmenu.insert(0, new MenuItem(sidebarItem))
     viewSubmenu.insert(1, new MenuItem({ type: 'separator' }))
+    viewSubmenu.insert(2, new MenuItem(interactionsItem))
+    viewSubmenu.insert(3, new MenuItem(inspectItem))
+    viewSubmenu.insert(4, new MenuItem({ type: 'separator' }))
   }
 
   const windowMenuItem = menu.items.find(
