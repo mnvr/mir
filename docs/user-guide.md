@@ -67,6 +67,13 @@ Delete the API key from the Connection section. If secure storage is available, 
 | --- | --- | --- |
 | Open Settings | Ctrl + , | Cmd + , |
 | Toggle Side Bar | Ctrl + B | Cmd + B |
+| Toggle Interactions | Ctrl + E | Cmd + E |
+| Toggle Inspect | Ctrl + I | Cmd + I |
+| Focus composer | Ctrl + L | Cmd + L |
+| Select previous block | Up | Up |
+| Select next block / focus composer | Down | Down |
+| Clear active block / blur composer | Esc | Esc |
 | Generate response | Enter | Enter |
 | New line | Shift + Enter | Shift + Enter |
 | Generate response (multi-line draft) | Ctrl + Enter | Cmd + Enter |
+| Copy active message (no text selection) | Ctrl + C | Cmd + C |

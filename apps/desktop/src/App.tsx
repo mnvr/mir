@@ -250,6 +250,8 @@ function App() {
   const endRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const messageRefs = useRef(new Map<string, HTMLDivElement>())
+  const suppressMessageActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
   const autoScrollRef = useRef(false)
   const maxRows = 9
@@ -294,6 +296,13 @@ function App() {
       })
     },
     [],
+  )
+  const toggleSidebarTab = useCallback(
+    (tab: 'chats' | 'inspect') => {
+      updateSidebarOpen((prev) => !(prev && sidebarTab === tab))
+      setSidebarTab(tab)
+    },
+    [sidebarTab, updateSidebarOpen],
   )
 
   useEffect(() => {
@@ -351,8 +360,7 @@ function App() {
       if (tab !== 'chats' && tab !== 'inspect') {
         return
       }
-      setSidebarTab(tab)
-      updateSidebarOpen(true)
+      toggleSidebarTab(tab)
     }
 
     window.ipcRenderer.on('sidebar:tab', handleSidebarTab)
@@ -360,7 +368,7 @@ function App() {
     return () => {
       window.ipcRenderer.off('sidebar:tab', handleSidebarTab)
     }
-  }, [updateSidebarOpen])
+  }, [toggleSidebarTab])
 
   useEffect(() => {
     let isMounted = true
@@ -393,28 +401,261 @@ function App() {
       return
     }
 
-    setSidebarTab('inspect')
-    updateSidebarOpen(true)
-  }, [activeMessageId, updateSidebarOpen])
+    const node = messageRefs.current.get(activeMessageId)
+    if (!node) {
+      return
+    }
+    node.scrollIntoView({ block: 'nearest' })
+  }, [activeMessageId])
+
+  const focusComposer = useCallback(() => {
+    setActiveMessageId(null)
+    const textarea = textareaRef.current
+    if (textarea) {
+      textarea.focus()
+      const end = textarea.value.length
+      textarea.setSelectionRange(end, end)
+    }
+  }, [])
+
+  const blurComposer = useCallback(() => {
+    const textarea = textareaRef.current
+    if (textarea && document.activeElement === textarea) {
+      textarea.blur()
+    }
+  }, [])
+
+  const scrollToMessage = useCallback((messageId: string) => {
+    setActiveMessageId(messageId)
+    window.requestAnimationFrame(() => {
+      messageRefs.current
+        .get(messageId)
+        ?.scrollIntoView({ block: 'nearest' })
+    })
+  }, [])
+
+  const selectPreviousMessage = useCallback(() => {
+    if (!messages.length) {
+      return
+    }
+
+    const currentIndex = activeMessageId
+      ? messages.findIndex((message) => message.id === activeMessageId)
+      : -1
+
+    if (currentIndex === -1) {
+      scrollToMessage(messages[messages.length - 1].id)
+      return
+    }
+
+    if (currentIndex > 0) {
+      scrollToMessage(messages[currentIndex - 1].id)
+    }
+  }, [activeMessageId, messages, scrollToMessage])
+
+  const selectNextMessage = useCallback(() => {
+    if (!messages.length) {
+      return
+    }
+
+    const currentIndex = activeMessageId
+      ? messages.findIndex((message) => message.id === activeMessageId)
+      : -1
+
+    if (currentIndex === -1 || currentIndex >= messages.length - 1) {
+      focusComposer()
+      return
+    }
+
+    scrollToMessage(messages[currentIndex + 1].id)
+  }, [activeMessageId, messages, focusComposer, scrollToMessage])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        !(event.metaKey || event.ctrlKey) ||
-        event.key.toLowerCase() !== 'b'
-      ) {
+      if (!(event.metaKey || event.ctrlKey)) {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setActiveMessageId(null)
+          blurComposer()
+        }
         return
       }
 
-      event.preventDefault()
-      updateSidebarOpen((prev) => !prev)
+      const key = event.key.toLowerCase()
+      if (key === 'b') {
+        event.preventDefault()
+        updateSidebarOpen((prev) => !prev)
+        return
+      }
+
+      if (key === 'l') {
+        event.preventDefault()
+        focusComposer()
+        return
+      }
+
+      if (key === 'i') {
+        event.preventDefault()
+        toggleSidebarTab('inspect')
+        return
+      }
+
+      if (key === 'e') {
+        event.preventDefault()
+        toggleSidebarTab('chats')
+      }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [updateSidebarOpen])
+  }, [blurComposer, focusComposer, toggleSidebarTab, updateSidebarOpen])
+
+  useEffect(() => {
+    const handleArrowNavigation = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) {
+        return
+      }
+
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+        return
+      }
+
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
+        return
+      }
+
+      const target = event.target as HTMLElement | null
+      const isTextarea = target === textareaRef.current
+      const isEditable =
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT')
+
+      if (isEditable && !isTextarea) {
+        return
+      }
+
+      if (isTextarea) {
+        if (event.key !== 'ArrowUp') {
+          return
+        }
+
+        const textarea = textareaRef.current
+        if (!textarea) {
+          return
+        }
+
+        const selectionStart = textarea.selectionStart ?? 0
+        const selectionEnd = textarea.selectionEnd ?? 0
+        if (selectionStart !== 0 || selectionEnd !== 0) {
+          return
+        }
+
+        event.preventDefault()
+        textarea.blur()
+        selectPreviousMessage()
+        return
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        selectPreviousMessage()
+        return
+      }
+      event.preventDefault()
+      selectNextMessage()
+    }
+
+    window.addEventListener('keydown', handleArrowNavigation)
+    return () => {
+      window.removeEventListener('keydown', handleArrowNavigation)
+    }
+  }, [selectNextMessage, selectPreviousMessage])
+
+  const handleCopyActiveMessage = async () => {
+    if (!activeMessage) {
+      return
+    }
+
+    try {
+      await navigator.clipboard?.writeText(activeMessage.content)
+    } catch {
+    }
+  }
+
+  useEffect(() => {
+    const handleCopyShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) {
+        return
+      }
+
+      if (!(event.metaKey || event.ctrlKey)) {
+        return
+      }
+
+      if (event.key.toLowerCase() !== 'c') {
+        return
+      }
+
+      const selection = window.getSelection()
+      if (selection && selection.toString().length > 0) {
+        return
+      }
+
+      const target = event.target as HTMLElement | null
+      if (
+        target &&
+        (target.isContentEditable ||
+          target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT')
+      ) {
+        return
+      }
+
+      if (!activeMessage) {
+        return
+      }
+
+      event.preventDefault()
+      void handleCopyActiveMessage()
+    }
+
+    window.addEventListener('keydown', handleCopyShortcut)
+    return () => {
+      window.removeEventListener('keydown', handleCopyShortcut)
+    }
+  }, [activeMessage, handleCopyActiveMessage])
+
+  useEffect(() => {
+    if (!window.ipcRenderer?.on) {
+      return
+    }
+
+    const handleFocusComposer = () => {
+      focusComposer()
+    }
+    const handleSelectPrevious = () => {
+      selectPreviousMessage()
+    }
+    const handleSelectNext = () => {
+      selectNextMessage()
+    }
+
+    window.ipcRenderer.on('composer:focus', handleFocusComposer)
+    window.ipcRenderer.on('selection:prev', handleSelectPrevious)
+    window.ipcRenderer.on('selection:next', handleSelectNext)
+
+    return () => {
+      window.ipcRenderer.off('composer:focus', handleFocusComposer)
+      window.ipcRenderer.off('selection:prev', handleSelectPrevious)
+      window.ipcRenderer.off('selection:next', handleSelectNext)
+    }
+  }, [focusComposer, selectNextMessage, selectPreviousMessage])
 
   useEffect(() => {
     let isMounted = true
@@ -745,21 +986,15 @@ function App() {
     }
   }
 
-  const handleCopyActiveMessage = async () => {
-    if (!activeMessage) {
-      return
-    }
-
-    try {
-      await navigator.clipboard?.writeText(activeMessage.content)
-    } catch {
-    }
-  }
-
   const handleChatClick = (event: MouseEvent<HTMLElement>) => {
     if (event.target === event.currentTarget) {
       setActiveMessageId(null)
     }
+  }
+
+  const hasTextSelection = () => {
+    const selection = window.getSelection()
+    return Boolean(selection && selection.toString().length > 0)
   }
 
   const handleSidebarTabClick = (tab: 'chats' | 'inspect') => {
@@ -920,16 +1155,36 @@ function App() {
               {messages.map((message) => (
               <div
                 key={message.id}
+                ref={(node) => {
+                  if (node) {
+                    messageRefs.current.set(message.id, node)
+                  } else {
+                    messageRefs.current.delete(message.id)
+                  }
+                }}
                 className={`message ${message.role}${
                   message.status ? ` ${message.status}` : ''
                 }${message.id === activeMessageId ? ' selected' : ''}`}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    setActiveMessageId((prev) =>
-                      prev === message.id ? null : message.id,
-                    )
-                  }}
-                >
+                onMouseDown={() => {
+                  if (hasTextSelection()) {
+                    suppressMessageActivationRef.current = true
+                  }
+                }}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  if (
+                    suppressMessageActivationRef.current ||
+                    hasTextSelection()
+                  ) {
+                    suppressMessageActivationRef.current = false
+                    return
+                  }
+                  suppressMessageActivationRef.current = false
+                  setActiveMessageId((prev) =>
+                    prev === message.id ? null : message.id,
+                  )
+                }}
+              >
                   {message.role === 'user' ? (
                     <blockquote className="user-quote">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>

@@ -96,7 +96,7 @@ function setAppMenu() {
   }
   const sidebarItem: MenuItemConstructorOptions = {
     id: 'sidebar-toggle',
-    label: 'Side Bar',
+    label: 'Toggle Side Bar',
     type: 'checkbox',
     checked: isSidebarOpen,
     accelerator: 'CmdOrCtrl+B',
@@ -105,17 +105,41 @@ function setAppMenu() {
     },
   }
   const interactionsItem: MenuItemConstructorOptions = {
-    label: 'Interactions',
-    accelerator: 'CmdOrCtrl+L',
+    label: 'Toggle Interactions',
+    accelerator: 'CmdOrCtrl+E',
     click: () => {
       win?.webContents.send('sidebar:tab', 'chats')
     },
   }
   const inspectItem: MenuItemConstructorOptions = {
-    label: 'Inspect',
+    label: 'Toggle Inspect',
     accelerator: 'CmdOrCtrl+I',
     click: () => {
       win?.webContents.send('sidebar:tab', 'inspect')
+    },
+  }
+  const selectionPrevItem: MenuItemConstructorOptions = {
+    label: 'Select Previous Block',
+    accelerator: 'Up',
+    registerAccelerator: false,
+    click: () => {
+      win?.webContents.send('selection:prev')
+    },
+  }
+  const selectionNextItem: MenuItemConstructorOptions = {
+    label: 'Select Next Block',
+    accelerator: 'Down',
+    registerAccelerator: false,
+    click: () => {
+      win?.webContents.send('selection:next')
+    },
+  }
+  const focusComposerItem: MenuItemConstructorOptions = {
+    label: 'Focus Composer',
+    accelerator: 'CmdOrCtrl+L',
+    registerAccelerator: false,
+    click: () => {
+      win?.webContents.send('composer:focus')
     },
   }
 
@@ -142,6 +166,15 @@ function setAppMenu() {
       : []),
     { role: 'fileMenu' },
     { role: 'editMenu' },
+    {
+      label: 'Selection',
+      submenu: [
+        selectionPrevItem,
+        selectionNextItem,
+        { type: 'separator' },
+        focusComposerItem,
+      ],
+    },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
     { role: 'help' },
