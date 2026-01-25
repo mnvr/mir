@@ -220,6 +220,7 @@ const decryptSecret = async (cipherText: string) => {
 }
 
 function App() {
+  const appRef = useRef<HTMLDivElement | null>(null)
   const [messages, setMessages] = useState<Message[]>(seedMessages)
   const [draft, setDraft] = useState('')
   const initialBaseUrl = getInitialBaseUrl()
@@ -247,6 +248,7 @@ function App() {
   )
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const endRef = useRef<HTMLDivElement | null>(null)
+  const composerRef = useRef<HTMLElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
   const autoScrollRef = useRef(false)
@@ -260,7 +262,7 @@ function App() {
   const activeMessage =
     messages.find((message) => message.id === activeMessageId) ?? null
   const activePayload = activeMessage?.payload
-  const groupedChats = groupChatsByDay(demoChats)
+  const groupedChats = groupChatsByDay([])
   const inspectorStats = activeMessage
     ? {
         role: activeMessage.role,
@@ -280,6 +282,8 @@ function App() {
         backend: activePayload.request?.backend,
       }
     : null
+
+
 
   const updateSidebarOpen = useCallback(
     (next: boolean | ((prev: boolean) => boolean)) => {
@@ -523,6 +527,37 @@ function App() {
     textarea.style.height = `${nextHeight}px`
   }, [draft, maxRows])
 
+  useLayoutEffect(() => {
+    const appEl = appRef.current
+    const composerEl = composerRef.current
+    if (!appEl || !composerEl) {
+      return
+    }
+
+    const updateComposerHeight = () => {
+      appEl.style.setProperty(
+        '--composer-height',
+        `${composerEl.offsetHeight}px`,
+      )
+    }
+
+    updateComposerHeight()
+
+    if (typeof ResizeObserver === 'undefined') {
+      return
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateComposerHeight()
+    })
+
+    observer.observe(composerEl)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [])
+
   const handleToggleApiKey = () => {
     setShowKey((prev) => !prev)
     setSuppressKeyTooltip(true)
@@ -739,62 +774,66 @@ function App() {
   }
 
   return (
-    <div className="app">
+    <div className="app" ref={appRef}>
       <div className={`layout${isSidebarOpen ? ' sidebar-open' : ''}`}>
         <div className="main-stack">
-          <header className="header">
-            <div className="header-left">
-              <div className="header-meta">
-                <div className="header-subtitle">Sat Jan 24th, 2027</div>
-              </div>
-              <div className="header-actions">
-                <span
-                  className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
-                  data-tooltip="Settings"
-                  onMouseLeave={() => setSuppressSettingsTooltip(false)}
-                >
-                  <button
-                    className="settings-toggle"
-                    type="button"
-                    onClick={handleToggleSettings}
-                    aria-label="Toggle settings"
-                    aria-expanded={isSettingsOpen}
-                    aria-controls="settings-panel"
-                    onBlur={() => setSuppressSettingsTooltip(false)}
-                  >
-                    <span className="codicon codicon-gear" aria-hidden="true" />
-                  </button>
-                </span>
-                <span
-                  className={`tooltip tooltip-bottom tooltip-hover-only${suppressSidebarTooltip ? ' tooltip-suppressed' : ''}`}
-                  data-tooltip={isSidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
-                  onMouseLeave={() => setSuppressSidebarTooltip(false)}
-                >
-                  <button
-                    className="sidebar-toggle"
-                    type="button"
-                    onClick={handleToggleSidebar}
-                    aria-label="Toggle sidebar"
-                    aria-pressed={isSidebarOpen}
-                    aria-expanded={isSidebarOpen}
-                    aria-controls="sidebar"
-                    onBlur={() => setSuppressSidebarTooltip(false)}
-                  >
-                    <span
-                      className={`codicon ${
-                        isSidebarOpen
-                          ? 'codicon-layout-sidebar-right'
-                          : 'codicon-layout-sidebar-right-off'
-                      }`}
-                      aria-hidden="true"
-                    />
-                  </button>
-                </span>
-              </div>
-            </div>
-          </header>
-
           <div className="main-column">
+            <header className="header">
+              <div className="header-left">
+                <div className="header-meta">
+                  <div className="header-subtitle">Sat Jan 24th, 2027</div>
+                </div>
+                <div className="header-actions">
+                  <span
+                    className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
+                    data-tooltip="Settings"
+                    onMouseLeave={() => setSuppressSettingsTooltip(false)}
+                  >
+                    <button
+                      className="settings-toggle"
+                      type="button"
+                      onClick={handleToggleSettings}
+                      aria-label="Toggle settings"
+                      aria-expanded={isSettingsOpen}
+                      aria-controls="settings-panel"
+                      onBlur={() => setSuppressSettingsTooltip(false)}
+                    >
+                      <span
+                        className="codicon codicon-gear"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </span>
+                  <span
+                    className={`tooltip tooltip-bottom tooltip-hover-only${suppressSidebarTooltip ? ' tooltip-suppressed' : ''}`}
+                    data-tooltip={
+                      isSidebarOpen ? 'Hide sidebar' : 'Show sidebar'
+                    }
+                    onMouseLeave={() => setSuppressSidebarTooltip(false)}
+                  >
+                    <button
+                      className="sidebar-toggle"
+                      type="button"
+                      onClick={handleToggleSidebar}
+                      aria-label="Toggle sidebar"
+                      aria-pressed={isSidebarOpen}
+                      aria-expanded={isSidebarOpen}
+                      aria-controls="sidebar"
+                      onBlur={() => setSuppressSidebarTooltip(false)}
+                    >
+                      <span
+                        className={`codicon ${
+                          isSidebarOpen
+                            ? 'codicon-layout-sidebar-right'
+                            : 'codicon-layout-sidebar-right-off'
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </span>
+                </div>
+              </div>
+            </header>
             {isSettingsOpen ? (
               <section className="settings" id="settings-panel">
                 <div className="settings-inner">
@@ -879,11 +918,11 @@ function App() {
             ) : null}
             <main className="chat" onClick={handleChatClick}>
               {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`message ${message.role}${
-                    message.status ? ` ${message.status}` : ''
-                  }${message.id === activeMessageId ? ' selected' : ''}`}
+              <div
+                key={message.id}
+                className={`message ${message.role}${
+                  message.status ? ` ${message.status}` : ''
+                }${message.id === activeMessageId ? ' selected' : ''}`}
                   onClick={(event) => {
                     event.stopPropagation()
                     setActiveMessageId((prev) =>
@@ -910,7 +949,7 @@ function App() {
               <div ref={endRef} />
             </main>
 
-            <footer className="composer">
+            <footer className="composer" ref={composerRef}>
               <div className="composer-box">
                 <textarea
                   ref={textareaRef}
@@ -1050,6 +1089,30 @@ function App() {
                     </div>
                   </div>
                 ))}
+                {demoChats.length ? (
+                  <div className="chat-group chat-group-demo">
+                    <div className="chat-group-title">Demo</div>
+                    <div className="chat-group-list" role="group">
+                      {demoChats.map((chat) => (
+                        <button
+                          key={chat.id}
+                          type="button"
+                          className={`chat-list-item${activeChatId === chat.id ? ' active' : ''}`}
+                          onClick={() => handleSelectChat(chat)}
+                          role="option"
+                          aria-selected={activeChatId === chat.id}
+                        >
+                          <div className="chat-list-title">{chat.title}</div>
+                          <div className="chat-list-meta">
+                            <span>{chat.createdAt}</span>
+                            <span>·</span>
+                            <span>{chat.model}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : activeMessage && inspectorStats ? (
               <div className="sidebar-section">
