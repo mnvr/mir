@@ -105,7 +105,7 @@ function setAppMenu() {
     },
   }
   const interactionsItem: MenuItemConstructorOptions = {
-    label: 'Toggle Interactions',
+    label: 'Toggle Collections',
     accelerator: 'CmdOrCtrl+E',
     click: () => {
       win?.webContents.send('sidebar:tab', 'chats')

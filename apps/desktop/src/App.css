@@ -9,6 +9,7 @@
   --sidebar-width: 280px;
   --header-height: 56px;
   --composer-height: 96px;
+  --settings-surface: #fafafa;
 }
 
 .layout {
@@ -49,6 +50,11 @@
     );
   backdrop-filter: blur(12px) saturate(120%);
   box-shadow: none;
+}
+
+.app.settings-open .header {
+  background: var(--settings-surface);
+  backdrop-filter: none;
 }
 
 .header-left {
@@ -96,6 +102,16 @@
   font-size: 16px;
 }
 
+.settings-toggle .codicon {
+  display: inline-block;
+  transform-origin: 50% 50%;
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.app.settings-open .settings-toggle .codicon {
+  transform: rotate(120deg);
+}
+
 .header-actions {
   display: inline-flex;
   align-items: center;
@@ -103,14 +119,15 @@
 }
 
 .settings {
-  border-bottom: 1px solid #eeeeee;
-  background: #fafafa;
-  max-height: 40vh;
-  overflow-y: auto;
+  position: sticky;
+  top: var(--header-height);
+  z-index: 8;
+  border-bottom: 1px solid #e6e6e6;
+  background: var(--settings-surface);
 }
 
 .settings-inner {
-  padding: 18px 24px;
+  padding: 2px 24px 20px;
   max-width: 820px;
   margin: 0 auto;
   display: flex;
@@ -756,6 +773,7 @@
   .app {
     background: #1a1a1e;
     color: #e6e6e6;
+    --settings-surface: #202026;
   }
 
   .main-column {
@@ -786,8 +804,8 @@
   }
 
   .settings {
-    border-bottom-color: #34343a;
-    background: #202026;
+    border-bottom-color: #2f2f36;
+    background: var(--settings-surface);
   }
 
   .settings-heading {

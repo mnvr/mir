@@ -67,7 +67,7 @@ Delete the API key from the Connection section. If secure storage is available, 
 | --- | --- | --- |
 | Open Settings | Ctrl + , | Cmd + , |
 | Toggle Side Bar | Ctrl + B | Cmd + B |
-| Toggle Interactions | Ctrl + E | Cmd + E |
+| Toggle Collections | Ctrl + E | Cmd + E |
 | Toggle Inspect | Ctrl + I | Cmd + I |
 | Focus composer | Ctrl + L | Cmd + L |
 | Select previous block | Up | Up |

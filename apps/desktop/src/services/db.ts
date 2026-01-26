@@ -2,15 +2,15 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type {
   Edge,
   EdgeRel,
-  InteractionPayload,
-  InteractionRecord,
+  CollectionPayload,
+  CollectionRecord,
   MessagePayload,
   MessageRecord,
-  MetaEntry,
+  KvEntry,
   MirRecord,
   RecordKind,
-  SearchDoc,
 } from 'mir-core'
+import { formatLocalTimestamp } from 'mir-core'
 
 const DB_NAME = 'mir'
 const DB_VERSION = 1
@@ -26,14 +26,9 @@ type MirDbSchema = DBSchema & {
     value: Edge
     indexes: { fromId: string; toId: string; rel: EdgeRel; fromRel: [string, EdgeRel] }
   }
-  search_docs: {
+  kv: {
     key: string
-    value: SearchDoc
-    indexes: { recordId: string; scopeId: string; updatedAt: number }
-  }
-  meta: {
-    key: string
-    value: MetaEntry
+    value: KvEntry
   }
 }
 
@@ -54,12 +49,7 @@ const getDb = () => {
         edgeStore.createIndex('rel', 'rel')
         edgeStore.createIndex('fromRel', ['fromId', 'rel'])
 
-        const searchStore = db.createObjectStore('search_docs', { keyPath: 'id' })
-        searchStore.createIndex('recordId', 'recordId')
-        searchStore.createIndex('scopeId', 'scopeId')
-        searchStore.createIndex('updatedAt', 'updatedAt')
-
-        db.createObjectStore('meta', { keyPath: 'key' })
+        db.createObjectStore('kv', { keyPath: 'key' })
       },
     })
   }
@@ -105,36 +95,43 @@ const buildEdge = (
   }
 }
 
-export const getOrCreateActiveInteraction = async () => {
+export const getOrCreateActiveCollection = async () => {
   const db = await getDb()
-  const tx = db.transaction(['meta', 'records'], 'readwrite')
-  const metaStore = tx.objectStore('meta')
+  const tx = db.transaction(['kv', 'records'], 'readwrite')
+  const kvStore = tx.objectStore('kv')
   const recordStore = tx.objectStore('records')
-  const metaEntry = await metaStore.get('activeInteractionId')
-  const existingId = metaEntry?.value
+  const kvEntry = await kvStore.get('activeCollectionId')
+  const existingId = kvEntry?.value
   if (typeof existingId === 'string') {
     const existing = await recordStore.get(existingId)
-    if (existing && existing.kind === 'interaction') {
+    if (existing && existing.kind === 'collection') {
       await tx.done
-      return existing as InteractionRecord
+      return existing as CollectionRecord
     }
   }
 
-  const interaction = buildRecord<InteractionRecord['kind'], InteractionPayload>(
-    'interaction',
-  )
-  await recordStore.put(interaction)
-  await metaStore.put({ key: 'activeInteractionId', value: interaction.id })
+  const collectionPayload: CollectionPayload = {
+    localTimestamp: formatLocalTimestamp(new Date()),
+  }
+  const collection = buildRecord<
+    CollectionRecord['kind'],
+    CollectionPayload
+  >('collection', collectionPayload)
+  await recordStore.put(collection)
+  await kvStore.put({
+    key: 'activeCollectionId',
+    value: collection.id,
+  })
   await tx.done
-  return interaction
+  return collection
 }
 
-export const listInteractionMessages = async (
-  interactionId: string,
+export const listCollectionMessages = async (
+  collectionId: string,
 ): Promise<MessageRecord[]> => {
   const db = await getDb()
   const edges = await db.getAllFromIndex('edges', 'fromRel', [
-    interactionId,
+    collectionId,
     'contains',
   ])
   edges.sort((a, b) => {
@@ -159,7 +156,7 @@ export const listInteractionMessages = async (
 }
 
 export const appendMessage = async (
-  interactionId: string,
+  collectionId: string,
   payload: MessagePayload,
 ) => {
   const db = await getDb()
@@ -167,7 +164,12 @@ export const appendMessage = async (
     'message',
     payload,
   )
-  const edge = buildEdge(interactionId, record.id, 'contains', record.createdAt)
+  const edge = buildEdge(
+    collectionId,
+    record.id,
+    'contains',
+    record.createdAt,
+  )
 
   const tx = db.transaction(['records', 'edges'], 'readwrite')
   await tx.objectStore('records').put(record)
@@ -175,4 +177,20 @@ export const appendMessage = async (
   await tx.done
 
   return record as MessageRecord
+}
+
+export const getKvValue = async <T>(key: string): Promise<T | undefined> => {
+  const db = await getDb()
+  const entry = await db.get('kv', key)
+  return entry?.value as T | undefined
+}
+
+export const setKvValue = async (key: string, value: unknown) => {
+  const db = await getDb()
+  await db.put('kv', { key, value })
+}
+
+export const deleteKvValue = async (key: string) => {
+  const db = await getDb()
+  await db.delete('kv', key)
 }

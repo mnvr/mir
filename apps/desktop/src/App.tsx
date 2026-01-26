@@ -27,9 +27,12 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   appendMessage,
-  getOrCreateActiveInteraction,
-  listInteractionMessages,
-} from './storage/mir-db'
+  deleteKvValue,
+  getOrCreateActiveCollection,
+  getKvValue,
+  listCollectionMessages,
+  setKvValue,
+} from './services/db'
 import './App.css'
 
 type Message = {
@@ -44,10 +47,13 @@ type Message = {
 type StorageMode = 'secure' | 'session'
 
 const STORAGE_KEYS = {
-  baseUrl: 'mir.chat.baseUrl',
-  model: 'mir.chat.model',
-  apiKeyEncrypted: 'mir.chat.apiKey.encrypted',
   apiKeySession: 'mir.chat.apiKey.session',
+}
+
+const KV_KEYS = {
+  baseUrl: 'settings.baseUrl',
+  model: 'settings.model',
+  apiKeyEncrypted: 'settings.apiKey.encrypted',
 }
 
 const REQUEST_TIMEOUT_MS = 60_000
@@ -173,14 +179,6 @@ const toDemoMessages = (chat: DemoChat): Message[] =>
       content: message.content,
     }))
 
-const getInitialBaseUrl = () => {
-  if (typeof window === 'undefined') {
-    return ''
-  }
-
-  return localStorage.getItem(STORAGE_KEYS.baseUrl) ?? ''
-}
-
 const hasSecureBridge = () =>
   typeof window !== 'undefined' &&
   typeof window.ipcRenderer?.invoke === 'function'
@@ -223,15 +221,10 @@ function App() {
   const appRef = useRef<HTMLDivElement | null>(null)
   const [messages, setMessages] = useState<Message[]>(seedMessages)
   const [draft, setDraft] = useState('')
-  const initialBaseUrl = getInitialBaseUrl()
-  const [baseUrl, setBaseUrl] = useState(initialBaseUrl)
-  const [model, setModel] = useState(
-    () => localStorage.getItem(STORAGE_KEYS.model) ?? '',
-  )
+  const [baseUrl, setBaseUrl] = useState('')
+  const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [isSettingsOpen, setIsSettingsOpen] = useState(
-    () => !initialBaseUrl.trim(),
-  )
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [storageMode, setStorageMode] = useState<StorageMode>('session')
   const [keyError, setKeyError] = useState<string | null>(null)
   const [showKey, setShowKey] = useState(false)
@@ -240,7 +233,8 @@ function App() {
   const [suppressSidebarTooltip, setSuppressSidebarTooltip] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [settingsReady, setSettingsReady] = useState(false)
-  const [interactionId, setInteractionId] = useState<string | null>(null)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
+  const [collectionId, setCollectionId] = useState<string | null>(null)
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect'>(
@@ -306,12 +300,52 @@ function App() {
   )
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.baseUrl, baseUrl)
-  }, [baseUrl])
+    let isMounted = true
+
+    const loadSettings = async () => {
+      try {
+        const [storedBaseUrl, storedModel] = await Promise.all([
+          getKvValue<string>(KV_KEYS.baseUrl),
+          getKvValue<string>(KV_KEYS.model),
+        ])
+        if (!isMounted) {
+          return
+        }
+        const nextBaseUrl =
+          typeof storedBaseUrl === 'string' ? storedBaseUrl : ''
+        const nextModel = typeof storedModel === 'string' ? storedModel : ''
+        setBaseUrl(nextBaseUrl)
+        setModel(nextModel)
+        setIsSettingsOpen(!nextBaseUrl.trim())
+        setSettingsLoaded(true)
+      } catch {
+        if (isMounted) {
+          setIsSettingsOpen(true)
+          setSettingsLoaded(true)
+        }
+      }
+    }
+
+    void loadSettings()
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.model, model)
-  }, [model])
+    if (!settingsLoaded) {
+      return
+    }
+    void setKvValue(KV_KEYS.baseUrl, baseUrl)
+  }, [baseUrl, settingsLoaded])
+
+  useEffect(() => {
+    if (!settingsLoaded) {
+      return
+    }
+    void setKvValue(KV_KEYS.model, model)
+  }, [model, settingsLoaded])
 
   useEffect(() => {
     if (isSettingsOpen) {
@@ -375,12 +409,12 @@ function App() {
 
     const loadMessages = async () => {
       try {
-        const interaction = await getOrCreateActiveInteraction()
-        const storedMessages = await listInteractionMessages(interaction.id)
+        const collection = await getOrCreateActiveCollection()
+        const storedMessages = await listCollectionMessages(collection.id)
         if (!isMounted) {
           return
         }
-        setInteractionId(interaction.id)
+        setCollectionId(collection.id)
         if (storedMessages.length > 0) {
           setMessages(storedMessages.map(recordToMessage))
           setActiveChatId(null)
@@ -670,12 +704,12 @@ function App() {
 
       let nextKey = ''
       if (secureAvailable) {
-        const encrypted = localStorage.getItem(STORAGE_KEYS.apiKeyEncrypted)
+        const encrypted = await getKvValue<string>(KV_KEYS.apiKeyEncrypted)
         if (encrypted) {
           try {
             nextKey = await decryptSecret(encrypted)
           } catch {
-            localStorage.removeItem(STORAGE_KEYS.apiKeyEncrypted)
+            await deleteKvValue(KV_KEYS.apiKeyEncrypted)
             setKeyError('Saved key could not be decrypted. Please re-enter it.')
           }
         }
@@ -710,14 +744,14 @@ function App() {
           sessionStorage.removeItem(STORAGE_KEYS.apiKeySession)
 
           if (!apiKey) {
-            localStorage.removeItem(STORAGE_KEYS.apiKeyEncrypted)
+            await deleteKvValue(KV_KEYS.apiKeyEncrypted)
             setKeyError(null)
             return
           }
 
           try {
             const encrypted = await encryptSecret(apiKey)
-            localStorage.setItem(STORAGE_KEYS.apiKeyEncrypted, encrypted)
+            await setKvValue(KV_KEYS.apiKeyEncrypted, encrypted)
             setKeyError(null)
           } catch {
             setKeyError('Unable to save key securely on this device.')
@@ -856,9 +890,9 @@ function App() {
       queueScrollToBottom()
     }
 
-    if (!activeChatId && interactionId) {
+    if (!activeChatId && collectionId) {
       void appendMessage(
-        interactionId,
+        collectionId,
         userPayload,
       )
         .then((record) => {
@@ -928,9 +962,9 @@ function App() {
             : message,
         ),
       )
-      if (!activeChatId && interactionId) {
+      if (!activeChatId && collectionId) {
         void appendMessage(
-          interactionId,
+          collectionId,
           assistantPayload,
         )
           .then((record) => {
@@ -1009,14 +1043,16 @@ function App() {
   }
 
   return (
-    <div className="app" ref={appRef}>
+    <div className={`app${isSettingsOpen ? ' settings-open' : ''}`} ref={appRef}>
       <div className={`layout${isSidebarOpen ? ' sidebar-open' : ''}`}>
         <div className="main-stack">
           <div className="main-column">
             <header className="header">
               <div className="header-left">
                 <div className="header-meta">
-                  <div className="header-subtitle">Sat Jan 24th, 2027</div>
+                  <div className="header-subtitle">
+                    {isSettingsOpen ? 'Settings' : 'Sat Jan 24th, 2027'}
+                  </div>
                 </div>
                 <div className="header-actions">
                   <span
@@ -1277,7 +1313,7 @@ function App() {
             >
               <span
                 className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
-                data-tooltip="Interactions"
+                data-tooltip="Collections"
               >
                 <button
                   className={`sidebar-tab${sidebarTab === 'chats' ? ' active' : ''}`}
@@ -1286,7 +1322,7 @@ function App() {
                   role="tab"
                   aria-selected={sidebarTab === 'chats'}
                   aria-controls="sidebar-panel"
-                  aria-label="Interactions panel"
+                  aria-label="Collections panel"
                 >
                   <span
                     className="codicon codicon-list-unordered"

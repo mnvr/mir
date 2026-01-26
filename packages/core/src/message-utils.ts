@@ -50,7 +50,11 @@ export const toMessageUsage = (
   ) {
     return undefined
   }
-  return { prompt, completion, total }
+  return {
+    promptTokens: prompt,
+    completionTokens: completion,
+    totalTokens: total,
+  }
 }
 
 export const buildMessageResponse = (
@@ -58,13 +62,11 @@ export const buildMessageResponse = (
   latencyMs?: number,
 ): MessageResponse | undefined => {
   const usage = toMessageUsage(response)
-  const choice = response.choices?.[0]
   const model = typeof response.model === 'string' ? response.model : undefined
   const id = typeof response.id === 'string' ? response.id : undefined
   const hasData =
     Boolean(usage) ||
     typeof latencyMs === 'number' ||
-    typeof choice?.index === 'number' ||
     Boolean(model) ||
     Boolean(id)
   if (!hasData) {
@@ -75,7 +77,6 @@ export const buildMessageResponse = (
     model,
     usage,
     latencyMs,
-    choiceIndex: typeof choice?.index === 'number' ? choice.index : undefined,
   }
 }
 
@@ -115,5 +116,5 @@ export const formatUsage = (usage?: MessageUsage) => {
   if (!usage) {
     return null
   }
-  return `${usage.total} tokens`
+  return `${usage.totalTokens} tokens`
 }
