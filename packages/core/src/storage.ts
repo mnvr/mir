@@ -1,34 +1,35 @@
-export type RecordKind = 'collection' | 'message'
+export type RecordType = 'collection' | 'message'
 
-export type EdgeRel = 'contains'
+export type RelationType = 'contains' | 'parent'
 
 export type MirRecord = {
   id: string
-  kind: RecordKind
+  type: RecordType
   createdAt: number
   updatedAt: number
-  payload?: unknown
+  payload: unknown
   deletedAt?: number
 }
 
 export type CollectionPayload = {
-  localTimestamp?: string
+  title?: string
+  localTimestamp: string
 }
 
 export type CollectionRecord = MirRecord & {
-  kind: 'collection'
-  payload?: CollectionPayload
+  type: 'collection'
+  payload: CollectionPayload
 }
 
 export type MessageBackend =
   | {
-      kind: 'remote'
-      baseUrl?: string
-    }
+    kind: 'remote'
+    baseUrl?: string
+  }
   | {
-      kind: 'local'
-      engine?: string
-    }
+    kind: 'local'
+    engine?: string
+  }
 
 export type MessageRequest = {
   model?: string
@@ -51,23 +52,22 @@ export type MessageResponse = {
 export type MessagePayload = {
   role?: string
   content: string
-  localTimestamp?: string
+  localTimestamp: string
   request?: MessageRequest
   response?: MessageResponse
 }
 
 export type MessageRecord = MirRecord & {
-  kind: 'message'
+  type: 'message'
   payload: MessagePayload
 }
 
-export type Edge = {
+export type Relation = {
   id: string
   fromId: string
   toId: string
-  rel: EdgeRel
-  order?: number
+  type: RelationType
   createdAt: number
 }
 
-export type KvEntry = unknown
+export type KvEntry = unknown /* JSON value */

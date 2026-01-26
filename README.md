@@ -5,6 +5,7 @@ This is Mir, a new way to interface with LLMs.
 ## Docs 📚
 
 - `docs/user-guide.md`: User-facing documentation.
+- `docs/architecture.md`: High level architecture overview for developers.
 
 ## Repository layout 🧭
 
@@ -16,17 +17,17 @@ This is Mir, a new way to interface with LLMs.
 
 ### All platforms 🌍
 
-- Node.js 20+ (includes Corepack).
-- pnpm 10+ (`corepack enable` and `corepack prepare pnpm@10.26.2 --activate`, or install pnpm globally).
+- Node.js
+- pnpm (`corepack enable` or install pnpm globally).
 
-### macOS desktop 🍎
+### Desktop 🖥️
 
-- No extra system dependencies for `pnpm dev:desktop`.
+- No other dependencies.
 
-### iOS (macOS) 📱
+### iOS 📱
 
 - Xcode (for iOS Simulator and native builds).
-- CocoaPods (required for `expo run:ios` / dev client builds; install with `brew install cocoapods` or `sudo gem install cocoapods`).
+- CocoaPods (`brew install cocoapods` or `sudo gem install cocoapods`).
 
 ### Android 🤖
 
@@ -122,4 +123,4 @@ New scripts can be added as needed. This particular script saves artifacts in `a
 pnpm lint
 ```
 
-Runs TypeScript and ESLint across the workspace.
+Runs TypeScript typechecking and ESLint across the workspace.

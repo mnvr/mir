@@ -2,17 +2,20 @@ import {
   buildChatCompletionEndpoint,
   createChatCompletion,
   createTimeoutController,
-  demoChat,
-  type DemoChat,
-  type ChatCompletionMessage,
-  type MessagePayload,
-  type MessageRecord,
+  demoCollection,
+  demoCollectionMessages,
+  formatLocalTimestamp,
+  groupCollectionsByDay,
   buildMessageRequest,
   buildMessageResponse,
   toMessagePayload,
   formatMessageSource,
   formatLatency,
   formatUsage,
+  toChatMessages,
+  type CollectionRecord,
+  type MessagePayload,
+  type MessageRecord,
 } from 'mir-core'
 import {
   useEffect,
@@ -26,21 +29,23 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   appendMessage,
+  createCollection,
   deleteKvValue,
-  getOrCreateActiveCollection,
+  getActiveCollection,
   getKvValue,
   listCollectionMessages,
   setKvValue,
 } from './services/db'
 import './App.css'
 
+type MessageDirection = 'input' | 'output'
+
 type Message = {
   id: string
-  role: 'user' | 'assistant'
+  direction: MessageDirection
   content: string
   payload?: MessagePayload
   status?: 'pending' | 'error' | 'canceled'
-  omitFromContext?: boolean
 }
 
 type StorageMode = 'secure' | 'session'
@@ -58,126 +63,29 @@ const KV_KEYS = {
 const REQUEST_TIMEOUT_MS = 60_000
 const SCROLL_THRESHOLD_PX = 120
 
-const seedMessages: Message[] = [
-  {
-    id: 'm1',
-    role: 'assistant',
-    content:
-      'This is a minimal chat scaffold. Add your base URL and API key to send completions.',
-    omitFromContext: true,
-  },
-]
+const demoCollections = [demoCollection]
 
-const demoChats = [demoChat]
+const messageDirectionForRole = (role?: string): MessageDirection =>
+  role === 'user' ? 'input' : 'output'
 
-const DAY_MS = 24 * 60 * 60 * 1000
+const recordToMessage = (record: MessageRecord): Message => ({
+  id: record.id,
+  direction: messageDirectionForRole(record.payload.role),
+  content: record.payload.content,
+  payload: record.payload,
+})
 
-const formatChatGroupLabel = (date: Date, todayStart: Date) => {
-  const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-  const diffDays = Math.round(
-    (todayStart.getTime() - dayStart.getTime()) / DAY_MS,
-  )
+const getCollectionTitle = (collection: CollectionRecord) =>
+  collection.payload.title!
 
-  if (diffDays === 0) {
-    return 'Today'
-  }
+const getCollectionTimestamp = (collection: CollectionRecord) =>
+  collection.payload.localTimestamp
 
-  if (diffDays === 1) {
-    return 'Yesterday'
-  }
-
-  if (diffDays < 7 && diffDays > 0) {
-    return dayStart.toLocaleDateString('en-US', { weekday: 'long' })
-  }
-
-  return dayStart.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
+const deriveCollectionTitle = (content: string) => {
+  const lines = content.split('\n').map((line) => line.trim())
+  const firstLine = lines.find((line) => line.length > 0) ?? content.trim()
+  return firstLine.slice(0, 120)
 }
-
-const groupChatsByDay = (chats: DemoChat[]) => {
-  const now = new Date()
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const groups = new Map<
-    string,
-    { key: string; label: string; time: number; chats: DemoChat[] }
-  >()
-
-  chats.forEach((chat) => {
-    const parsed = new Date(chat.createdAt)
-    if (Number.isNaN(parsed.getTime())) {
-      const key = 'undated'
-      const existing = groups.get(key)
-      if (existing) {
-        existing.chats.push(chat)
-        return
-      }
-      groups.set(key, { key, label: 'Undated', time: 0, chats: [chat] })
-      return
-    }
-
-    const dayStart = new Date(
-      parsed.getFullYear(),
-      parsed.getMonth(),
-      parsed.getDate(),
-    )
-    const key = dayStart.toISOString()
-    const existing = groups.get(key)
-    if (existing) {
-      existing.chats.push(chat)
-      return
-    }
-    groups.set(key, {
-      key,
-      label: formatChatGroupLabel(dayStart, todayStart),
-      time: dayStart.getTime(),
-      chats: [chat],
-    })
-  })
-
-  return Array.from(groups.values())
-    .sort((a, b) => b.time - a.time)
-    .map((group) => ({
-      ...group,
-      chats: group.chats.slice().sort((a, b) => {
-        const aTime = new Date(a.createdAt).getTime()
-        const bTime = new Date(b.createdAt).getTime()
-        return bTime - aTime
-      }),
-    }))
-}
-
-const recordToMessage = (record: MessageRecord): Message => {
-  const role = record.payload?.role === 'user' ? 'user' : 'assistant'
-  return {
-    id: record.id,
-    role,
-    content: record.payload?.content ?? '',
-    payload: record.payload,
-  }
-}
-
-
-const toChatMessages = (items: Message[]): ChatCompletionMessage[] =>
-  items
-    .filter((message) => !message.omitFromContext && !message.status)
-    .map(({ role, content }) => ({ role, content }))
-
-const toDemoMessages = (chat: DemoChat): Message[] =>
-  chat.messages
-    .filter(
-      (message): message is ChatCompletionMessage & {
-        role: 'user' | 'assistant'
-      } => message.role === 'user' || message.role === 'assistant',
-    )
-    .map((message, index) => ({
-      id: `${chat.id}-${message.role}-${index}`,
-      role: message.role,
-      content: message.content,
-    }))
-
 const hasSecureBridge = () =>
   typeof window !== 'undefined' &&
   typeof window.ipcRenderer?.invoke === 'function'
@@ -218,7 +126,7 @@ const decryptSecret = async (cipherText: string) => {
 
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null)
-  const [messages, setMessages] = useState<Message[]>(seedMessages)
+  const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
@@ -261,10 +169,9 @@ function App() {
   const activeWordMatches = activeMessage
     ? activeMessage.content.match(/\S+/g)
     : null
-  const groupedChats = groupChatsByDay([])
+  const groupedCollections = groupCollectionsByDay([])
   const inspectorStats = activeMessage
     ? {
-        role: activeMessage.role,
         characters: activeMessage.content.length,
         words: activeWordMatches ? activeWordMatches.length : 0,
       }
@@ -419,16 +326,22 @@ function App() {
 
     const loadMessages = async () => {
       try {
-        const collection = await getOrCreateActiveCollection()
+        const collection = await getActiveCollection()
+        if (!isMounted) {
+          return
+        }
+        if (!collection) {
+          setCollectionId(null)
+          setMessages([])
+          return
+        }
         const storedMessages = await listCollectionMessages(collection.id)
         if (!isMounted) {
           return
         }
         setCollectionId(collection.id)
-        if (storedMessages.length > 0) {
-          setMessages(storedMessages.map(recordToMessage))
-          setActiveChatId(null)
-        }
+        setMessages(storedMessages.map(recordToMessage))
+        setActiveChatId(null)
       } catch {
         // Ignore local persistence failures on cold start.
       }
@@ -876,15 +789,15 @@ function App() {
       request,
     })
     const userMessage: Message = {
-      id: `m-${timestamp}-user`,
-      role: 'user',
+      id: `m-${timestamp}-input`,
+      direction: 'input',
       content: trimmedDraft,
       payload: userPayload,
     }
 
     const assistantMessage: Message = {
-      id: `m-${timestamp}-assistant`,
-      role: 'assistant',
+      id: `m-${timestamp}-output`,
+      direction: 'output',
       content: 'Thinking...',
       status: 'pending',
     }
@@ -898,9 +811,24 @@ function App() {
       queueScrollToBottom()
     }
 
-    if (!activeChatId && collectionId) {
+    let targetCollectionId = collectionId
+    if (!activeChatId && !targetCollectionId) {
+      try {
+        const title = deriveCollectionTitle(trimmedDraft)
+        const collection = await createCollection({
+          title,
+          localTimestamp: formatLocalTimestamp(new Date()),
+        })
+        targetCollectionId = collection.id
+        setCollectionId(collection.id)
+      } catch {
+        targetCollectionId = null
+      }
+    }
+
+    if (!activeChatId && targetCollectionId) {
       void appendMessage(
-        collectionId,
+        targetCollectionId,
         userPayload,
       )
         .then((record) => {
@@ -934,7 +862,15 @@ function App() {
       return
     }
 
-    const contextMessages = toChatMessages([...messages, userMessage])
+    const contextPayloads = [...messages, userMessage]
+      .filter(
+        (
+          message,
+        ): message is Message & { payload: MessagePayload } =>
+          !message.status && Boolean(message.payload),
+      )
+      .map((message) => message.payload)
+    const contextMessages = toChatMessages(contextPayloads)
     const token = apiKey
     const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
     abortControllerRef.current = timeoutController
@@ -971,9 +907,9 @@ function App() {
             : message,
         ),
       )
-      if (!activeChatId && collectionId) {
+      if (!activeChatId && targetCollectionId) {
         void appendMessage(
-          collectionId,
+          targetCollectionId,
           assistantPayload,
         )
           .then((record) => {
@@ -1045,9 +981,13 @@ function App() {
     updateSidebarOpen(true)
   }
 
-  const handleSelectChat = (chat: DemoChat) => {
-    setActiveChatId(chat.id)
-    setMessages(toDemoMessages(chat))
+  const handleSelectCollection = (collection: CollectionRecord) => {
+    setActiveChatId(collection.id)
+    setMessages(
+      collection.id === demoCollection.id
+        ? demoCollectionMessages.map(recordToMessage)
+        : [],
+    )
     setActiveMessageId(null)
   }
 
@@ -1203,54 +1143,63 @@ function App() {
               </section>
             ) : null}
             <main className="chat" onClick={handleChatClick}>
-              {messages.map((message) => (
-              <div
-                key={message.id}
-                ref={(node) => {
-                  if (node) {
-                    messageRefs.current.set(message.id, node)
-                  } else {
-                    messageRefs.current.delete(message.id)
-                  }
-                }}
-                className={`message ${message.role}${
-                  message.status ? ` ${message.status}` : ''
-                }${message.id === activeMessageId ? ' selected' : ''}`}
-                onMouseDown={() => {
-                  if (hasTextSelection()) {
-                    suppressMessageActivationRef.current = true
-                  }
-                }}
-                onClick={(event) => {
-                  event.stopPropagation()
-                  if (
-                    suppressMessageActivationRef.current ||
-                    hasTextSelection()
-                  ) {
-                    suppressMessageActivationRef.current = false
-                    return
-                  }
-                  suppressMessageActivationRef.current = false
-                  setActiveMessageId((prev) =>
-                    prev === message.id ? null : message.id,
-                  )
-                }}
-              >
-                  {message.role === 'user' ? (
-                    <blockquote className="user-quote">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {message.content}
-                      </ReactMarkdown>
-                    </blockquote>
-                  ) : (
-                    <div className="assistant-markdown">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {message.content}
-                      </ReactMarkdown>
-                    </div>
-                  )}
+              {messages.length === 0 ? (
+                <div className="chat-empty">
+                  <div className="chat-empty-title">No context yet.</div>
+                  <div className="chat-empty-body">
+                    Add a message to start building context.
+                  </div>
                 </div>
-              ))}
+              ) : (
+                messages.map((message) => (
+                  <div
+                    key={message.id}
+                    ref={(node) => {
+                      if (node) {
+                        messageRefs.current.set(message.id, node)
+                      } else {
+                        messageRefs.current.delete(message.id)
+                      }
+                    }}
+                    className={`message ${message.direction}${
+                      message.status ? ` ${message.status}` : ''
+                    }${message.id === activeMessageId ? ' selected' : ''}`}
+                    onMouseDown={() => {
+                      if (hasTextSelection()) {
+                        suppressMessageActivationRef.current = true
+                      }
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      if (
+                        suppressMessageActivationRef.current ||
+                        hasTextSelection()
+                      ) {
+                        suppressMessageActivationRef.current = false
+                        return
+                      }
+                      suppressMessageActivationRef.current = false
+                      setActiveMessageId((prev) =>
+                        prev === message.id ? null : message.id,
+                      )
+                    }}
+                  >
+                    {message.direction === 'input' ? (
+                      <blockquote className="input-quote">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {message.content}
+                        </ReactMarkdown>
+                      </blockquote>
+                    ) : (
+                      <div className="output-markdown">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {message.content}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
               <div ref={endRef} />
             </main>
 
@@ -1370,48 +1319,48 @@ function App() {
           >
             {sidebarTab === 'chats' ? (
               <div className="chat-list" role="listbox" aria-label="Chats">
-                {groupedChats.map((group) => (
+                {groupedCollections.map((group) => (
                   <div key={group.key} className="chat-group">
                     <div className="chat-group-title">{group.label}</div>
                     <div className="chat-group-list" role="group">
-                      {group.chats.map((chat) => (
+                      {group.collections.map((collection) => (
                         <button
-                          key={chat.id}
+                          key={collection.id}
                           type="button"
-                          className={`chat-list-item${activeChatId === chat.id ? ' active' : ''}`}
-                          onClick={() => handleSelectChat(chat)}
+                          className={`chat-list-item${activeChatId === collection.id ? ' active' : ''}`}
+                          onClick={() => handleSelectCollection(collection)}
                           role="option"
-                          aria-selected={activeChatId === chat.id}
+                          aria-selected={activeChatId === collection.id}
                         >
-                          <div className="chat-list-title">{chat.title}</div>
+                          <div className="chat-list-title">
+                            {getCollectionTitle(collection)}
+                          </div>
                           <div className="chat-list-meta">
-                            <span>{chat.createdAt}</span>
-                            <span>·</span>
-                            <span>{chat.model}</span>
+                            <span>{getCollectionTimestamp(collection)}</span>
                           </div>
                         </button>
                       ))}
                     </div>
                   </div>
                 ))}
-                {demoChats.length ? (
+                {demoCollections.length ? (
                   <div className="chat-group chat-group-demo">
                     <div className="chat-group-title">Demo</div>
                     <div className="chat-group-list" role="group">
-                      {demoChats.map((chat) => (
+                      {demoCollections.map((collection) => (
                         <button
-                          key={chat.id}
+                          key={collection.id}
                           type="button"
-                          className={`chat-list-item${activeChatId === chat.id ? ' active' : ''}`}
-                          onClick={() => handleSelectChat(chat)}
+                          className={`chat-list-item${activeChatId === collection.id ? ' active' : ''}`}
+                          onClick={() => handleSelectCollection(collection)}
                           role="option"
-                          aria-selected={activeChatId === chat.id}
+                          aria-selected={activeChatId === collection.id}
                         >
-                          <div className="chat-list-title">{chat.title}</div>
+                          <div className="chat-list-title">
+                            {getCollectionTitle(collection)}
+                          </div>
                           <div className="chat-list-meta">
-                            <span>{chat.createdAt}</span>
-                            <span>·</span>
-                            <span>{chat.model}</span>
+                            <span>{getCollectionTimestamp(collection)}</span>
                           </div>
                         </button>
                       ))}

@@ -229,6 +229,23 @@
   overflow: visible;
 }
 
+.chat-empty {
+  padding: 32px 12px;
+  text-align: center;
+  color: #7a7a7a;
+}
+
+.chat-empty-title {
+  font-size: 1rem;
+  color: #4a4a4a;
+  margin-bottom: 6px;
+}
+
+.chat-empty-body {
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
 .message {
   font-size: 1rem;
   line-height: 1.7;
@@ -237,7 +254,7 @@
   z-index: 0;
 }
 
-.message.user {
+.message.input {
   color: #5c5c5c;
 }
 
@@ -257,21 +274,21 @@
   pointer-events: none;
 }
 
-.message.assistant.pending .assistant-markdown {
+.message.output.pending .output-markdown {
   color: #6f6f6f;
   font-style: italic;
 }
 
-.message.assistant.canceled .assistant-markdown {
+.message.output.canceled .output-markdown {
   color: #7a7a7a;
   font-style: italic;
 }
 
-.message.assistant.error .assistant-markdown {
+.message.output.error .output-markdown {
   color: #a03a3a;
 }
 
-.user-quote {
+.input-quote {
   margin: 0;
   padding: 2px 0 2px 12px;
   border-left: 2px solid #e5e5e5;
@@ -280,19 +297,19 @@
   font-size: 0.98rem;
 }
 
-.user-quote p {
+.input-quote p {
   margin: 0 0 0.8em;
 }
 
-.user-quote p:last-child {
+.input-quote p:last-child {
   margin-bottom: 0;
 }
 
-.assistant-markdown p {
+.output-markdown p {
   margin: 0 0 0.8em;
 }
 
-.assistant-markdown p:last-child {
+.output-markdown p:last-child {
   margin-bottom: 0;
 }
 
@@ -849,11 +866,19 @@
     color: #e6e6e6;
   }
 
+  .chat-empty {
+    color: #9a9aa0;
+  }
+
+  .chat-empty-title {
+    color: #d0d0d6;
+  }
+
   .message {
     color: #e6e6e6;
   }
 
-  .message.user {
+  .message.input {
     color: #b2b2b7;
   }
 
@@ -861,21 +886,21 @@
     background: rgba(255, 255, 255, 0.32);
   }
 
-  .user-quote {
+  .input-quote {
     border-left-color: #3a3a42;
     background: transparent;
     color: #c9c9cf;
   }
 
-  .message.assistant.pending .assistant-markdown {
+  .message.output.pending .output-markdown {
     color: #9a9aa0;
   }
 
-  .message.assistant.canceled .assistant-markdown {
+  .message.output.canceled .output-markdown {
     color: #9a9aa0;
   }
 
-  .message.assistant.error .assistant-markdown {
+  .message.output.error .output-markdown {
     color: #f2a1a1;
   }
 

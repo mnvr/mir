@@ -6,6 +6,4 @@ export const ID_LENGTH = 21
 
 const generateId = customAlphabet(ID_ALPHABET, ID_LENGTH)
 
-export const createId = (prefix: string) => {
-  return `${prefix}_${generateId()}`
-}
+export const createId = (prefix: string) => `${prefix}_${generateId()}`

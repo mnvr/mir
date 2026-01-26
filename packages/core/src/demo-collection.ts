@@ -1,12 +1,8 @@
-import type { ChatCompletionMessage } from './chat'
+import type { CollectionRecord, MessageRecord } from './storage'
+import { formatLocalTimestamp } from './time'
 
-export type DemoChat = {
-  id: string
-  title: string
-  createdAt: string
-  model: string
-  messages: ChatCompletionMessage[]
-}
+const demoDate = new Date('2026-01-24T17:53:31+05:30')
+const demoCreatedAt = demoDate.getTime()
 
 const assistantParagraphs = [
   'A unicorn walked into the Brookside Mall on a rainy Tuesday, hooves clicking softly on the polished tile like someone tapping a spoon against a saucer. Outside, the parking lot was a gray puddle-world, but inside everything shone -- glass storefronts, bright signs, the steady hum of people moving with purpose.',
@@ -53,19 +49,48 @@ const assistantParagraphs = [
   'Outside, the air smelled clean. The unicorn stepped into the damp day, warm with cinnamon and bean-water magic, and trotted away -- already thinking, very seriously, about coming back for something called a "pumpkin spice."',
 ]
 
-export const demoChat: DemoChat = {
-  id: 'demo-unicorn-mall',
-  title: 'Tell me a story about a unicorn visiting a mall for a coffee',
-  createdAt: 'Sat Jan 24 17:53:31 2026 +0530',
-  model: 'gpt-5.2',
-  messages: [
-    {
-      role: 'user',
-      content: 'Tell me a story about a unicorn visiting a mall for a coffee',
-    },
-    {
-      role: 'assistant',
-      content: assistantParagraphs.join('\n\n'),
-    },
-  ],
+export const demoCollection: CollectionRecord = {
+  id: 'collection_demo_unicorn_mall',
+  type: 'collection',
+  createdAt: demoCreatedAt,
+  updatedAt: demoCreatedAt,
+  payload: {
+    title: 'Tell me a story about a unicorn visiting a mall for a coffee',
+    localTimestamp: formatLocalTimestamp(demoDate),
+  },
 }
+
+const buildDemoMessage = (
+  id: string,
+  role: 'user' | 'assistant',
+  content: string,
+  offsetMs: number,
+): MessageRecord => {
+  const timestamp = demoCreatedAt + offsetMs
+  return {
+    id,
+    type: 'message',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    payload: {
+      role,
+      content,
+      localTimestamp: formatLocalTimestamp(new Date(timestamp)),
+    },
+  }
+}
+
+export const demoCollectionMessages: MessageRecord[] = [
+  buildDemoMessage(
+    'message_demo_user',
+    'user',
+    'Tell me a story about a unicorn visiting a mall for a coffee',
+    0,
+  ),
+  buildDemoMessage(
+    'message_demo_assistant',
+    'assistant',
+    assistantParagraphs.join('\n\n'),
+    2000,
+  ),
+]
