@@ -2,6 +2,8 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
+    // TODO: Remove once React Native JSX types align with React 19 defaults.
+    "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
       "mir-core": ["../../packages/core/src"]

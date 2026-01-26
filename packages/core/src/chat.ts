@@ -114,12 +114,11 @@ export const createTimeoutController = (timeoutMs: number): TimeoutController =>
 }
 
 export const buildChatCompletionEndpoint = (baseUrl: string) => {
-  const trimmed = baseUrl.trim()
-  if (!trimmed) {
+  if (!baseUrl) {
     return null
   }
 
-  const normalized = trimmed.replace(/\/+$/, '')
+  const normalized = baseUrl.replace(/\/+$/, '')
   return `${normalized}/chat/completions`
 }
 

@@ -7,7 +7,6 @@ import {
   type ChatCompletionMessage,
   type MessagePayload,
   type MessageRecord,
-  type MessageUsage,
   buildMessageRequest,
   buildMessageResponse,
   toMessagePayload,
@@ -250,6 +249,7 @@ function App() {
   const autoScrollRef = useRef(false)
   const maxRows = 9
   const hasNewline = draft.includes('\n')
+  const trimmedDraft = draft.trim()
   const modifierLabel =
     typeof navigator !== 'undefined' &&
     navigator.platform.toUpperCase().includes('MAC')
@@ -258,14 +258,15 @@ function App() {
   const activeMessage =
     messages.find((message) => message.id === activeMessageId) ?? null
   const activePayload = activeMessage?.payload
+  const activeWordMatches = activeMessage
+    ? activeMessage.content.match(/\S+/g)
+    : null
   const groupedChats = groupChatsByDay([])
   const inspectorStats = activeMessage
     ? {
         role: activeMessage.role,
         characters: activeMessage.content.length,
-        words: activeMessage.content.trim()
-          ? activeMessage.content.trim().split(/\s+/).length
-          : 0,
+        words: activeWordMatches ? activeWordMatches.length : 0,
       }
     : null
   const inspectorMeta = activePayload
@@ -313,10 +314,11 @@ function App() {
         }
         const nextBaseUrl =
           typeof storedBaseUrl === 'string' ? storedBaseUrl : ''
-        const nextModel = typeof storedModel === 'string' ? storedModel : ''
+        const nextModel =
+          typeof storedModel === 'string' ? storedModel : ''
         setBaseUrl(nextBaseUrl)
         setModel(nextModel)
-        setIsSettingsOpen(!nextBaseUrl.trim())
+        setIsSettingsOpen(!nextBaseUrl)
         setSettingsLoaded(true)
       } catch {
         if (isMounted) {
@@ -337,11 +339,19 @@ function App() {
     if (!settingsLoaded) {
       return
     }
+    if (baseUrl === '') {
+      void deleteKvValue(KV_KEYS.baseUrl)
+      return
+    }
     void setKvValue(KV_KEYS.baseUrl, baseUrl)
   }, [baseUrl, settingsLoaded])
 
   useEffect(() => {
     if (!settingsLoaded) {
+      return
+    }
+    if (model === '') {
+      void deleteKvValue(KV_KEYS.model)
       return
     }
     void setKvValue(KV_KEYS.model, model)
@@ -420,6 +430,7 @@ function App() {
           setActiveChatId(null)
         }
       } catch {
+        // Ignore local persistence failures on cold start.
       }
     }
 
@@ -610,16 +621,14 @@ function App() {
     }
   }, [selectNextMessage, selectPreviousMessage])
 
-  const handleCopyActiveMessage = async () => {
+  const handleCopyActiveMessage = useCallback(() => {
     if (!activeMessage) {
       return
     }
-
-    try {
-      await navigator.clipboard?.writeText(activeMessage.content)
-    } catch {
-    }
-  }
+    void navigator.clipboard
+      ?.writeText(activeMessage.content)
+      .catch(() => {})
+  }, [activeMessage])
 
   useEffect(() => {
     const handleCopyShortcut = (event: KeyboardEvent) => {
@@ -856,21 +865,20 @@ function App() {
     error instanceof Error && error.name === 'AbortError'
 
   const sendMessage = async () => {
-    const trimmed = draft.trim()
-    if (!trimmed || isSending) {
+    if (!trimmedDraft || isSending) {
       return
     }
 
     const endpoint = buildChatCompletionEndpoint(baseUrl)
     const request = buildMessageRequest(baseUrl, model)
     const timestamp = Date.now()
-    const userPayload = toMessagePayload('user', trimmed, {
+    const userPayload = toMessagePayload('user', trimmedDraft, {
       request,
     })
     const userMessage: Message = {
       id: `m-${timestamp}-user`,
       role: 'user',
-      content: trimmed,
+      content: trimmedDraft,
       payload: userPayload,
     }
 
@@ -927,7 +935,7 @@ function App() {
     }
 
     const contextMessages = toChatMessages([...messages, userMessage])
-    const token = apiKey.trim()
+    const token = apiKey
     const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
     abortControllerRef.current = timeoutController
     setIsSending(true)
@@ -938,8 +946,9 @@ function App() {
         baseUrl,
         apiKey: token || undefined,
         messages: contextMessages,
-        model: model.trim() ? model.trim() : undefined,
-        fetchFn: (input, init) => window.fetch(input, init),
+        model: model || undefined,
+        fetchFn: (input, init) =>
+          window.fetch(input, init as RequestInit | undefined),
         signal: timeoutController.signal,
       })
       const latencyMs = Date.now() - requestStart
@@ -1118,7 +1127,9 @@ function App() {
                         placeholder="https://api.openai.com/v1"
                         value={baseUrl}
                         spellCheck={false}
-                        onChange={(event) => setBaseUrl(event.target.value)}
+                        onChange={(event) =>
+                          setBaseUrl(event.target.value.trim())
+                        }
                       />
                     </label>
                     <label className="settings-field">
@@ -1129,7 +1140,9 @@ function App() {
                         placeholder="gpt-5.2"
                         value={model}
                         spellCheck={false}
-                        onChange={(event) => setModel(event.target.value)}
+                        onChange={(event) =>
+                          setModel(event.target.value.trim())
+                        }
                       />
                     </label>
                     <label className="settings-field">
@@ -1145,7 +1158,9 @@ function App() {
                           }
                           value={apiKey}
                           spellCheck={false}
-                          onChange={(event) => setApiKey(event.target.value)}
+                          onChange={(event) =>
+                            setApiKey(event.target.value.trim())
+                          }
                         />
                         <span
                           className={`tooltip tooltip-inline tooltip-hover-only${suppressKeyTooltip ? ' tooltip-suppressed' : ''}`}
@@ -1228,12 +1243,11 @@ function App() {
                       </ReactMarkdown>
                     </blockquote>
                   ) : (
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      className="assistant-markdown"
-                    >
-                      {message.content}
-                    </ReactMarkdown>
+                    <div className="assistant-markdown">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {message.content}
+                      </ReactMarkdown>
+                    </div>
                   )}
                 </div>
               ))}
@@ -1280,7 +1294,7 @@ function App() {
                       : 'Enter to generate · Shift + Enter for newline'}
                   </span>
                   <span
-                    className={`tooltip tooltip-hover-only${draft.trim() && !isSending ? ' tooltip-suppressed' : ''}`}
+                    className={`tooltip tooltip-hover-only${trimmedDraft && !isSending ? ' tooltip-suppressed' : ''}`}
                     data-tooltip={isSending ? 'Stop request' : 'Add to context'}
                   >
                     <button
@@ -1289,7 +1303,7 @@ function App() {
                       onClick={
                         isSending ? stopRequest : () => void sendMessage()
                       }
-                      disabled={!isSending && !draft.trim()}
+                      disabled={!isSending && !trimmedDraft}
                       aria-label={isSending ? 'Stop request' : 'Add to context'}
                     >
                       <span

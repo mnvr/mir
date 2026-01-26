@@ -49,7 +49,7 @@ const getDb = () => {
         edgeStore.createIndex('rel', 'rel')
         edgeStore.createIndex('fromRel', ['fromId', 'rel'])
 
-        db.createObjectStore('kv', { keyPath: 'key' })
+        db.createObjectStore('kv')
       },
     })
   }
@@ -93,8 +93,7 @@ export const getOrCreateActiveCollection = async () => {
   const tx = db.transaction(['kv', 'records'], 'readwrite')
   const kvStore = tx.objectStore('kv')
   const recordStore = tx.objectStore('records')
-  const kvEntry = await kvStore.get('activeCollectionId')
-  const existingId = kvEntry?.value
+  const existingId = await kvStore.get('activeCollectionId')
   if (typeof existingId === 'string') {
     const existing = await recordStore.get(existingId)
     if (existing && existing.kind === 'collection') {
@@ -111,10 +110,7 @@ export const getOrCreateActiveCollection = async () => {
     CollectionPayload
   >('collection', collectionPayload)
   await recordStore.put(collection)
-  await kvStore.put({
-    key: 'activeCollectionId',
-    value: collection.id,
-  })
+  await kvStore.put(collection.id, 'activeCollectionId')
   await tx.done
   return collection
 }
@@ -175,12 +171,12 @@ export const appendMessage = async (
 export const getKvValue = async <T>(key: string): Promise<T | undefined> => {
   const db = await getDb()
   const entry = await db.get('kv', key)
-  return entry?.value as T | undefined
+  return entry as T | undefined
 }
 
 export const setKvValue = async (key: string, value: unknown) => {
   const db = await getDb()
-  await db.put('kv', { key, value })
+  await db.put('kv', value, key)
 }
 
 export const deleteKvValue = async (key: string) => {

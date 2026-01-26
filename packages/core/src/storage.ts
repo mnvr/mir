@@ -70,7 +70,4 @@ export type Edge = {
   createdAt: number
 }
 
-export type KvEntry = {
-  key: string
-  value: unknown
-}
+export type KvEntry = unknown

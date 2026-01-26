@@ -11,11 +11,10 @@ import { formatLocalTimestamp } from './time'
 export const buildMessageBackend = (
   baseUrl: string,
 ): MessageBackend | undefined => {
-  const trimmed = baseUrl.trim()
-  if (!trimmed) {
+  if (!baseUrl) {
     return undefined
   }
-  return { kind: 'remote', baseUrl: trimmed }
+  return { kind: 'remote', baseUrl }
 }
 
 export const buildMessageRequest = (
@@ -23,12 +22,11 @@ export const buildMessageRequest = (
   model: string,
 ): MessageRequest | undefined => {
   const backend = buildMessageBackend(baseUrl)
-  const trimmedModel = model.trim()
-  if (!backend && !trimmedModel) {
+  if (!backend && !model) {
     return undefined
   }
   return {
-    model: trimmedModel || undefined,
+    model: model || undefined,
     backend,
   }
 }

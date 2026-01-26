@@ -1,6 +1,7 @@
 {
   "name": "mir-mobile",
-  "version": "1.0.0",
+  "private": true,
+  "version": "0.0.0",
   "main": "index.ts",
   "scripts": {
     "start": "expo start --port 5702",
@@ -8,19 +9,20 @@
     "ios:device": "expo run:ios --device --port 5702",
     "ios": "expo run:ios --port 5702",
     "web": "expo start --web --port 5702",
-    "android:device": "expo run:android --device --port 5702"
+    "android:device": "expo run:android --device --port 5702",
+    "lint": "tsc -p tsconfig.json --noEmit && eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
   },
   "dependencies": {
-    "expo": "~54.0.32",
-    "expo-status-bar": "~3.0.9",
+    "expo": "^54.0.32",
+    "expo-status-bar": "^3.0.9",
     "mir-core": "workspace:*",
-    "react": "19.1.0",
-    "react-native": "0.81.5",
-    "react-native-get-random-values": "^1.11.0"
+    "react": "^19.2.3",
+    "react-native": "^0.83.1",
+    "react-native-get-random-values": "^2.0.0"
   },
   "devDependencies": {
-    "@types/react": "~19.1.0",
-    "typescript": "~5.9.2"
-  },
-  "private": true
+    "@types/react": "^19.2.9",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1"
+  }
 }
