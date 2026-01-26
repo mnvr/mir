@@ -10,7 +10,7 @@ import type {
   MirRecord,
   RecordKind,
 } from 'mir-core'
-import { formatLocalTimestamp } from 'mir-core'
+import { createId, formatLocalTimestamp } from 'mir-core'
 
 const DB_NAME = 'mir'
 const DB_VERSION = 1
@@ -55,13 +55,6 @@ const getDb = () => {
   }
 
   return dbPromise
-}
-
-const createId = (prefix: string) => {
-  const randomId =
-    globalThis.crypto?.randomUUID?.() ??
-    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-  return `${prefix}-${randomId}`
 }
 
 const buildRecord = <TKind extends RecordKind, TPayload>(

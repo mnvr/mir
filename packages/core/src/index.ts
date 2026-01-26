@@ -7,6 +7,7 @@ export type Block = {
 
 export * from './chat'
 export * from './demo-chat'
+export * from './id'
 export * from './message-utils'
 export * from './storage'
 export * from './time'
