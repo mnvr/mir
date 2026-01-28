@@ -216,6 +216,10 @@ function App() {
     'chats',
   )
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+  const [lastRunStats, setLastRunStats] = useState<{
+    completionTokens?: number
+    latencyMs?: number
+  } | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -223,6 +227,7 @@ function App() {
   const suppressMessageActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
   const autoScrollRef = useRef(false)
+  const lastRunTimerRef = useRef<number | null>(null)
   const maxRows = 9
   const hasNewline = draft.includes('\n')
   const trimmedDraft = draft.trim()
@@ -299,10 +304,25 @@ function App() {
     inspectorMeta?.usage?.completionTokens,
   )
   const totalTokens = formatTokenCount(inspectorMeta?.usage?.totalTokens)
+  const contextTokens = (() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const usage = messages[index]?.payload?.response?.usage
+      if (usage?.totalTokens) {
+        return usage.totalTokens
+      }
+    }
+    return null
+  })()
+  const lastRunLatency = formatLatencySeconds(lastRunStats?.latencyMs)
   const collectionTimestamp =
     activeCollection?.payload.localTimestamp ?? pendingCollection?.localTimestamp
   const collectionDateLabel = formatLocalTimestampHeading(collectionTimestamp)
   const collectionMessageCountLabel = formatMessageCount(messages.length)
+  const minimapBlocks = messages.map((message) => ({
+    id: message.id,
+    isActive: message.id === activeMessageId,
+    direction: message.direction,
+  }))
 
   const upsertCollection = useCallback((collection: CollectionRecord) => {
     setCollections((prev) => {
@@ -824,6 +844,25 @@ function App() {
     }
   }, [apiKey, settingsReady, storageMode])
 
+  useEffect(() => {
+    if (!lastRunStats) {
+      return
+    }
+    if (lastRunTimerRef.current) {
+      window.clearTimeout(lastRunTimerRef.current)
+    }
+    lastRunTimerRef.current = window.setTimeout(() => {
+      setLastRunStats(null)
+      lastRunTimerRef.current = null
+    }, 4000)
+    return () => {
+      if (lastRunTimerRef.current) {
+        window.clearTimeout(lastRunTimerRef.current)
+        lastRunTimerRef.current = null
+      }
+    }
+  }, [lastRunStats])
+
   const isNearBottom = () => {
     const doc = document.documentElement
     const scrollTop = window.scrollY ?? doc.scrollTop
@@ -1083,6 +1122,10 @@ function App() {
       })
       const latencyMs = Date.now() - requestStart
       const response = buildMessageResponse(raw, latencyMs)
+      setLastRunStats({
+        completionTokens: response?.usage?.completionTokens,
+        latencyMs,
+      })
       const assistantPayload = toMessagePayload('assistant', nextContent, {
         request,
         response,
@@ -1215,87 +1258,84 @@ function App() {
     <div className={`app${isSettingsOpen ? ' settings-open' : ''}`} ref={appRef}>
       <div className={`layout${isSidebarOpen ? ' sidebar-open' : ''}`}>
         <div className="main-stack">
-          <div className="main-column">
-            <header className="header">
-              <div className="header-left">
-                <div className="header-meta">
-                  <div className="header-subtitle">
-                    {isSettingsOpen
-                      ? 'Settings'
-                      : collectionDateLabel ?? 'Undated'}
-                  </div>
-                </div>
-                <div className="header-actions">
-                  <span
-                    className={`tooltip tooltip-bottom tooltip-hover-only${suppressNewCollectionTooltip ? ' tooltip-suppressed' : ''}`}
-                    data-tooltip="New Collection"
-                    onMouseLeave={() => setSuppressNewCollectionTooltip(false)}
-                  >
-                    <button
-                      className="new-chat-toggle"
-                      type="button"
-                      onClick={() => {
-                        void startNewCollection()
-                      }}
-                      aria-label="New Collection"
-                      onBlur={() => setSuppressNewCollectionTooltip(false)}
-                    >
-                      <span
-                        className="codicon codicon-symbol-file"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </span>
-                  <span
-                    className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
-                    data-tooltip="Settings"
-                    onMouseLeave={() => setSuppressSettingsTooltip(false)}
-                  >
-                    <button
-                      className="settings-toggle"
-                      type="button"
-                      onClick={handleToggleSettings}
-                      aria-label="Toggle settings"
-                      aria-expanded={isSettingsOpen}
-                      aria-controls="settings-panel"
-                      onBlur={() => setSuppressSettingsTooltip(false)}
-                    >
-                      <span
-                        className="codicon codicon-gear"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </span>
-                  <span
-                    className={`tooltip tooltip-bottom tooltip-hover-only${suppressSidebarTooltip ? ' tooltip-suppressed' : ''}`}
-                    data-tooltip={
-                      isSidebarOpen ? 'Hide sidebar' : 'Show sidebar'
-                    }
-                    onMouseLeave={() => setSuppressSidebarTooltip(false)}
-                  >
-                    <button
-                      className="sidebar-toggle"
-                      type="button"
-                      onClick={handleToggleSidebar}
-                      aria-label="Toggle sidebar"
-                      aria-pressed={isSidebarOpen}
-                      aria-expanded={isSidebarOpen}
-                      aria-controls="sidebar"
-                      onBlur={() => setSuppressSidebarTooltip(false)}
-                    >
-                      <span
-                        className={`codicon ${
-                          isSidebarOpen
-                            ? 'codicon-layout-sidebar-right'
-                            : 'codicon-layout-sidebar-right-off'
-                        }`}
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </span>
+          <header className="header">
+            <div className="header-left">
+              <div className="header-meta">
+                <div className="header-subtitle">
+                  {isSettingsOpen
+                    ? 'Settings'
+                    : collectionDateLabel ?? 'Undated'}
                 </div>
               </div>
-            </header>
+              <div className="header-actions">
+                <span
+                  className={`tooltip tooltip-bottom tooltip-hover-only${suppressNewCollectionTooltip ? ' tooltip-suppressed' : ''}`}
+                  data-tooltip="New Collection"
+                  onMouseLeave={() => setSuppressNewCollectionTooltip(false)}
+                >
+                  <button
+                    className="new-chat-toggle"
+                    type="button"
+                    onClick={() => {
+                      void startNewCollection()
+                    }}
+                    aria-label="New Collection"
+                    onBlur={() => setSuppressNewCollectionTooltip(false)}
+                  >
+                    <span
+                      className="codicon codicon-symbol-file"
+                      aria-hidden="true"
+                    />
+                  </button>
+                </span>
+                <span
+                  className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
+                  data-tooltip="Settings"
+                  onMouseLeave={() => setSuppressSettingsTooltip(false)}
+                >
+                  <button
+                    className="settings-toggle"
+                    type="button"
+                    onClick={handleToggleSettings}
+                    aria-label="Toggle settings"
+                    aria-expanded={isSettingsOpen}
+                    aria-controls="settings-panel"
+                    onBlur={() => setSuppressSettingsTooltip(false)}
+                  >
+                    <span className="codicon codicon-gear" aria-hidden="true" />
+                  </button>
+                </span>
+                <span
+                  className={`tooltip tooltip-bottom tooltip-hover-only${suppressSidebarTooltip ? ' tooltip-suppressed' : ''}`}
+                  data-tooltip={
+                    isSidebarOpen ? 'Hide sidebar' : 'Show sidebar'
+                  }
+                  onMouseLeave={() => setSuppressSidebarTooltip(false)}
+                >
+                  <button
+                    className="sidebar-toggle"
+                    type="button"
+                    onClick={handleToggleSidebar}
+                    aria-label="Toggle sidebar"
+                    aria-pressed={isSidebarOpen}
+                    aria-expanded={isSidebarOpen}
+                    aria-controls="sidebar"
+                    onBlur={() => setSuppressSidebarTooltip(false)}
+                  >
+                    <span
+                      className={`codicon ${
+                        isSidebarOpen
+                          ? 'codicon-layout-sidebar-right'
+                          : 'codicon-layout-sidebar-right-off'
+                      }`}
+                      aria-hidden="true"
+                    />
+                  </button>
+                </span>
+              </div>
+            </div>
+          </header>
+          <div className="main-column">
             {isSettingsOpen ? (
               <section className="settings" id="settings-panel">
                 <div className="settings-inner">
@@ -1444,69 +1484,98 @@ function App() {
               )}
               <div ref={endRef} />
             </main>
+          </div>
+          <div className="context-rail" aria-label="Context controls">
+            <div className="context-rail-meta">
+              <span className="context-rail-title">Context</span>
+              <span className="context-rail-value">
+                {contextTokens ? `${contextTokens.toLocaleString()} tokens` : '—'}
+              </span>
+              {lastRunStats && (lastRunLatency || lastRunStats.completionTokens) ? (
+                <span className="context-rail-run">
+                  {typeof lastRunStats.completionTokens === 'number'
+                    ? `+${lastRunStats.completionTokens.toLocaleString()} tokens`
+                    : null}
+                  {typeof lastRunStats.completionTokens === 'number' &&
+                  lastRunLatency
+                    ? ' · '
+                    : null}
+                  {lastRunLatency ?? null}
+                </span>
+              ) : null}
+            </div>
+            <div className="context-rail-minimap" aria-label="Conversation map">
+              {minimapBlocks.map((block) => (
+                <button
+                  key={block.id}
+                  type="button"
+                  className={`context-rail-block${block.isActive ? ' active' : ''}${block.direction === 'input' ? ' input' : ''}`}
+                  onClick={() => scrollToMessage(block.id)}
+                  aria-label="Jump to message"
+                />
+              ))}
+            </div>
+            <div className="context-rail-controls" aria-hidden="true" />
+          </div>
+          <footer className="composer" ref={composerRef}>
+            <div className="composer-box">
+              <textarea
+                ref={textareaRef}
+                className="composer-input"
+                placeholder="Add a message to the context"
+                value={draft}
+                spellCheck={false}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') {
+                    return
+                  }
 
-            <footer className="composer" ref={composerRef}>
-              <div className="composer-box">
-                <textarea
-                  ref={textareaRef}
-                  className="composer-input"
-                  placeholder="Add a message to the context"
-                  value={draft}
-                  spellCheck={false}
-                  onChange={(event) => setDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'Enter') {
-                      return
-                    }
+                  if (event.shiftKey) {
+                    return
+                  }
 
-                    if (event.shiftKey) {
-                      return
-                    }
-
-                    if (event.metaKey || event.ctrlKey) {
-                      event.preventDefault()
-                      void sendMessage()
-                      return
-                    }
-
-                    if (hasNewline || isSending) {
-                      return
-                    }
-
+                  if (event.metaKey || event.ctrlKey) {
                     event.preventDefault()
                     void sendMessage()
-                  }}
-                  rows={1}
-                />
-                <div className="composer-actions">
-                  <span className="hint">
-                    {hasNewline
-                      ? `${modifierLabel} + Enter to generate`
-                      : 'Enter to generate · Shift + Enter for newline'}
-                  </span>
-                  <span
-                    className={`tooltip tooltip-hover-only${trimmedDraft && !isSending ? ' tooltip-suppressed' : ''}`}
-                    data-tooltip={isSending ? 'Stop request' : 'Add to context'}
+                    return
+                  }
+
+                  if (hasNewline || isSending) {
+                    return
+                  }
+
+                  event.preventDefault()
+                  void sendMessage()
+                }}
+                rows={1}
+              />
+              <div className="composer-actions">
+                <span className="hint">
+                  {hasNewline
+                    ? `${modifierLabel} + Enter to generate`
+                    : 'Enter to generate · Shift + Enter for newline'}
+                </span>
+                <span
+                  className={`tooltip tooltip-hover-only${trimmedDraft && !isSending ? ' tooltip-suppressed' : ''}`}
+                  data-tooltip={isSending ? 'Stop request' : 'Add to context'}
+                >
+                  <button
+                    className="send-button"
+                    type="button"
+                    onClick={isSending ? stopRequest : () => void sendMessage()}
+                    disabled={!isSending && !trimmedDraft}
+                    aria-label={isSending ? 'Stop request' : 'Add to context'}
                   >
-                    <button
-                      className="send-button"
-                      type="button"
-                      onClick={
-                        isSending ? stopRequest : () => void sendMessage()
-                      }
-                      disabled={!isSending && !trimmedDraft}
-                      aria-label={isSending ? 'Stop request' : 'Add to context'}
-                    >
-                      <span
-                        className={`codicon ${isSending ? 'codicon-debug-stop' : 'codicon-add'}`}
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </span>
-                </div>
+                    <span
+                      className={`codicon ${isSending ? 'codicon-debug-stop' : 'codicon-add'}`}
+                      aria-hidden="true"
+                    />
+                  </button>
+                </span>
               </div>
-            </footer>
-          </div>
+            </div>
+          </footer>
         </div>
 
         <aside className="sidebar" id="sidebar" aria-hidden={!isSidebarOpen}>
