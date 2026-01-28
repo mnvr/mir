@@ -5,14 +5,16 @@ import {
   demoCollection,
   demoCollectionMessages,
   formatLocalTimestamp,
+  formatLocalTimestampHeading,
   groupCollectionsByDay,
+  parseLocalTimestampDate,
   buildMessageRequest,
   buildMessageResponse,
   toMessagePayload,
   formatMessageSource,
   formatLatency,
-  formatUsage,
   toChatMessages,
+  type CollectionPayload,
   type CollectionRecord,
   type MessagePayload,
   type MessageRecord,
@@ -33,8 +35,11 @@ import {
   deleteKvValue,
   getActiveCollection,
   getKvValue,
+  listCollections,
   listCollectionMessages,
+  setActiveCollectionId,
   setKvValue,
+  updateCollectionTitle,
 } from './services/db'
 import './App.css'
 
@@ -60,6 +65,8 @@ const KV_KEYS = {
   apiKeyEncrypted: 'settings.apiKey.encrypted',
 }
 
+const NEW_COLLECTION_TITLE = 'New Collection'
+
 const REQUEST_TIMEOUT_MS = 60_000
 const SCROLL_THRESHOLD_PX = 120
 
@@ -67,6 +74,22 @@ const demoCollections = [demoCollection]
 
 const messageDirectionForRole = (role?: string): MessageDirection =>
   role === 'user' ? 'input' : 'output'
+
+const isPersistedMessageId = (id: string) => id.startsWith('message_')
+
+const getLatestPersistedMessageId = (messages: Message[]) => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (!message?.payload) {
+      continue
+    }
+    if (!isPersistedMessageId(message.id)) {
+      continue
+    }
+    return message.id
+  }
+  return null
+}
 
 const recordToMessage = (record: MessageRecord): Message => ({
   id: record.id,
@@ -78,13 +101,50 @@ const recordToMessage = (record: MessageRecord): Message => ({
 const getCollectionTitle = (collection: CollectionRecord) =>
   collection.payload.title!
 
-const getCollectionTimestamp = (collection: CollectionRecord) =>
-  collection.payload.localTimestamp
+  const getCollectionTimestamp = (collection: CollectionRecord) =>
+    collection.payload.localTimestamp
 
 const deriveCollectionTitle = (content: string) => {
   const lines = content.split('\n').map((line) => line.trim())
   const firstLine = lines.find((line) => line.length > 0) ?? content.trim()
   return firstLine.slice(0, 120)
+}
+
+const formatTokenCount = (count?: number) =>
+  typeof count === 'number' ? `${count.toLocaleString()} tokens` : null
+
+const formatMessageCount = (count: number) =>
+  `${count} message${count === 1 ? '' : 's'}`
+
+const formatLatencySeconds = (latencyMs?: number) => {
+  if (typeof latencyMs !== 'number') {
+    return null
+  }
+  const seconds = Math.round((latencyMs / 1000) * 10) / 10
+  return `${seconds} s`
+}
+
+const formatQuickTimestamp = (localTimestamp?: string) => {
+  if (!localTimestamp) {
+    return null
+  }
+  const match = localTimestamp.match(/\b(\d{2}):(\d{2})\b/)
+  if (!match) {
+    return localTimestamp
+  }
+  const [_, hours, minutes] = match
+  const hoursNumber = Number(hours)
+  if (!Number.isFinite(hoursNumber)) {
+    return localTimestamp
+  }
+  const period = hoursNumber >= 12 ? 'PM' : 'AM'
+  const hours12 = hoursNumber % 12 === 0 ? 12 : hoursNumber % 12
+  const timeLabel = `${hours12}:${minutes} ${period}`
+  const parsed = parseLocalTimestampDate(localTimestamp)
+  if (!parsed) {
+    return timeLabel
+  }
+  return `${parsed.weekdayShort} ${parsed.monthShort} ${parsed.day} · ${timeLabel}`
 }
 const hasSecureBridge = () =>
   typeof window !== 'undefined' &&
@@ -136,14 +196,22 @@ function App() {
   const [keyError, setKeyError] = useState<string | null>(null)
   const [showKey, setShowKey] = useState(false)
   const [suppressKeyTooltip, setSuppressKeyTooltip] = useState(false)
+  const [suppressNewCollectionTooltip, setSuppressNewCollectionTooltip] =
+    useState(false)
   const [suppressSettingsTooltip, setSuppressSettingsTooltip] = useState(false)
   const [suppressSidebarTooltip, setSuppressSidebarTooltip] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [settingsReady, setSettingsReady] = useState(false)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [collectionId, setCollectionId] = useState<string | null>(null)
+  const [collections, setCollections] = useState<CollectionRecord[]>([])
+  const [pendingCollection, setPendingCollection] =
+    useState<CollectionPayload | null>(null)
+  const [activeCollection, setActiveCollection] =
+    useState<CollectionRecord | null>(null)
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
-  const [activeChatId, setActiveChatId] = useState<string | null>(null)
+  const [selectedCollectionId, setSelectedCollectionId] =
+    useState<string | null>(null)
   const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect'>(
     'chats',
   )
@@ -169,7 +237,7 @@ function App() {
   const activeWordMatches = activeMessage
     ? activeMessage.content.match(/\S+/g)
     : null
-  const groupedCollections = groupCollectionsByDay([])
+  const groupedCollections = groupCollectionsByDay(collections)
   const inspectorStats = activeMessage
     ? {
         characters: activeMessage.content.length,
@@ -178,16 +246,70 @@ function App() {
     : null
   const inspectorMeta = activePayload
     ? {
+        role: activePayload.role,
         requestModel: activePayload.request?.model,
         responseModel: activePayload.response?.model,
+        responseId: activePayload.response?.id,
+        finishReason: activePayload.response?.finishReason,
         localTimestamp: activePayload.localTimestamp,
         latencyMs: activePayload.response?.latencyMs,
         usage: activePayload.response?.usage,
         backend: activePayload.request?.backend,
       }
     : null
+  const isAssistantMessage = inspectorMeta?.role === 'assistant'
+  const completionTokensValue = inspectorMeta?.usage?.completionTokens
+  const latencySeconds = formatLatencySeconds(inspectorMeta?.latencyMs)
+  const quickFacts: Array<{
+    key: string
+    content: React.ReactNode
+  }> = []
 
+  const quickTime = formatQuickTimestamp(inspectorMeta?.localTimestamp)
+  if (quickTime) {
+    quickFacts.push({ key: 'time', content: quickTime })
+  }
 
+  if (isAssistantMessage) {
+    const quickModel =
+      inspectorMeta?.requestModel ?? inspectorMeta?.responseModel ?? null
+    if (quickModel) {
+      quickFacts.push({ key: 'model', content: quickModel })
+    }
+
+    if (typeof completionTokensValue === 'number' || latencySeconds) {
+      quickFacts.push({
+        key: 'tokens-latency',
+        content: (
+          <>
+            {typeof completionTokensValue === 'number'
+              ? `${completionTokensValue.toLocaleString()} tokens`
+              : null}
+            {typeof completionTokensValue === 'number' && latencySeconds
+              ? ', '
+              : null}
+            {latencySeconds ?? null}
+          </>
+        ),
+      })
+    }
+  }
+  const promptTokens = formatTokenCount(inspectorMeta?.usage?.promptTokens)
+  const completionTokens = formatTokenCount(
+    inspectorMeta?.usage?.completionTokens,
+  )
+  const totalTokens = formatTokenCount(inspectorMeta?.usage?.totalTokens)
+  const collectionTimestamp =
+    activeCollection?.payload.localTimestamp ?? pendingCollection?.localTimestamp
+  const collectionDateLabel = formatLocalTimestampHeading(collectionTimestamp)
+  const collectionMessageCountLabel = formatMessageCount(messages.length)
+
+  const upsertCollection = useCallback((collection: CollectionRecord) => {
+    setCollections((prev) => {
+      const next = prev.filter((item) => item.id !== collection.id)
+      return [collection, ...next]
+    })
+  }, [])
 
   const updateSidebarOpen = useCallback(
     (next: boolean | ((prev: boolean) => boolean)) => {
@@ -324,6 +446,18 @@ function App() {
   useEffect(() => {
     let isMounted = true
 
+    const loadCollections = async () => {
+      try {
+        const storedCollections = await listCollections()
+        if (!isMounted) {
+          return
+        }
+        setCollections(storedCollections)
+      } catch {
+        // Ignore local persistence failures on cold start.
+      }
+    }
+
     const loadMessages = async () => {
       try {
         const collection = await getActiveCollection()
@@ -332,6 +466,9 @@ function App() {
         }
         if (!collection) {
           setCollectionId(null)
+          setActiveCollection(null)
+          setPendingCollection(null)
+          setSelectedCollectionId(null)
           setMessages([])
           return
         }
@@ -340,31 +477,22 @@ function App() {
           return
         }
         setCollectionId(collection.id)
+        setActiveCollection(collection)
+        setPendingCollection(null)
+        setSelectedCollectionId(collection.id)
         setMessages(storedMessages.map(recordToMessage))
-        setActiveChatId(null)
       } catch {
         // Ignore local persistence failures on cold start.
       }
     }
 
+    void loadCollections()
     void loadMessages()
 
     return () => {
       isMounted = false
     }
   }, [])
-
-  useEffect(() => {
-    if (!activeMessageId) {
-      return
-    }
-
-    const node = messageRefs.current.get(activeMessageId)
-    if (!node) {
-      return
-    }
-    node.scrollIntoView({ block: 'nearest' })
-  }, [activeMessageId])
 
   const focusComposer = useCallback(() => {
     setActiveMessageId(null)
@@ -770,6 +898,38 @@ function App() {
     setSuppressSidebarTooltip(true)
   }
 
+  const startNewCollection = useCallback(() => {
+    setSuppressNewCollectionTooltip(true)
+    setSelectedCollectionId(null)
+    setMessages([])
+    setDraft('')
+    setCollectionId(null)
+    setActiveCollection(null)
+    setPendingCollection({
+      title: NEW_COLLECTION_TITLE,
+      localTimestamp: formatLocalTimestamp(new Date()),
+    })
+    setActiveMessageId(null)
+
+    focusComposer()
+  }, [focusComposer])
+
+  useEffect(() => {
+    if (!window.ipcRenderer?.on) {
+      return
+    }
+
+    const handleNewCollection = () => {
+      void startNewCollection()
+    }
+
+    window.ipcRenderer.on('collection:new', handleNewCollection)
+
+    return () => {
+      window.ipcRenderer.off('collection:new', handleNewCollection)
+    }
+  }, [startNewCollection])
+
   const stopRequest = () => {
     abortControllerRef.current?.abort()
   }
@@ -782,6 +942,8 @@ function App() {
       return
     }
 
+    const parentMessageId = getLatestPersistedMessageId(messages)
+    const derivedTitle = deriveCollectionTitle(trimmedDraft)
     const endpoint = buildChatCompletionEndpoint(baseUrl)
     const request = buildMessageRequest(baseUrl, model)
     const timestamp = Date.now()
@@ -812,25 +974,57 @@ function App() {
     }
 
     let targetCollectionId = collectionId
-    if (!activeChatId && !targetCollectionId) {
+    let userRecordPromise: Promise<MessageRecord | null> | null = null
+    if (!selectedCollectionId && !targetCollectionId) {
       try {
-        const title = deriveCollectionTitle(trimmedDraft)
+        const pendingTitle = pendingCollection?.title
+        const pendingTimestamp = pendingCollection?.localTimestamp
         const collection = await createCollection({
-          title,
-          localTimestamp: formatLocalTimestamp(new Date()),
+          title:
+            pendingTitle && pendingTitle !== NEW_COLLECTION_TITLE
+              ? pendingTitle
+              : derivedTitle,
+          localTimestamp:
+            pendingTimestamp ?? formatLocalTimestamp(new Date()),
         })
         targetCollectionId = collection.id
         setCollectionId(collection.id)
+        setActiveCollection(collection)
+        setPendingCollection(null)
+        upsertCollection(collection)
       } catch {
         targetCollectionId = null
       }
     }
 
-    if (!activeChatId && targetCollectionId) {
-      void appendMessage(
+    if (
+      targetCollectionId &&
+      messages.length === 0 &&
+      activeCollection?.id === targetCollectionId &&
+      activeCollection.payload.title === NEW_COLLECTION_TITLE &&
+      activeCollection.id !== demoCollection.id
+    ) {
+      void updateCollectionTitle(targetCollectionId, derivedTitle)
+        .then((updated) => {
+          if (!updated) {
+            return
+          }
+          setActiveCollection(updated)
+          upsertCollection(updated)
+        })
+        .catch(() => {})
+    }
+
+    if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
+      const pendingUserRecord = appendMessage(
         targetCollectionId,
         userPayload,
+        {
+          parentIds: parentMessageId ? [parentMessageId] : undefined,
+        },
       )
+      userRecordPromise = pendingUserRecord
+      void pendingUserRecord
         .then((record) => {
           setMessages((prev) =>
             prev.map((message) =>
@@ -907,10 +1101,18 @@ function App() {
             : message,
         ),
       )
-      if (!activeChatId && targetCollectionId) {
+      if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
+        let assistantParentId: string | null = null
+        if (userRecordPromise) {
+          const userRecord = await userRecordPromise.catch(() => null)
+          assistantParentId = userRecord?.id ?? null
+        }
         void appendMessage(
           targetCollectionId,
           assistantPayload,
+          {
+            parentIds: assistantParentId ? [assistantParentId] : undefined,
+          },
         )
           .then((record) => {
             setMessages((prev) =>
@@ -966,9 +1168,14 @@ function App() {
   }
 
   const handleChatClick = (event: MouseEvent<HTMLElement>) => {
-    if (event.target === event.currentTarget) {
-      setActiveMessageId(null)
+    const target = event.target as HTMLElement | null
+    if (!target) {
+      return
     }
+    if (target.closest('.message')) {
+      return
+    }
+    setActiveMessageId(null)
   }
 
   const hasTextSelection = () => {
@@ -982,13 +1189,26 @@ function App() {
   }
 
   const handleSelectCollection = (collection: CollectionRecord) => {
-    setActiveChatId(collection.id)
-    setMessages(
-      collection.id === demoCollection.id
-        ? demoCollectionMessages.map(recordToMessage)
-        : [],
-    )
+    setSelectedCollectionId(collection.id)
+    setCollectionId(collection.id)
+    setActiveCollection(collection)
+    setPendingCollection(null)
     setActiveMessageId(null)
+
+    if (collection.id === demoCollection.id) {
+      setMessages(demoCollectionMessages.map(recordToMessage))
+      return
+    }
+
+    setMessages([])
+    void setActiveCollectionId(collection.id)
+    void listCollectionMessages(collection.id)
+      .then((records) => {
+        setMessages(records.map(recordToMessage))
+      })
+      .catch(() => {
+        setMessages([])
+      })
   }
 
   return (
@@ -1000,10 +1220,32 @@ function App() {
               <div className="header-left">
                 <div className="header-meta">
                   <div className="header-subtitle">
-                    {isSettingsOpen ? 'Settings' : 'Sat Jan 24th, 2027'}
+                    {isSettingsOpen
+                      ? 'Settings'
+                      : collectionDateLabel ?? 'Undated'}
                   </div>
                 </div>
                 <div className="header-actions">
+                  <span
+                    className={`tooltip tooltip-bottom tooltip-hover-only${suppressNewCollectionTooltip ? ' tooltip-suppressed' : ''}`}
+                    data-tooltip="New Collection"
+                    onMouseLeave={() => setSuppressNewCollectionTooltip(false)}
+                  >
+                    <button
+                      className="new-chat-toggle"
+                      type="button"
+                      onClick={() => {
+                        void startNewCollection()
+                      }}
+                      aria-label="New Collection"
+                      onBlur={() => setSuppressNewCollectionTooltip(false)}
+                    >
+                      <span
+                        className="codicon codicon-symbol-file"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </span>
                   <span
                     className={`tooltip tooltip-bottom tooltip-hover-only${suppressSettingsTooltip ? ' tooltip-suppressed' : ''}`}
                     data-tooltip="Settings"
@@ -1145,9 +1387,9 @@ function App() {
             <main className="chat" onClick={handleChatClick}>
               {messages.length === 0 ? (
                 <div className="chat-empty">
-                  <div className="chat-empty-title">No context yet.</div>
+                  <div className="chat-empty-title">No context yet</div>
                   <div className="chat-empty-body">
-                    Add a message to start building context.
+                    Add a message to start building context
                   </div>
                 </div>
               ) : (
@@ -1321,16 +1563,16 @@ function App() {
               <div className="chat-list" role="listbox" aria-label="Chats">
                 {groupedCollections.map((group) => (
                   <div key={group.key} className="chat-group">
-                    <div className="chat-group-title">{group.label}</div>
+                    <div className="section-title">{group.label}</div>
                     <div className="chat-group-list" role="group">
                       {group.collections.map((collection) => (
                         <button
                           key={collection.id}
                           type="button"
-                          className={`chat-list-item${activeChatId === collection.id ? ' active' : ''}`}
+                          className={`chat-list-item${selectedCollectionId === collection.id ? ' active' : ''}`}
                           onClick={() => handleSelectCollection(collection)}
                           role="option"
-                          aria-selected={activeChatId === collection.id}
+                          aria-selected={selectedCollectionId === collection.id}
                         >
                           <div className="chat-list-title">
                             {getCollectionTitle(collection)}
@@ -1345,16 +1587,16 @@ function App() {
                 ))}
                 {demoCollections.length ? (
                   <div className="chat-group chat-group-demo">
-                    <div className="chat-group-title">Demo</div>
+                    <div className="section-title">Demo</div>
                     <div className="chat-group-list" role="group">
                       {demoCollections.map((collection) => (
                         <button
                           key={collection.id}
                           type="button"
-                          className={`chat-list-item${activeChatId === collection.id ? ' active' : ''}`}
+                          className={`chat-list-item${selectedCollectionId === collection.id ? ' active' : ''}`}
                           onClick={() => handleSelectCollection(collection)}
                           role="option"
-                          aria-selected={activeChatId === collection.id}
+                          aria-selected={selectedCollectionId === collection.id}
                         >
                           <div className="chat-list-title">
                             {getCollectionTitle(collection)}
@@ -1369,50 +1611,138 @@ function App() {
                 ) : null}
               </div>
             ) : activeMessage && inspectorStats ? (
-              <div className="sidebar-section">
-                <div className="sidebar-row">
-                  <span>Characters</span>
-                  <span>{inspectorStats.characters}</span>
+              <>
+                {quickFacts.length > 0 ? (
+                  <div className="sidebar-quick-facts">
+                    {quickFacts.map((fact) => (
+                      <div className="sidebar-quick-fact" key={fact.key}>
+                        {fact.content}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="sidebar-section">
+                  <div className="sidebar-group">
+                    <div className="section-title">Message</div>
+                    {inspectorMeta?.localTimestamp ? (
+                      <div className="sidebar-field">
+                        <div className="sidebar-field-label">Time</div>
+                        <div className="sidebar-field-value">
+                          {inspectorMeta.localTimestamp}
+                        </div>
+                      </div>
+                    ) : null}
+                    {inspectorMeta?.role ? (
+                      <div className="sidebar-field">
+                        <div className="sidebar-field-label">Role</div>
+                        <div className="sidebar-field-value">
+                          {inspectorMeta.role}
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="sidebar-field">
+                      <div className="sidebar-field-label">Words</div>
+                      <div className="sidebar-field-value">
+                        {inspectorStats.words}
+                      </div>
+                    </div>
+                    <div className="sidebar-field">
+                      <div className="sidebar-field-label">Characters</div>
+                      <div className="sidebar-field-value">
+                        {inspectorStats.characters}
+                      </div>
+                    </div>
+                  </div>
+                  {isAssistantMessage ? (
+                    <>
+                      <div className="sidebar-group">
+                        <div className="section-title">Request</div>
+                        {formatMessageSource(inspectorMeta?.backend) ? (
+                          <div className="sidebar-field">
+                            <div className="sidebar-field-label">Source</div>
+                            <div className="sidebar-field-value">
+                              {formatMessageSource(inspectorMeta?.backend)}
+                            </div>
+                          </div>
+                        ) : null}
+                        {inspectorMeta?.requestModel ? (
+                          <div className="sidebar-field">
+                            <div className="sidebar-field-label">Model</div>
+                            <div className="sidebar-field-value">
+                              {inspectorMeta.requestModel}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="sidebar-group">
+                        <div className="section-title">Response</div>
+                        {inspectorMeta?.responseModel &&
+                        inspectorMeta.responseModel !==
+                          inspectorMeta.requestModel ? (
+                          <div className="sidebar-field">
+                            <div className="sidebar-field-label">Model</div>
+                            <div className="sidebar-field-value">
+                              {inspectorMeta.responseModel}
+                            </div>
+                          </div>
+                        ) : null}
+                        {formatLatency(inspectorMeta?.latencyMs) ? (
+                          <div className="sidebar-field">
+                            <div className="sidebar-field-label">Latency</div>
+                            <div className="sidebar-field-value">
+                              {formatLatency(inspectorMeta?.latencyMs)}
+                            </div>
+                          </div>
+                        ) : null}
+                        {promptTokens ? (
+                          <div className="sidebar-field">
+                            <div className="sidebar-field-label">
+                              Prompt tokens
+                            </div>
+                            <div className="sidebar-field-value">
+                              {promptTokens}
+                            </div>
+                          </div>
+                        ) : null}
+                        {completionTokens ? (
+                          <div className="sidebar-field">
+                            <div className="sidebar-field-label">
+                              Completion tokens
+                            </div>
+                            <div className="sidebar-field-value">
+                              {completionTokens}
+                            </div>
+                          </div>
+                        ) : null}
+                        {totalTokens ? (
+                          <div className="sidebar-field">
+                            <div className="sidebar-field-label">Total tokens</div>
+                            <div className="sidebar-field-value">
+                              {totalTokens}
+                            </div>
+                          </div>
+                        ) : null}
+                        {inspectorMeta?.finishReason &&
+                        inspectorMeta.finishReason !== 'stop' ? (
+                          <div className="sidebar-field">
+                            <div className="sidebar-field-label">Finish</div>
+                            <div className="sidebar-field-value">
+                              {inspectorMeta.finishReason}
+                            </div>
+                          </div>
+                        ) : null}
+                        {inspectorMeta?.responseId ? (
+                          <div className="sidebar-field">
+                            <div className="sidebar-field-label">Response ID</div>
+                            <div className="sidebar-field-value">
+                              {inspectorMeta.responseId}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </>
+                  ) : null}
                 </div>
-                <div className="sidebar-row">
-                  <span>Words</span>
-                  <span>{inspectorStats.words}</span>
-                </div>
-                {inspectorMeta?.responseModel || inspectorMeta?.requestModel ? (
-                  <div className="sidebar-row">
-                    <span>Model</span>
-                    <span>
-                      {inspectorMeta.responseModel ??
-                        inspectorMeta.requestModel}
-                    </span>
-                  </div>
-                ) : null}
-                {formatMessageSource(inspectorMeta?.backend) ? (
-                  <div className="sidebar-row">
-                    <span>Source</span>
-                    <span>{formatMessageSource(inspectorMeta?.backend)}</span>
-                  </div>
-                ) : null}
-                {formatLatency(inspectorMeta?.latencyMs) ? (
-                  <div className="sidebar-row">
-                    <span>Latency</span>
-                    <span>{formatLatency(inspectorMeta?.latencyMs)}</span>
-                  </div>
-                ) : null}
-                {formatUsage(inspectorMeta?.usage) ? (
-                  <div className="sidebar-row">
-                    <span>Usage</span>
-                    <span>{formatUsage(inspectorMeta?.usage)}</span>
-                  </div>
-                ) : null}
-                {inspectorMeta?.localTimestamp ? (
-                  <div className="sidebar-row">
-                    <span>Time</span>
-                    <span>
-                      {inspectorMeta.localTimestamp}
-                    </span>
-                  </div>
-                ) : null}
                 <div className="sidebar-actions">
                   <button
                     className="sidebar-action"
@@ -1422,6 +1752,18 @@ function App() {
                     <span className="codicon codicon-copy" aria-hidden="true" />
                     Copy
                   </button>
+                </div>
+              </>
+            ) : collectionTimestamp ? (
+              <div className="sidebar-section">
+                <div className="sidebar-quick-facts">
+                  <div className="sidebar-quick-fact">
+                    {formatQuickTimestamp(collectionTimestamp) ??
+                      collectionTimestamp}
+                  </div>
+                  <div className="sidebar-quick-fact">
+                    {collectionMessageCountLabel}
+                  </div>
                 </div>
               </div>
             ) : (

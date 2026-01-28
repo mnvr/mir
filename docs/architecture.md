@@ -38,8 +38,8 @@ Fields:
 
 Relation types:
 
-- `contains`: `fromId = collection`, `toId = message`
-- `parent`: `fromId = child`, `toId = parent`
+- `contains`: `fromId = collection`, `toId = message` (grouping)
+- `parent`: `fromId = child`, `toId = parent` (lineage)
 
 ### KV
 
@@ -66,5 +66,5 @@ The sync strategy for the KV pairs is not defined yet, but it likely will be bes
 Local indexes and caches are derived from canonical data. These are not synced.
 
 Examples:
-- `relation_index`: a local index for ordered traversal of `contains`
-  relations by `(fromId, type, createdAt)`.
+- `relation_index`: a local index for traversal of relations by
+  `(fromId, type, createdAt)`.

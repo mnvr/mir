@@ -47,6 +47,7 @@ export type MessageResponse = {
   model?: string
   usage?: MessageUsage
   latencyMs?: number
+  finishReason?: string
 }
 
 export type MessagePayload = {

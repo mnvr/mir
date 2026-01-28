@@ -62,11 +62,17 @@ export const buildMessageResponse = (
   const usage = toMessageUsage(response)
   const model = typeof response.model === 'string' ? response.model : undefined
   const id = typeof response.id === 'string' ? response.id : undefined
+  const choice = response.choices?.[0]
+  const finishReason =
+    choice && typeof choice.finish_reason === 'string'
+      ? choice.finish_reason
+      : undefined
   const hasData =
     Boolean(usage) ||
     typeof latencyMs === 'number' ||
     Boolean(model) ||
-    Boolean(id)
+    Boolean(id) ||
+    Boolean(finishReason)
   if (!hasData) {
     return undefined
   }
@@ -75,6 +81,7 @@ export const buildMessageResponse = (
     model,
     usage,
     latencyMs,
+    finishReason,
   }
 }
 

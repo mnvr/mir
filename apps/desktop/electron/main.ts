@@ -39,6 +39,22 @@ const appIconPath = path.join(process.env.VITE_PUBLIC ?? process.env.APP_ROOT, '
 
 const isMac = process.platform === 'darwin'
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  app.quit()
+}
+
+app.on('second-instance', () => {
+  if (!win) {
+    return
+  }
+  if (win.isMinimized()) {
+    win.restore()
+  }
+  win.show()
+  win.focus()
+})
+
 function registerSecretHandlers() {
   ipcMain.handle('secrets:is-available', () =>
     safeStorage.isEncryptionAvailable(),
@@ -92,6 +108,13 @@ function setAppMenu() {
     accelerator: 'CmdOrCtrl+,',
     click: () => {
       win?.webContents.send('open-settings')
+    },
+  }
+  const newCollectionItem: MenuItemConstructorOptions = {
+    label: 'New Collection',
+    accelerator: 'CmdOrCtrl+N',
+    click: () => {
+      win?.webContents.send('collection:new')
     },
   }
   const sidebarItem: MenuItemConstructorOptions = {
@@ -182,15 +205,17 @@ function setAppMenu() {
 
   const menu = Menu.buildFromTemplate(template)
 
-  if (!isMac) {
-    const fileMenuItem = menu.items.find(
-      (item) => item.role === 'fileMenu' || item.label === 'File',
-    )
-    const fileSubmenu = fileMenuItem?.submenu
+  const fileMenuItem = menu.items.find(
+    (item) => item.role === 'fileMenu' || item.label === 'File',
+  )
+  const fileSubmenu = fileMenuItem?.submenu
 
-    if (fileSubmenu) {
-      fileSubmenu.insert(0, new MenuItem(settingsItem))
-      fileSubmenu.insert(1, new MenuItem({ type: 'separator' }))
+  if (fileSubmenu) {
+    fileSubmenu.insert(0, new MenuItem(newCollectionItem))
+    fileSubmenu.insert(1, new MenuItem({ type: 'separator' }))
+    if (!isMac) {
+      fileSubmenu.insert(2, new MenuItem(settingsItem))
+      fileSubmenu.insert(3, new MenuItem({ type: 'separator' }))
     }
   }
 
