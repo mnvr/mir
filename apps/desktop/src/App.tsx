@@ -71,6 +71,9 @@ const NEW_COLLECTION_TITLE = 'New Collection'
 const TEMPERATURE_PRESETS = [0, 0.2, 0.5, 0.7, 1, 1.2, 1.5, 2]
 
 const REQUEST_TIMEOUT_MS = 60_000
+const TICK_INTERVAL_MS = 1000
+const TICK_TRAIL_LIMIT = 30
+const SCROLL_CONTEXT_PEEK_PX = 48
 const SCROLL_THRESHOLD_PX = 120
 
 const MARKDOWN_PLUGINS = [remarkGfm]
@@ -197,6 +200,51 @@ type MessageRowProps = {
   registerRef: (id: string, node: HTMLDivElement | null) => void
 }
 
+const TickTrail = memo(function TickTrail() {
+  const [ticks, setTicks] = useState<number[]>(() => {
+    const tickId = Date.now()
+    return [tickId]
+  })
+
+  useEffect(() => {
+    let tickId = Date.now()
+    const interval = window.setInterval(() => {
+      tickId += 1
+      setTicks((prev) => {
+        const next = [...prev, tickId]
+        if (next.length > TICK_TRAIL_LIMIT) {
+          next.splice(0, next.length - TICK_TRAIL_LIMIT)
+        }
+        return next
+      })
+    }, TICK_INTERVAL_MS)
+
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [])
+
+  if (ticks.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="message-ticks" aria-hidden="true">
+      {ticks.map((tick, index) => {
+        const total = ticks.length
+        const opacity = total <= 1 ? 0.7 : 0.2 + (0.6 * (index + 1)) / total
+        return (
+          <span
+            key={tick}
+            className="message-tick"
+            style={{ opacity }}
+          />
+        )
+      })}
+    </div>
+  )
+})
+
 const MessageRow = memo(function MessageRow({
   message,
   isActive,
@@ -224,11 +272,14 @@ const MessageRow = memo(function MessageRow({
           </ReactMarkdown>
         </blockquote>
       ) : (
-        <div className="output-markdown">
-          <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>
-            {message.content}
-          </ReactMarkdown>
-        </div>
+        <>
+          <div className="output-markdown">
+            <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>
+              {message.content}
+            </ReactMarkdown>
+          </div>
+          {message.status === 'pending' ? <TickTrail /> : null}
+        </>
       )}
     </div>
   )
@@ -237,7 +288,7 @@ const MessageRow = memo(function MessageRow({
 type ChatPaneProps = {
   messages: Message[]
   activeMessageId: string | null
-  endRef: React.RefObject<HTMLDivElement>
+  endRef: React.RefObject<HTMLDivElement | null>
   onChatClick: (event: MouseEvent<HTMLElement>) => void
   onMessageMouseDown: () => void
   onMessageClick: (id: string) => void
@@ -263,18 +314,20 @@ const ChatPane = memo(function ChatPane({
           </div>
         </div>
       ) : (
-        messages.map((message) => (
-          <MessageRow
-            key={message.id}
-            message={message}
-            isActive={message.id === activeMessageId}
-            onMouseDown={onMessageMouseDown}
-            onClick={onMessageClick}
-            registerRef={registerMessageRef}
-          />
-        ))
+        <div className="chat-stream">
+          {messages.map((message) => (
+            <MessageRow
+              key={message.id}
+              message={message}
+              isActive={message.id === activeMessageId}
+              onMouseDown={onMessageMouseDown}
+              onClick={onMessageClick}
+              registerRef={registerMessageRef}
+            />
+          ))}
+        </div>
       )}
-      <div ref={endRef} />
+      <div className="chat-end" ref={endRef} />
     </main>
   )
 })
@@ -1101,6 +1154,23 @@ function App() {
     })
   }
 
+  const queueScrollToMessagePeek = (messageId: string) => {
+    window.requestAnimationFrame(() => {
+      const container = mainColumnRef.current
+      const node = messageRefs.current.get(messageId)
+      if (!container || !node) {
+        endRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+        return
+      }
+      const containerRect = container.getBoundingClientRect()
+      const nodeRect = node.getBoundingClientRect()
+      const delta = nodeRect.top - containerRect.top - SCROLL_CONTEXT_PEEK_PX
+      const nextScrollTop = container.scrollTop + delta
+      const maxScrollTop = container.scrollHeight - container.clientHeight
+      container.scrollTop = Math.min(Math.max(nextScrollTop, 0), maxScrollTop)
+    })
+  }
+
   useLayoutEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) {
@@ -1228,7 +1298,7 @@ function App() {
     const assistantMessage: Message = {
       id: `m-${timestamp}-output`,
       direction: 'output',
-      content: 'Thinking...',
+      content: 'Generating continuation…',
       status: 'pending',
     }
 
@@ -1402,7 +1472,7 @@ function App() {
           .catch(() => {})
       }
       if (shouldAutoScroll) {
-        queueScrollToBottom()
+        queueScrollToMessagePeek(assistantMessage.id)
       }
     } catch (error) {
       if (isAbortError(error)) {
@@ -1415,7 +1485,7 @@ function App() {
           ),
         )
         if (shouldAutoScroll) {
-          queueScrollToBottom()
+          queueScrollToMessagePeek(assistantMessage.id)
         }
         return
       }
@@ -1430,7 +1500,7 @@ function App() {
         ),
       )
       if (shouldAutoScroll) {
-        queueScrollToBottom()
+        queueScrollToMessagePeek(assistantMessage.id)
       }
     } finally {
       setIsSending(false)

@@ -219,12 +219,21 @@
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 18px;
   padding: 8px 24px 24px;
   max-width: 820px;
   width: 100%;
   margin: 0 auto;
   overflow: visible;
+}
+
+.chat-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.chat-end {
+  height: 0;
 }
 
 .chat-empty {
@@ -250,6 +259,7 @@
   color: #1a1a1a;
   position: relative;
   z-index: 0;
+  scroll-margin-bottom: 24px;
 }
 
 .message.input {
@@ -284,6 +294,24 @@
 
 .message.output.error .output-markdown {
   color: #a03a3a;
+}
+
+.message-ticks {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 2px;
+  margin-top: 6px;
+  opacity: 0.7;
+}
+
+.message-tick {
+  width: 6px;
+  height: 2px;
+  flex: 0 0 auto;
+  border-radius: 1px;
+  background: #b0b0b0;
+  animation: message-tick-in 0.25s ease-out;
 }
 
 .input-quote {
@@ -712,6 +740,23 @@
   background: #6a6a6a;
 }
 
+@keyframes message-tick-in {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.6);
+  }
+  100% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-tick {
+    animation: none;
+  }
+}
+
 
 .composer-box {
   max-width: 784px;
@@ -979,6 +1024,10 @@
 
   .context-rail-block.active {
     background: #b5b5bb;
+  }
+
+  .message-tick {
+    background: #8a8a92;
   }
 
 
