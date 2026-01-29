@@ -55,6 +55,13 @@ app.on('second-instance', () => {
   win.focus()
 })
 
+const sendToWindow = (channel: string, ...args: unknown[]) => {
+  if (!win || win.isDestroyed()) {
+    return
+  }
+  win.webContents.send(channel, ...args)
+}
+
 function registerSecretHandlers() {
   ipcMain.handle('secrets:is-available', () =>
     safeStorage.isEncryptionAvailable(),
@@ -107,14 +114,14 @@ function setAppMenu() {
     label: isMac ? 'Preferences...' : 'Settings...',
     accelerator: 'CmdOrCtrl+,',
     click: () => {
-      win?.webContents.send('open-settings')
+      sendToWindow('open-settings')
     },
   }
   const newCollectionItem: MenuItemConstructorOptions = {
     label: 'New Collection',
     accelerator: 'CmdOrCtrl+N',
     click: () => {
-      win?.webContents.send('collection:new')
+      sendToWindow('collection:new')
     },
   }
   const sidebarItem: MenuItemConstructorOptions = {
@@ -124,21 +131,21 @@ function setAppMenu() {
     checked: isSidebarOpen,
     accelerator: 'CmdOrCtrl+B',
     click: () => {
-      win?.webContents.send('sidebar:toggle')
+      sendToWindow('sidebar:toggle')
     },
   }
   const interactionsItem: MenuItemConstructorOptions = {
     label: 'Toggle Collections',
     accelerator: 'CmdOrCtrl+E',
     click: () => {
-      win?.webContents.send('sidebar:tab', 'chats')
+      sendToWindow('sidebar:tab', 'chats')
     },
   }
   const inspectItem: MenuItemConstructorOptions = {
     label: 'Toggle Inspect',
     accelerator: 'CmdOrCtrl+I',
     click: () => {
-      win?.webContents.send('sidebar:tab', 'inspect')
+      sendToWindow('sidebar:tab', 'inspect')
     },
   }
   const selectionPrevItem: MenuItemConstructorOptions = {
@@ -146,7 +153,7 @@ function setAppMenu() {
     accelerator: 'Up',
     registerAccelerator: false,
     click: () => {
-      win?.webContents.send('selection:prev')
+      sendToWindow('selection:prev')
     },
   }
   const selectionNextItem: MenuItemConstructorOptions = {
@@ -154,7 +161,7 @@ function setAppMenu() {
     accelerator: 'Down',
     registerAccelerator: false,
     click: () => {
-      win?.webContents.send('selection:next')
+      sendToWindow('selection:next')
     },
   }
   const focusComposerItem: MenuItemConstructorOptions = {
@@ -162,7 +169,7 @@ function setAppMenu() {
     accelerator: 'CmdOrCtrl+L',
     registerAccelerator: false,
     click: () => {
-      win?.webContents.send('composer:focus')
+      sendToWindow('composer:focus')
     },
   }
   const generateContinuationItem: MenuItemConstructorOptions = {
@@ -170,7 +177,7 @@ function setAppMenu() {
     accelerator: 'Enter',
     registerAccelerator: false,
     click: () => {
-      win?.webContents.send('composer:submit')
+      sendToWindow('composer:submit')
     },
   }
   const generateContinuationNewlineItem: MenuItemConstructorOptions = {
@@ -178,7 +185,7 @@ function setAppMenu() {
     accelerator: 'CmdOrCtrl+Enter',
     registerAccelerator: false,
     click: () => {
-      win?.webContents.send('composer:submit-multiline')
+      sendToWindow('composer:submit-multiline')
     },
   }
   const addNewlineItem: MenuItemConstructorOptions = {
@@ -186,7 +193,7 @@ function setAppMenu() {
     accelerator: 'Shift+Enter',
     registerAccelerator: false,
     click: () => {
-      win?.webContents.send('composer:insert-newline')
+      sendToWindow('composer:insert-newline')
     },
   }
 
@@ -301,6 +308,10 @@ function createWindow() {
     },
   })
 
+  win.on('closed', () => {
+    win = null
+  })
+
   if (isMac && app.dock) {
     const icon = nativeImage.createFromPath(appIconPath)
     if (!icon.isEmpty()) {
@@ -312,7 +323,7 @@ function createWindow() {
 
   // Test active push message to Renderer-process.
   win.webContents.on('did-finish-load', () => {
-    win?.webContents.send('main-process-message', (new Date).toLocaleString())
+    sendToWindow('main-process-message', (new Date).toLocaleString())
   })
 
   if (VITE_DEV_SERVER_URL) {

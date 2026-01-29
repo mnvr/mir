@@ -20,6 +20,7 @@ import {
   type MessageRecord,
 } from 'mir-core'
 import {
+  memo,
   useEffect,
   useLayoutEffect,
   useCallback,
@@ -72,6 +73,8 @@ const TEMPERATURE_PRESETS = [0, 0.2, 0.5, 0.7, 1, 1.2, 1.5, 2]
 const REQUEST_TIMEOUT_MS = 60_000
 const SCROLL_THRESHOLD_PX = 120
 
+const MARKDOWN_PLUGINS = [remarkGfm]
+
 const demoCollections = [demoCollection]
 
 const messageDirectionForRole = (role?: string): MessageDirection =>
@@ -103,8 +106,8 @@ const recordToMessage = (record: MessageRecord): Message => ({
 const getCollectionTitle = (collection: CollectionRecord) =>
   collection.payload.title!
 
-  const getCollectionTimestamp = (collection: CollectionRecord) =>
-    collection.payload.localTimestamp
+const getCollectionTimestamp = (collection: CollectionRecord) =>
+  collection.payload.localTimestamp
 
 const deriveCollectionTitle = (content: string) => {
   const lines = content.split('\n').map((line) => line.trim())
@@ -186,6 +189,96 @@ const decryptSecret = async (cipherText: string) => {
   )) as string
 }
 
+type MessageRowProps = {
+  message: Message
+  isActive: boolean
+  onMouseDown: () => void
+  onClick: (id: string) => void
+  registerRef: (id: string, node: HTMLDivElement | null) => void
+}
+
+const MessageRow = memo(function MessageRow({
+  message,
+  isActive,
+  onMouseDown,
+  onClick,
+  registerRef,
+}: MessageRowProps) {
+  return (
+    <div
+      ref={(node) => registerRef(message.id, node)}
+      data-message-id={message.id}
+      className={`message ${message.direction}${
+        message.status ? ` ${message.status}` : ''
+      }${isActive ? ' selected' : ''}`}
+      onMouseDown={onMouseDown}
+      onClick={(event) => {
+        event.stopPropagation()
+        onClick(message.id)
+      }}
+    >
+      {message.direction === 'input' ? (
+        <blockquote className="input-quote">
+          <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>
+            {message.content}
+          </ReactMarkdown>
+        </blockquote>
+      ) : (
+        <div className="output-markdown">
+          <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>
+            {message.content}
+          </ReactMarkdown>
+        </div>
+      )}
+    </div>
+  )
+})
+
+type ChatPaneProps = {
+  messages: Message[]
+  activeMessageId: string | null
+  endRef: React.RefObject<HTMLDivElement>
+  onChatClick: (event: MouseEvent<HTMLElement>) => void
+  onMessageMouseDown: () => void
+  onMessageClick: (id: string) => void
+  registerMessageRef: (id: string, node: HTMLDivElement | null) => void
+}
+
+const ChatPane = memo(function ChatPane({
+  messages,
+  activeMessageId,
+  endRef,
+  onChatClick,
+  onMessageMouseDown,
+  onMessageClick,
+  registerMessageRef,
+}: ChatPaneProps) {
+  return (
+    <main className="chat" onClick={onChatClick}>
+      {messages.length === 0 ? (
+        <div className="chat-empty">
+          <div className="chat-empty-title">No context yet</div>
+          <div className="chat-empty-body">
+            Add a message to start building context
+          </div>
+        </div>
+      ) : (
+        messages.map((message) => (
+          <MessageRow
+            key={message.id}
+            message={message}
+            isActive={message.id === activeMessageId}
+            onMouseDown={onMessageMouseDown}
+            onClick={onMessageClick}
+            registerRef={registerMessageRef}
+          />
+        ))
+      )}
+      <div ref={endRef} />
+    </main>
+  )
+})
+
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
@@ -228,9 +321,22 @@ function App() {
   const mainColumnRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const messageRefs = useRef(new Map<string, HTMLDivElement>())
+  const observerRef = useRef<IntersectionObserver | null>(null)
+  const visibleMessageIdSetRef = useRef(new Set<string>())
   const suppressMessageActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
   const autoScrollRef = useRef(false)
+  const collectionLoadIdRef = useRef(0)
+  const openSettingsRef = useRef<() => void>(() => {})
+  const toggleSidebarRef = useRef<() => void>(() => {})
+  const sidebarTabRef = useRef<(tab: unknown) => void>(() => {})
+  const startNewCollectionRef = useRef<() => void>(() => {})
+  const submitContinuationRef = useRef<() => void>(() => {})
+  const submitContinuationMultilineRef = useRef<() => void>(() => {})
+  const insertNewlineRef = useRef<() => void>(() => {})
+  const focusComposerRef = useRef<() => void>(() => {})
+  const selectPreviousMessageRef = useRef<() => void>(() => {})
+  const selectNextMessageRef = useRef<() => void>(() => {})
   const maxRows = 9
   const hasNewline = draft.includes('\n')
   const trimmedDraft = draft.trim()
@@ -239,76 +345,94 @@ function App() {
   const hasNewlineRef = useRef(hasNewline)
   const isSendingRef = useRef(isSending)
   const sendMessageRef = useRef<(() => Promise<void>) | null>(null)
-  const activeMessage =
-    messages.find((message) => message.id === activeMessageId) ?? null
+  const activeMessage = useMemo(
+    () => messages.find((message) => message.id === activeMessageId) ?? null,
+    [activeMessageId, messages],
+  )
   const activePayload = activeMessage?.payload
-  const activeWordMatches = activeMessage
-    ? activeMessage.content.match(/\S+/g)
-    : null
-  const groupedCollections = groupCollectionsByDay(collections)
-  const inspectorStats = activeMessage
-    ? {
-        characters: activeMessage.content.length,
-        words: activeWordMatches ? activeWordMatches.length : 0,
-      }
-    : null
-  const inspectorMeta = activePayload
-    ? {
-        role: activePayload.role,
-        requestModel: activePayload.request?.model,
-        temperature: activePayload.request?.temperature,
-        responseModel: activePayload.response?.model,
-        responseId: activePayload.response?.id,
-        finishReason: activePayload.response?.finishReason,
-        localTimestamp: activePayload.localTimestamp,
-        latencyMs: activePayload.response?.latencyMs,
-        usage: activePayload.response?.usage,
-        backend: activePayload.request?.backend,
-      }
-    : null
+  const activeWordMatches = useMemo(
+    () => (activeMessage ? activeMessage.content.match(/\S+/g) : null),
+    [activeMessage],
+  )
+  const groupedCollections = useMemo(
+    () => groupCollectionsByDay(collections),
+    [collections],
+  )
+  const inspectorStats = useMemo(
+    () =>
+      activeMessage
+        ? {
+            characters: activeMessage.content.length,
+            words: activeWordMatches ? activeWordMatches.length : 0,
+          }
+        : null,
+    [activeMessage, activeWordMatches],
+  )
+  const inspectorMeta = useMemo(
+    () =>
+      activePayload
+        ? {
+            role: activePayload.role,
+            requestModel: activePayload.request?.model,
+            temperature: activePayload.request?.temperature,
+            responseModel: activePayload.response?.model,
+            responseId: activePayload.response?.id,
+            finishReason: activePayload.response?.finishReason,
+            localTimestamp: activePayload.localTimestamp,
+            latencyMs: activePayload.response?.latencyMs,
+            usage: activePayload.response?.usage,
+            backend: activePayload.request?.backend,
+          }
+        : null,
+    [activePayload],
+  )
   const isAssistantMessage = inspectorMeta?.role === 'assistant'
   const completionTokensValue = inspectorMeta?.usage?.completionTokens
   const latencySeconds = formatLatencySeconds(inspectorMeta?.latencyMs)
-  const quickFacts: Array<{
-    key: string
-    content: React.ReactNode
-  }> = []
-
-  const quickTime = formatQuickTimestamp(inspectorMeta?.localTimestamp)
-  if (quickTime) {
-    quickFacts.push({ key: 'time', content: quickTime })
-  }
-
-  if (isAssistantMessage) {
-    const quickModel =
-      inspectorMeta?.requestModel ?? inspectorMeta?.responseModel ?? null
-    if (quickModel) {
-      quickFacts.push({ key: 'model', content: quickModel })
+  const quickFacts = useMemo(() => {
+    const items: Array<{ key: string; content: React.ReactNode }> = []
+    const quickTime = formatQuickTimestamp(inspectorMeta?.localTimestamp)
+    if (quickTime) {
+      items.push({ key: 'time', content: quickTime })
     }
-
-    if (typeof completionTokensValue === 'number' || latencySeconds) {
-      quickFacts.push({
-        key: 'tokens-latency',
-        content: (
-          <>
-            {typeof completionTokensValue === 'number'
-              ? `${completionTokensValue.toLocaleString()} tokens`
-              : null}
-            {typeof completionTokensValue === 'number' && latencySeconds
-              ? ', '
-              : null}
-            {latencySeconds ?? null}
-          </>
-        ),
-      })
+    if (isAssistantMessage) {
+      const quickModel =
+        inspectorMeta?.requestModel ?? inspectorMeta?.responseModel ?? null
+      if (quickModel) {
+        items.push({ key: 'model', content: quickModel })
+      }
+      if (typeof completionTokensValue === 'number' || latencySeconds) {
+        items.push({
+          key: 'tokens-latency',
+          content: (
+            <>
+              {typeof completionTokensValue === 'number'
+                ? `${completionTokensValue.toLocaleString()} tokens`
+                : null}
+              {typeof completionTokensValue === 'number' && latencySeconds
+                ? ', '
+                : null}
+              {latencySeconds ?? null}
+            </>
+          ),
+        })
+      }
     }
-  }
+    return items
+  }, [
+    completionTokensValue,
+    inspectorMeta?.localTimestamp,
+    inspectorMeta?.requestModel,
+    inspectorMeta?.responseModel,
+    isAssistantMessage,
+    latencySeconds,
+  ])
   const promptTokens = formatTokenCount(inspectorMeta?.usage?.promptTokens)
   const completionTokens = formatTokenCount(
     inspectorMeta?.usage?.completionTokens,
   )
   const totalTokens = formatTokenCount(inspectorMeta?.usage?.totalTokens)
-  const contextTokens = (() => {
+  const contextTokens = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const usage = messages[index]?.payload?.response?.usage
       if (usage?.totalTokens) {
@@ -316,7 +440,7 @@ function App() {
       }
     }
     return null
-  })()
+  }, [messages])
   const lastRunLatency = formatLatencySeconds(lastRunStats?.latencyMs)
   const lastRunTokensLabel =
     typeof lastRunStats?.completionTokens === 'number'
@@ -382,6 +506,27 @@ function App() {
     },
     [sidebarTab, updateSidebarOpen],
   )
+
+  useEffect(() => {
+    openSettingsRef.current = () => {
+      setIsSettingsOpen(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    toggleSidebarRef.current = () => {
+      updateSidebarOpen((prev) => !prev)
+    }
+  }, [updateSidebarOpen])
+
+  useEffect(() => {
+    sidebarTabRef.current = (tab: unknown) => {
+      if (tab !== 'chats' && tab !== 'inspect') {
+        return
+      }
+      toggleSidebarTab(tab)
+    }
+  }, [toggleSidebarTab])
 
   useEffect(() => {
     let isMounted = true
@@ -459,7 +604,7 @@ function App() {
     }
 
     const handleOpenSettings = () => {
-      setIsSettingsOpen(true)
+      openSettingsRef.current()
     }
 
     window.ipcRenderer.on('open-settings', handleOpenSettings)
@@ -475,7 +620,7 @@ function App() {
     }
 
     const handleToggleSidebar = () => {
-      updateSidebarOpen((prev) => !prev)
+      toggleSidebarRef.current()
     }
 
     window.ipcRenderer.on('sidebar:toggle', handleToggleSidebar)
@@ -483,7 +628,7 @@ function App() {
     return () => {
       window.ipcRenderer.off('sidebar:toggle', handleToggleSidebar)
     }
-  }, [updateSidebarOpen])
+  }, [])
 
   useEffect(() => {
     if (!window.ipcRenderer?.on) {
@@ -491,10 +636,7 @@ function App() {
     }
 
     const handleSidebarTab = (_event: unknown, tab: unknown) => {
-      if (tab !== 'chats' && tab !== 'inspect') {
-        return
-      }
-      toggleSidebarTab(tab)
+      sidebarTabRef.current(tab)
     }
 
     window.ipcRenderer.on('sidebar:tab', handleSidebarTab)
@@ -502,7 +644,7 @@ function App() {
     return () => {
       window.ipcRenderer.off('sidebar:tab', handleSidebarTab)
     }
-  }, [toggleSidebarTab])
+  }, [])
 
   useEffect(() => {
     let isMounted = true
@@ -618,6 +760,12 @@ function App() {
   }, [activeMessageId, messages, focusComposer, scrollToMessage])
 
   useEffect(() => {
+    focusComposerRef.current = focusComposer
+    selectPreviousMessageRef.current = selectPreviousMessage
+    selectNextMessageRef.current = selectNextMessage
+  }, [focusComposer, selectNextMessage, selectPreviousMessage])
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey)) {
         if (event.key === 'Escape') {
@@ -724,42 +872,49 @@ function App() {
   }, [selectNextMessage, selectPreviousMessage])
 
   useEffect(() => {
+    visibleMessageIdSetRef.current = new Set()
+    setVisibleMessageIds([])
+
     const container = mainColumnRef.current
-    if (!container) {
+    if (!container || typeof IntersectionObserver === 'undefined') {
       return
     }
-    let frame: number | null = null
 
-    const updateVisible = () => {
-      frame = null
-      const containerRect = container.getBoundingClientRect()
-      const nextVisible: string[] = []
-      messageRefs.current.forEach((node, id) => {
-        const rect = node.getBoundingClientRect()
-        if (rect.bottom >= containerRect.top && rect.top <= containerRect.bottom) {
-          nextVisible.push(id)
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visibleSet = visibleMessageIdSetRef.current
+        let changed = false
+        entries.forEach((entry) => {
+          const target = entry.target as HTMLElement
+          const id = target.dataset.messageId
+          if (!id) {
+            return
+          }
+          if (entry.isIntersecting) {
+            if (!visibleSet.has(id)) {
+              visibleSet.add(id)
+              changed = true
+            }
+            return
+          }
+          if (visibleSet.delete(id)) {
+            changed = true
+          }
+        })
+
+        if (changed) {
+          setVisibleMessageIds(Array.from(visibleSet))
         }
-      })
-      setVisibleMessageIds(nextVisible)
-    }
+      },
+      { root: container, threshold: 0 },
+    )
 
-    const handleScroll = () => {
-      if (frame !== null) {
-        return
-      }
-      frame = window.requestAnimationFrame(updateVisible)
-    }
-
-    updateVisible()
-    container.addEventListener('scroll', handleScroll, { passive: true })
-    window.addEventListener('resize', handleScroll)
+    observerRef.current = observer
+    messageRefs.current.forEach((node) => observer.observe(node))
 
     return () => {
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame)
-      }
-      container.removeEventListener('scroll', handleScroll)
-      window.removeEventListener('resize', handleScroll)
+      observer.disconnect()
+      observerRef.current = null
     }
   }, [messages])
 
@@ -822,13 +977,13 @@ function App() {
     }
 
     const handleFocusComposer = () => {
-      focusComposer()
+      focusComposerRef.current()
     }
     const handleSelectPrevious = () => {
-      selectPreviousMessage()
+      selectPreviousMessageRef.current()
     }
     const handleSelectNext = () => {
-      selectNextMessage()
+      selectNextMessageRef.current()
     }
 
     window.ipcRenderer.on('composer:focus', handleFocusComposer)
@@ -840,7 +995,7 @@ function App() {
       window.ipcRenderer.off('selection:prev', handleSelectPrevious)
       window.ipcRenderer.off('selection:next', handleSelectNext)
     }
-  }, [focusComposer, selectNextMessage, selectPreviousMessage])
+  }, [])
 
   useEffect(() => {
     let isMounted = true
@@ -926,6 +1081,13 @@ function App() {
   }, [apiKey, settingsReady, storageMode])
 
   const isNearBottom = () => {
+    const container = mainColumnRef.current
+    if (container) {
+      return (
+        container.scrollHeight - (container.scrollTop + container.clientHeight) <=
+        SCROLL_THRESHOLD_PX
+      )
+    }
     const doc = document.documentElement
     const scrollTop = window.scrollY ?? doc.scrollTop
     const scrollHeight = doc.scrollHeight
@@ -1017,12 +1179,16 @@ function App() {
   }, [focusComposer])
 
   useEffect(() => {
+    startNewCollectionRef.current = startNewCollection
+  }, [startNewCollection])
+
+  useEffect(() => {
     if (!window.ipcRenderer?.on) {
       return
     }
 
     const handleNewCollection = () => {
-      void startNewCollection()
+      void startNewCollectionRef.current()
     }
 
     window.ipcRenderer.on('collection:new', handleNewCollection)
@@ -1030,7 +1196,7 @@ function App() {
     return () => {
       window.ipcRenderer.off('collection:new', handleNewCollection)
     }
-  }, [startNewCollection])
+  }, [])
 
   const stopRequest = () => {
     abortControllerRef.current?.abort()
@@ -1318,26 +1484,41 @@ function App() {
   }, [])
 
   useEffect(() => {
+    submitContinuationRef.current = handleSubmitContinuation
+    submitContinuationMultilineRef.current = handleSubmitContinuationMultiline
+    insertNewlineRef.current = handleInsertNewline
+  }, [
+    handleInsertNewline,
+    handleSubmitContinuation,
+    handleSubmitContinuationMultiline,
+  ])
+
+  useEffect(() => {
     if (!window.ipcRenderer?.on) {
       return
     }
-    window.ipcRenderer.on('composer:submit', handleSubmitContinuation)
-    window.ipcRenderer.on(
-      'composer:submit-multiline',
-      handleSubmitContinuationMultiline,
-    )
-    window.ipcRenderer.on('composer:insert-newline', handleInsertNewline)
-    return () => {
-      window.ipcRenderer.off('composer:submit', handleSubmitContinuation)
-      window.ipcRenderer.off(
-        'composer:submit-multiline',
-        handleSubmitContinuationMultiline,
-      )
-      window.ipcRenderer.off('composer:insert-newline', handleInsertNewline)
-    }
-  }, [handleInsertNewline, handleSubmitContinuation, handleSubmitContinuationMultiline])
 
-  const handleChatClick = (event: MouseEvent<HTMLElement>) => {
+    const handleSubmit = () => {
+      submitContinuationRef.current()
+    }
+    const handleSubmitMultiline = () => {
+      submitContinuationMultilineRef.current()
+    }
+    const handleInsert = () => {
+      insertNewlineRef.current()
+    }
+
+    window.ipcRenderer.on('composer:submit', handleSubmit)
+    window.ipcRenderer.on('composer:submit-multiline', handleSubmitMultiline)
+    window.ipcRenderer.on('composer:insert-newline', handleInsert)
+    return () => {
+      window.ipcRenderer.off('composer:submit', handleSubmit)
+      window.ipcRenderer.off('composer:submit-multiline', handleSubmitMultiline)
+      window.ipcRenderer.off('composer:insert-newline', handleInsert)
+    }
+  }, [])
+
+  const handleChatClick = useCallback((event: MouseEvent<HTMLElement>) => {
     const target = event.target as HTMLElement | null
     if (!target) {
       return
@@ -1346,12 +1527,52 @@ function App() {
       return
     }
     setActiveMessageId(null)
-  }
+  }, [])
 
-  const hasTextSelection = () => {
+  const hasTextSelection = useCallback(() => {
     const selection = window.getSelection()
     return Boolean(selection && selection.toString().length > 0)
-  }
+  }, [])
+
+  const handleMessageMouseDown = useCallback(() => {
+    if (hasTextSelection()) {
+      suppressMessageActivationRef.current = true
+    }
+  }, [hasTextSelection])
+
+  const handleMessageClick = useCallback(
+    (messageId: string) => {
+      if (suppressMessageActivationRef.current || hasTextSelection()) {
+        suppressMessageActivationRef.current = false
+        return
+      }
+      suppressMessageActivationRef.current = false
+      setActiveMessageId((prev) => (prev === messageId ? null : messageId))
+    },
+    [hasTextSelection],
+  )
+
+  const registerMessageRef = useCallback(
+    (id: string, node: HTMLDivElement | null) => {
+      const current = messageRefs.current
+      const previous = current.get(id)
+      if (previous && observerRef.current) {
+        observerRef.current.unobserve(previous)
+      }
+      if (!node) {
+        current.delete(id)
+        if (visibleMessageIdSetRef.current.delete(id)) {
+          setVisibleMessageIds(Array.from(visibleMessageIdSetRef.current))
+        }
+        return
+      }
+      current.set(id, node)
+      if (observerRef.current) {
+        observerRef.current.observe(node)
+      }
+    },
+    [],
+  )
 
   const handleSidebarTabClick = (tab: 'chats' | 'inspect') => {
     setSidebarTab(tab)
@@ -1359,6 +1580,8 @@ function App() {
   }
 
   const handleSelectCollection = (collection: CollectionRecord) => {
+    const requestId = collectionLoadIdRef.current + 1
+    collectionLoadIdRef.current = requestId
     setSelectedCollectionId(collection.id)
     setCollectionId(collection.id)
     setActiveCollection(collection)
@@ -1375,9 +1598,15 @@ function App() {
     void setActiveCollectionId(collection.id)
     void listCollectionMessages(collection.id)
       .then((records) => {
+        if (collectionLoadIdRef.current !== requestId) {
+          return
+        }
         setMessages(records.map(recordToMessage))
       })
       .catch(() => {
+        if (collectionLoadIdRef.current !== requestId) {
+          return
+        }
         setMessages([])
       })
   }
@@ -1552,66 +1781,15 @@ function App() {
                 </div>
               </section>
             ) : null}
-            <main className="chat" onClick={handleChatClick}>
-              {messages.length === 0 ? (
-                <div className="chat-empty">
-                  <div className="chat-empty-title">No context yet</div>
-                  <div className="chat-empty-body">
-                    Add a message to start building context
-                  </div>
-                </div>
-              ) : (
-                messages.map((message) => (
-                  <div
-                    key={message.id}
-                    ref={(node) => {
-                      if (node) {
-                        messageRefs.current.set(message.id, node)
-                      } else {
-                        messageRefs.current.delete(message.id)
-                      }
-                    }}
-                    className={`message ${message.direction}${
-                      message.status ? ` ${message.status}` : ''
-                    }${message.id === activeMessageId ? ' selected' : ''}`}
-                    onMouseDown={() => {
-                      if (hasTextSelection()) {
-                        suppressMessageActivationRef.current = true
-                      }
-                    }}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      if (
-                        suppressMessageActivationRef.current ||
-                        hasTextSelection()
-                      ) {
-                        suppressMessageActivationRef.current = false
-                        return
-                      }
-                      suppressMessageActivationRef.current = false
-                      setActiveMessageId((prev) =>
-                        prev === message.id ? null : message.id,
-                      )
-                    }}
-                  >
-                    {message.direction === 'input' ? (
-                      <blockquote className="input-quote">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {message.content}
-                        </ReactMarkdown>
-                      </blockquote>
-                    ) : (
-                      <div className="output-markdown">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {message.content}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-                  </div>
-                ))
-              )}
-              <div ref={endRef} />
-            </main>
+            <ChatPane
+              messages={messages}
+              activeMessageId={activeMessageId}
+              endRef={endRef}
+              onChatClick={handleChatClick}
+              onMessageMouseDown={handleMessageMouseDown}
+              onMessageClick={handleMessageClick}
+              registerMessageRef={registerMessageRef}
+            />
           </div>
           <div className="context-rail" aria-label="Context controls">
             <div
