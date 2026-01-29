@@ -34,6 +34,7 @@ export type MessageBackend =
 export type MessageRequest = {
   model?: string
   backend?: MessageBackend
+  temperature?: number
 }
 
 export type MessageUsage = {

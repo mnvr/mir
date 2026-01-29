@@ -165,27 +165,51 @@ function setAppMenu() {
       win?.webContents.send('composer:focus')
     },
   }
+  const generateContinuationItem: MenuItemConstructorOptions = {
+    label: 'Generate Continuation',
+    accelerator: 'Enter',
+    registerAccelerator: false,
+    click: () => {
+      win?.webContents.send('composer:submit')
+    },
+  }
+  const generateContinuationNewlineItem: MenuItemConstructorOptions = {
+    label: 'Generate Continuation (Multiline)',
+    accelerator: 'CmdOrCtrl+Enter',
+    registerAccelerator: false,
+    click: () => {
+      win?.webContents.send('composer:submit-multiline')
+    },
+  }
+  const addNewlineItem: MenuItemConstructorOptions = {
+    label: 'Add Newline',
+    accelerator: 'Shift+Enter',
+    registerAccelerator: false,
+    click: () => {
+      win?.webContents.send('composer:insert-newline')
+    },
+  }
 
   const template: MenuItemConstructorOptions[] = [
     ...(isMac
       ? [
-          {
-            label: app.getName(),
-            submenu: [
-              { role: 'about' },
-              { type: 'separator' },
-              settingsItem,
-              { type: 'separator' },
-              { role: 'services' },
-              { type: 'separator' },
-              { role: 'hide' },
-              { role: 'hideOthers' },
-              { role: 'unhide' },
-              { type: 'separator' },
-              { role: 'quit' },
-            ],
-          } as MenuItemConstructorOptions,
-        ]
+        {
+          label: app.getName(),
+          submenu: [
+            { role: 'about' },
+            { type: 'separator' },
+            settingsItem,
+            { type: 'separator' },
+            { role: 'services' },
+            { type: 'separator' },
+            { role: 'hide' },
+            { role: 'hideOthers' },
+            { role: 'unhide' },
+            { type: 'separator' },
+            { role: 'quit' },
+          ],
+        } as MenuItemConstructorOptions,
+      ]
       : []),
     { role: 'fileMenu' },
     { role: 'editMenu' },
@@ -196,6 +220,15 @@ function setAppMenu() {
         selectionNextItem,
         { type: 'separator' },
         focusComposerItem,
+      ],
+    },
+    {
+      label: 'Generate',
+      submenu: [
+        generateContinuationItem,
+        generateContinuationNewlineItem,
+        { type: 'separator' },
+        addNewlineItem,
       ],
     },
     { role: 'viewMenu' },

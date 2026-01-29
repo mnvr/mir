@@ -306,11 +306,12 @@ export const updateCollectionTitle = async (
     await tx.done
     return null
   }
+  const collection = record as CollectionRecord
   const updated: CollectionRecord = {
-    ...record,
+    ...collection,
     updatedAt: Date.now(),
     payload: {
-      ...record.payload,
+      ...collection.payload,
       title,
     },
   }

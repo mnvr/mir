@@ -6,6 +6,7 @@ export type ChatCompletionMessage = {
 export type ChatCompletionRequest = {
   messages: ChatCompletionMessage[]
   model?: string
+  temperature?: number
 }
 
 export type ChatCompletionResponse = {
@@ -57,6 +58,7 @@ export type ChatCompletionOptions = {
   apiKey?: string
   messages: ChatCompletionMessage[]
   model?: string
+  temperature?: number
   fetchFn: FetchFn
   headers?: Record<string, string>
   signal?: AbortSignalLike
@@ -159,6 +161,10 @@ export const createChatCompletion = async (
 
   if (options.model) {
     payload.model = options.model
+  }
+
+  if (typeof options.temperature === 'number') {
+    payload.temperature = options.temperature
   }
 
   const headers: Record<string, string> = {

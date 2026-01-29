@@ -20,6 +20,7 @@ export const buildMessageBackend = (
 export const buildMessageRequest = (
   baseUrl: string,
   model: string,
+  temperature?: number,
 ): MessageRequest | undefined => {
   const backend = buildMessageBackend(baseUrl)
   if (!backend && !model) {
@@ -28,6 +29,10 @@ export const buildMessageRequest = (
   return {
     model: model || undefined,
     backend,
+    temperature:
+      typeof temperature === 'number' && Number.isFinite(temperature)
+        ? temperature
+        : undefined,
   }
 }
 

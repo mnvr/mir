@@ -120,7 +120,7 @@
   position: sticky;
   top: var(--header-height);
   z-index: 8;
-  border-bottom: 1px solid #e6e6e6;
+  border-bottom: 1px solid #ededed;
   background: var(--settings-surface);
 }
 
@@ -220,7 +220,7 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
-  padding: 20px 24px 24px;
+  padding: 8px 24px 24px;
   max-width: 820px;
   width: 100%;
   margin: 0 auto;
@@ -634,9 +634,9 @@
 }
 
 .composer {
-  padding: 0 24px 24px;
+  padding: 0 24px 12px;
   background: #ffffff;
-  border-top: 1px solid #e5e5e5;
+  border-top: 0;
   position: sticky;
   bottom: 0;
   z-index: 9;
@@ -649,16 +649,19 @@
   gap: 12px;
   padding: 8px 24px;
   background: #ffffff;
-  border-top: 1px solid #e5e5e5;
-  border-bottom: 1px solid #e5e5e5;
+  border-top: 1px solid #ededed;
+  border-bottom: 1px solid #ededed;
   flex: 0 0 auto;
 }
 
 .context-rail-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .context-rail-title {
@@ -680,22 +683,20 @@
 }
 
 .context-rail-minimap {
-  flex: 1;
+  flex: 0 1 50%;
+  width: fit-content;
+  max-width: 50%;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
-  min-height: 10px;
-  overflow: hidden;
-}
-
-.context-rail-controls {
-  min-width: 84px;
-  height: 18px;
+  position: relative;
 }
 
 .context-rail-block {
-  flex: 1;
-  height: 3px;
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
   border-radius: 999px;
   border: none;
   background: #e2e2e2;
@@ -703,27 +704,26 @@
   cursor: pointer;
 }
 
-.context-rail-block.input {
-  background: #ebebeb;
+.context-rail-block.in-view {
+  background: #b5b5b5;
 }
 
 .context-rail-block.active {
   background: #6a6a6a;
 }
 
+
 .composer-box {
   max-width: 784px;
   margin: 0 auto;
-  padding: 12px 0 8px;
-  border-radius: 0;
-  border: none;
-  background: transparent;
+  padding: 12px 0 2px;
 }
 
 .composer-input {
   width: 100%;
   display: block;
   padding: 0 0 6px;
+  margin-bottom: 6px;
   font-size: 1rem;
   line-height: 1.5;
   border: none;
@@ -751,14 +751,45 @@
   gap: 10px;
 }
 
+.composer-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.composer-chip {
+  border: 1px solid #d0d0d0;
+  background: transparent;
+  color: #5c5c5c;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 4px 6px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.composer-chip-label {
+  color: #8a8a8a;
+}
+
+.composer-chip-value {
+  color: #4a4a4a;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+}
 .send-button {
-  border: 1px solid #111111;
-  background: #111111;
-  color: #ffffff;
-  width: 28px;
-  height: 28px;
+  border: 1px solid #d0d0d0;
+  background: transparent;
+  color: #4a4a4a;
+  width: 30px;
+  height: 30px;
   padding: 0;
-  border-radius: 999px;
+  border-radius: 6px;
   font-size: 0.95rem;
   line-height: 1;
   display: inline-flex;
@@ -773,11 +804,11 @@
   pointer-events: none;
 }
 
-.send-button .codicon-add {
+.send-button .codicon-arrow-up {
   font-size: 14px;
   line-height: 1;
   display: block;
-  transform: translateX(0.33px);
+  transform: none;
 }
 
 .hint {
@@ -917,13 +948,13 @@
 
   .composer {
     background: #1a1a1e;
-    border-top-color: #2d2d34;
+    border-top-color: transparent;
   }
 
   .context-rail {
     background: #1a1a1e;
-    border-top-color: #2d2d34;
-    border-bottom-color: #2d2d34;
+    border-top-color: #24242b;
+    border-bottom-color: #24242b;
   }
 
   .context-rail-title {
@@ -942,12 +973,26 @@
     background: #2a2a31;
   }
 
-  .context-rail-block.input {
-    background: #24242a;
+  .context-rail-block.in-view {
+    background: #3a3a42;
   }
 
   .context-rail-block.active {
-    background: #9a9aa0;
+    background: #b5b5bb;
+  }
+
+
+  .composer-chip {
+    border-color: #3a3a42;
+    color: #b5b5bb;
+  }
+
+  .composer-chip-label {
+    color: #8a8a92;
+  }
+
+  .composer-chip-value {
+    color: #e6e6e6;
   }
 
   .header-subtitle {
@@ -955,7 +1000,7 @@
   }
 
   .settings {
-    border-bottom-color: #2f2f36;
+    border-bottom-color: #24242b;
     background: var(--settings-surface);
   }
 
@@ -1059,9 +1104,9 @@
   }
 
   .send-button {
-    border-color: #c6c6cc;
-    background: #c6c6cc;
-    color: #1a1a1e;
+    border-color: #3a3a42;
+    background: transparent;
+    color: #b5b5bb;
   }
 
   .send-button:disabled {

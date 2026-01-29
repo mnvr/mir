@@ -23,6 +23,7 @@ import {
   useEffect,
   useLayoutEffect,
   useCallback,
+  useMemo,
   useRef,
   useState,
   type MouseEvent,
@@ -66,6 +67,7 @@ const KV_KEYS = {
 }
 
 const NEW_COLLECTION_TITLE = 'New Collection'
+const TEMPERATURE_PRESETS = [0, 0.2, 0.5, 0.7, 1, 1.2, 1.5, 2]
 
 const REQUEST_TIMEOUT_MS = 60_000
 const SCROLL_THRESHOLD_PX = 120
@@ -194,6 +196,7 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [storageMode, setStorageMode] = useState<StorageMode>('session')
   const [keyError, setKeyError] = useState<string | null>(null)
+  const [temperature, setTemperature] = useState(1)
   const [showKey, setShowKey] = useState(false)
   const [suppressKeyTooltip, setSuppressKeyTooltip] = useState(false)
   const [suppressNewCollectionTooltip, setSuppressNewCollectionTooltip] =
@@ -222,20 +225,20 @@ function App() {
   } | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLElement | null>(null)
+  const mainColumnRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const messageRefs = useRef(new Map<string, HTMLDivElement>())
   const suppressMessageActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
   const autoScrollRef = useRef(false)
-  const lastRunTimerRef = useRef<number | null>(null)
   const maxRows = 9
   const hasNewline = draft.includes('\n')
   const trimmedDraft = draft.trim()
-  const modifierLabel =
-    typeof navigator !== 'undefined' &&
-    navigator.platform.toUpperCase().includes('MAC')
-      ? 'Cmd'
-      : 'Ctrl'
+  const draftRef = useRef(draft)
+  const trimmedDraftRef = useRef(trimmedDraft)
+  const hasNewlineRef = useRef(hasNewline)
+  const isSendingRef = useRef(isSending)
+  const sendMessageRef = useRef<(() => Promise<void>) | null>(null)
   const activeMessage =
     messages.find((message) => message.id === activeMessageId) ?? null
   const activePayload = activeMessage?.payload
@@ -253,6 +256,7 @@ function App() {
     ? {
         role: activePayload.role,
         requestModel: activePayload.request?.model,
+        temperature: activePayload.request?.temperature,
         responseModel: activePayload.response?.model,
         responseId: activePayload.response?.id,
         finishReason: activePayload.response?.finishReason,
@@ -314,15 +318,45 @@ function App() {
     return null
   })()
   const lastRunLatency = formatLatencySeconds(lastRunStats?.latencyMs)
+  const lastRunTokensLabel =
+    typeof lastRunStats?.completionTokens === 'number'
+      ? `+${lastRunStats.completionTokens.toLocaleString()}`
+      : '—'
+  const lastRunLatencyLabel = lastRunLatency ?? '—'
+  const showLastRun =
+    Boolean(lastRunStats) &&
+    (lastRunTokensLabel !== '—' || lastRunLatencyLabel !== '—')
+  const lastRunBullet = (() => {
+    if (lastRunTokensLabel === '—' && lastRunLatencyLabel === '—') {
+      return '—'
+    }
+    if (lastRunTokensLabel === '—') {
+      return lastRunLatencyLabel
+    }
+    if (lastRunLatencyLabel === '—') {
+      return lastRunTokensLabel
+    }
+    return `${lastRunTokensLabel} · ${lastRunLatencyLabel}`
+  })()
   const collectionTimestamp =
     activeCollection?.payload.localTimestamp ?? pendingCollection?.localTimestamp
   const collectionDateLabel = formatLocalTimestampHeading(collectionTimestamp)
   const collectionMessageCountLabel = formatMessageCount(messages.length)
-  const minimapBlocks = messages.map((message) => ({
-    id: message.id,
-    isActive: message.id === activeMessageId,
-    direction: message.direction,
-  }))
+  const modelLabel = model || 'Default'
+  const temperatureLabel = temperature.toFixed(1)
+  const [visibleMessageIds, setVisibleMessageIds] = useState<string[]>([])
+  const visibleMessageIdSet = useMemo(
+    () => new Set(visibleMessageIds),
+    [visibleMessageIds],
+  )
+  const minimapBlocks = useMemo(
+    () =>
+      messages.map((message) => ({
+        id: message.id,
+        isActive: message.id === activeMessageId,
+      })),
+    [activeMessageId, messages],
+  )
 
   const upsertCollection = useCallback((collection: CollectionRecord) => {
     setCollections((prev) => {
@@ -383,6 +417,13 @@ function App() {
       isMounted = false
     }
   }, [])
+
+  useEffect(() => {
+    draftRef.current = draft
+    trimmedDraftRef.current = trimmedDraft
+    hasNewlineRef.current = hasNewline
+    isSendingRef.current = isSending
+  }, [draft, trimmedDraft, hasNewline, isSending])
 
   useEffect(() => {
     if (!settingsLoaded) {
@@ -682,6 +723,46 @@ function App() {
     }
   }, [selectNextMessage, selectPreviousMessage])
 
+  useEffect(() => {
+    const container = mainColumnRef.current
+    if (!container) {
+      return
+    }
+    let frame: number | null = null
+
+    const updateVisible = () => {
+      frame = null
+      const containerRect = container.getBoundingClientRect()
+      const nextVisible: string[] = []
+      messageRefs.current.forEach((node, id) => {
+        const rect = node.getBoundingClientRect()
+        if (rect.bottom >= containerRect.top && rect.top <= containerRect.bottom) {
+          nextVisible.push(id)
+        }
+      })
+      setVisibleMessageIds(nextVisible)
+    }
+
+    const handleScroll = () => {
+      if (frame !== null) {
+        return
+      }
+      frame = window.requestAnimationFrame(updateVisible)
+    }
+
+    updateVisible()
+    container.addEventListener('scroll', handleScroll, { passive: true })
+    window.addEventListener('resize', handleScroll)
+
+    return () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame)
+      }
+      container.removeEventListener('scroll', handleScroll)
+      window.removeEventListener('resize', handleScroll)
+    }
+  }, [messages])
+
   const handleCopyActiveMessage = useCallback(() => {
     if (!activeMessage) {
       return
@@ -844,25 +925,6 @@ function App() {
     }
   }, [apiKey, settingsReady, storageMode])
 
-  useEffect(() => {
-    if (!lastRunStats) {
-      return
-    }
-    if (lastRunTimerRef.current) {
-      window.clearTimeout(lastRunTimerRef.current)
-    }
-    lastRunTimerRef.current = window.setTimeout(() => {
-      setLastRunStats(null)
-      lastRunTimerRef.current = null
-    }, 4000)
-    return () => {
-      if (lastRunTimerRef.current) {
-        window.clearTimeout(lastRunTimerRef.current)
-        lastRunTimerRef.current = null
-      }
-    }
-  }, [lastRunStats])
-
   const isNearBottom = () => {
     const doc = document.documentElement
     const scrollTop = window.scrollY ?? doc.scrollTop
@@ -949,6 +1011,7 @@ function App() {
       localTimestamp: formatLocalTimestamp(new Date()),
     })
     setActiveMessageId(null)
+    setLastRunStats(null)
 
     focusComposer()
   }, [focusComposer])
@@ -984,7 +1047,7 @@ function App() {
     const parentMessageId = getLatestPersistedMessageId(messages)
     const derivedTitle = deriveCollectionTitle(trimmedDraft)
     const endpoint = buildChatCompletionEndpoint(baseUrl)
-    const request = buildMessageRequest(baseUrl, model)
+    const request = buildMessageRequest(baseUrl, model, temperature)
     const timestamp = Date.now()
     const userPayload = toMessagePayload('user', trimmedDraft, {
       request,
@@ -1116,6 +1179,7 @@ function App() {
         apiKey: token || undefined,
         messages: contextMessages,
         model: model || undefined,
+        temperature,
         fetchFn: (input, init) =>
           window.fetch(input, init as RequestInit | undefined),
         signal: timeoutController.signal,
@@ -1210,6 +1274,69 @@ function App() {
     }
   }
 
+  sendMessageRef.current = sendMessage
+
+  const handleSubmitContinuation = useCallback(() => {
+    if (
+      isSendingRef.current ||
+      !trimmedDraftRef.current ||
+      hasNewlineRef.current
+    ) {
+      return
+    }
+    void sendMessageRef.current?.()
+  }, [])
+
+  const handleSubmitContinuationMultiline = useCallback(() => {
+    if (isSendingRef.current || !trimmedDraftRef.current) {
+      return
+    }
+    void sendMessageRef.current?.()
+  }, [])
+
+  const handleInsertNewline = useCallback(() => {
+    if (isSendingRef.current) {
+      return
+    }
+    const textarea = textareaRef.current
+    if (!textarea) {
+      setDraft((prev) => `${prev}\n`)
+      return
+    }
+    const selectionStart = textarea.selectionStart ?? draftRef.current.length
+    const selectionEnd = textarea.selectionEnd ?? draftRef.current.length
+    const next =
+      draftRef.current.slice(0, selectionStart) +
+      '\n' +
+      draftRef.current.slice(selectionEnd)
+    setDraft(next)
+    window.requestAnimationFrame(() => {
+      textarea.focus()
+      const cursor = selectionStart + 1
+      textarea.setSelectionRange(cursor, cursor)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!window.ipcRenderer?.on) {
+      return
+    }
+    window.ipcRenderer.on('composer:submit', handleSubmitContinuation)
+    window.ipcRenderer.on(
+      'composer:submit-multiline',
+      handleSubmitContinuationMultiline,
+    )
+    window.ipcRenderer.on('composer:insert-newline', handleInsertNewline)
+    return () => {
+      window.ipcRenderer.off('composer:submit', handleSubmitContinuation)
+      window.ipcRenderer.off(
+        'composer:submit-multiline',
+        handleSubmitContinuationMultiline,
+      )
+      window.ipcRenderer.off('composer:insert-newline', handleInsertNewline)
+    }
+  }, [handleInsertNewline, handleSubmitContinuation, handleSubmitContinuationMultiline])
+
   const handleChatClick = (event: MouseEvent<HTMLElement>) => {
     const target = event.target as HTMLElement | null
     if (!target) {
@@ -1237,6 +1364,7 @@ function App() {
     setActiveCollection(collection)
     setPendingCollection(null)
     setActiveMessageId(null)
+    setLastRunStats(null)
 
     if (collection.id === demoCollection.id) {
       setMessages(demoCollectionMessages.map(recordToMessage))
@@ -1335,7 +1463,7 @@ function App() {
               </div>
             </div>
           </header>
-          <div className="main-column">
+          <div className="main-column" ref={mainColumnRef}>
             {isSettingsOpen ? (
               <section className="settings" id="settings-panel">
                 <div className="settings-inner">
@@ -1486,43 +1614,41 @@ function App() {
             </main>
           </div>
           <div className="context-rail" aria-label="Context controls">
+            <div
+              className="context-rail-minimap"
+              aria-label="Conversation map"
+            >
+              {minimapBlocks.map((block) => {
+                const isInView = visibleMessageIdSet.has(block.id)
+                return (
+                  <button
+                    key={block.id}
+                    type="button"
+                    className={`context-rail-block${
+                      block.isActive ? ' active' : ''
+                    }${isInView ? ' in-view' : ''}`}
+                    onClick={() => scrollToMessage(block.id)}
+                    aria-label="Jump to message"
+                  />
+                )
+              })}
+            </div>
             <div className="context-rail-meta">
               <span className="context-rail-title">Context</span>
               <span className="context-rail-value">
                 {contextTokens ? `${contextTokens.toLocaleString()} tokens` : '—'}
               </span>
-              {lastRunStats && (lastRunLatency || lastRunStats.completionTokens) ? (
-                <span className="context-rail-run">
-                  {typeof lastRunStats.completionTokens === 'number'
-                    ? `+${lastRunStats.completionTokens.toLocaleString()} tokens`
-                    : null}
-                  {typeof lastRunStats.completionTokens === 'number' &&
-                  lastRunLatency
-                    ? ' · '
-                    : null}
-                  {lastRunLatency ?? null}
-                </span>
+              {showLastRun ? (
+                <span className="context-rail-run">{lastRunBullet}</span>
               ) : null}
             </div>
-            <div className="context-rail-minimap" aria-label="Conversation map">
-              {minimapBlocks.map((block) => (
-                <button
-                  key={block.id}
-                  type="button"
-                  className={`context-rail-block${block.isActive ? ' active' : ''}${block.direction === 'input' ? ' input' : ''}`}
-                  onClick={() => scrollToMessage(block.id)}
-                  aria-label="Jump to message"
-                />
-              ))}
-            </div>
-            <div className="context-rail-controls" aria-hidden="true" />
           </div>
           <footer className="composer" ref={composerRef}>
             <div className="composer-box">
               <textarea
                 ref={textareaRef}
                 className="composer-input"
-                placeholder="Add a message to the context"
+                placeholder="Add tokens"
                 value={draft}
                 spellCheck={false}
                 onChange={(event) => setDraft(event.target.value)}
@@ -1551,28 +1677,63 @@ function App() {
                 rows={1}
               />
               <div className="composer-actions">
-                <span className="hint">
-                  {hasNewline
-                    ? `${modifierLabel} + Enter to generate`
-                    : 'Enter to generate · Shift + Enter for newline'}
-                </span>
-                <span
-                  className={`tooltip tooltip-hover-only${trimmedDraft && !isSending ? ' tooltip-suppressed' : ''}`}
-                  data-tooltip={isSending ? 'Stop request' : 'Add to context'}
-                >
+                <div className="composer-controls">
                   <button
-                    className="send-button"
+                    className="composer-chip"
                     type="button"
-                    onClick={isSending ? stopRequest : () => void sendMessage()}
-                    disabled={!isSending && !trimmedDraft}
-                    aria-label={isSending ? 'Stop request' : 'Add to context'}
+                    aria-label="Model settings"
                   >
-                    <span
-                      className={`codicon ${isSending ? 'codicon-debug-stop' : 'codicon-add'}`}
-                      aria-hidden="true"
-                    />
+                    <span className="composer-chip-label">Model</span>
+                    <span className="composer-chip-value">{modelLabel}</span>
                   </button>
-                </span>
+                  <button
+                    className="composer-chip"
+                    type="button"
+                    aria-label="Temperature settings"
+                    onClick={() =>
+                      setTemperature((prev) => {
+                        const rounded = Math.round(prev * 10) / 10
+                        const currentIndex = TEMPERATURE_PRESETS.findIndex(
+                          (value) => value === rounded,
+                        )
+                        const nextIndex =
+                          currentIndex === -1
+                            ? TEMPERATURE_PRESETS.indexOf(1)
+                            : (currentIndex + 1) % TEMPERATURE_PRESETS.length
+                        return TEMPERATURE_PRESETS[nextIndex] ?? 1
+                      })
+                    }
+                  >
+                    <span className="composer-chip-label">Temp</span>
+                    <span className="composer-chip-value">
+                      {temperatureLabel}
+                    </span>
+                  </button>
+                </div>
+                {isSending ? (
+                  <span className="tooltip tooltip-hover-only" data-tooltip="Stop continuation">
+                    <button
+                      className="send-button"
+                      type="button"
+                      onClick={stopRequest}
+                      aria-label="Stop continuation"
+                    >
+                      <span className="codicon codicon-debug-stop" aria-hidden="true" />
+                    </button>
+                  </span>
+                ) : (
+                  <span>
+                    <button
+                      className="send-button"
+                      type="button"
+                      onClick={() => void sendMessage()}
+                      disabled={!trimmedDraft}
+                      aria-label="Add to context"
+                    >
+                      <span className="codicon codicon-arrow-up" aria-hidden="true" />
+                    </button>
+                  </span>
+                )}
               </div>
             </div>
           </footer>
@@ -1734,15 +1895,23 @@ function App() {
                             </div>
                           </div>
                         ) : null}
-                        {inspectorMeta?.requestModel ? (
-                          <div className="sidebar-field">
-                            <div className="sidebar-field-label">Model</div>
-                            <div className="sidebar-field-value">
-                              {inspectorMeta.requestModel}
-                            </div>
-                          </div>
-                        ) : null}
+                    {inspectorMeta?.requestModel ? (
+                      <div className="sidebar-field">
+                        <div className="sidebar-field-label">Model</div>
+                        <div className="sidebar-field-value">
+                          {inspectorMeta.requestModel}
+                        </div>
                       </div>
+                    ) : null}
+                    {typeof inspectorMeta?.temperature === 'number' ? (
+                      <div className="sidebar-field">
+                        <div className="sidebar-field-label">Temperature</div>
+                        <div className="sidebar-field-value">
+                          {inspectorMeta.temperature.toFixed(1)}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                       <div className="sidebar-group">
                         <div className="section-title">Response</div>
                         {inspectorMeta?.responseModel &&
@@ -1791,10 +1960,11 @@ function App() {
                             </div>
                           </div>
                         ) : null}
-                        {inspectorMeta?.finishReason &&
-                        inspectorMeta.finishReason !== 'stop' ? (
+                        {inspectorMeta?.finishReason ? (
                           <div className="sidebar-field">
-                            <div className="sidebar-field-label">Finish</div>
+                            <div className="sidebar-field-label">
+                              Finish reason
+                            </div>
                             <div className="sidebar-field-value">
                               {inspectorMeta.finishReason}
                             </div>
