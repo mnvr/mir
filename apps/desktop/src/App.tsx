@@ -55,6 +55,11 @@ type Message = {
   status?: 'pending' | 'error' | 'canceled'
 }
 
+type PendingScroll = {
+  id: string
+  mode: 'bottom' | 'read'
+}
+
 type StorageMode = 'secure' | 'session'
 
 const STORAGE_KEYS = {
@@ -69,12 +74,17 @@ const KV_KEYS = {
 
 const NEW_COLLECTION_TITLE = 'New Collection'
 const TEMPERATURE_PRESETS = [0, 0.2, 0.5, 0.7, 1, 1.2, 1.5, 2]
+const IS_MAC =
+  typeof navigator !== 'undefined' &&
+  /Mac|iPhone|iPad|iPod/.test(navigator.platform)
 
 const REQUEST_TIMEOUT_MS = 60_000
 const TICK_INTERVAL_MS = 1000
 const TICK_TRAIL_LIMIT = 30
-const SCROLL_CONTEXT_PEEK_PX = 48
-const SCROLL_THRESHOLD_PX = 120
+const SCROLL_CONTEXT_PEEK_LINES = 3
+const SCROLL_CONTEXT_PEEK_FALLBACK_PX = 48
+const SCROLL_NEAR_BOTTOM_RATIO = 0.5
+const SCROLL_STICK_BOTTOM_PX = 8
 
 const MARKDOWN_PLUGINS = [remarkGfm]
 
@@ -372,13 +382,19 @@ function App() {
   const endRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLElement | null>(null)
   const mainColumnRef = useRef<HTMLDivElement | null>(null)
+  const contextRailRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const messageRefs = useRef(new Map<string, HTMLDivElement>())
   const observerRef = useRef<IntersectionObserver | null>(null)
   const visibleMessageIdSetRef = useRef(new Set<string>())
   const suppressMessageActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
-  const autoScrollRef = useRef(false)
+  const scrollIgnoreUntilRef = useRef(0)
+  const pendingScrollRef = useRef<PendingScroll | null>(null)
+  const followRef = useRef(true)
+  const stickToBottomRef = useRef(true)
+  const nearBottomBreakRef = useRef(0)
+  const submitFollowBreakRef = useRef<number | null>(null)
   const collectionLoadIdRef = useRef(0)
   const openSettingsRef = useRef<() => void>(() => {})
   const toggleSidebarRef = useRef<() => void>(() => {})
@@ -617,13 +633,6 @@ function App() {
   }, [])
 
   useEffect(() => {
-    draftRef.current = draft
-    trimmedDraftRef.current = trimmedDraft
-    hasNewlineRef.current = hasNewline
-    isSendingRef.current = isSending
-  }, [draft, trimmedDraft, hasNewline, isSending])
-
-  useEffect(() => {
     if (!settingsLoaded) {
       return
     }
@@ -820,7 +829,8 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey)) {
+      const hasPrimaryModifier = IS_MAC ? event.metaKey : event.ctrlKey
+      if (!hasPrimaryModifier) {
         if (event.key === 'Escape') {
           event.preventDefault()
           setActiveMessageId(null)
@@ -1133,43 +1143,133 @@ function App() {
     }
   }, [apiKey, settingsReady, storageMode])
 
-  const isNearBottom = () => {
-    const container = mainColumnRef.current
+  const getNearBottomThresholdPx = useCallback(
+    (container: HTMLElement | null) => {
+      const height = container?.clientHeight ?? window.innerHeight
+      return Math.round(height * SCROLL_NEAR_BOTTOM_RATIO)
+    },
+    [],
+  )
+
+  const getBottomDistancePx = useCallback((container: HTMLElement | null) => {
     if (container) {
       return (
-        container.scrollHeight - (container.scrollTop + container.clientHeight) <=
-        SCROLL_THRESHOLD_PX
+        container.scrollHeight - (container.scrollTop + container.clientHeight)
       )
     }
     const doc = document.documentElement
     const scrollTop = window.scrollY ?? doc.scrollTop
     const scrollHeight = doc.scrollHeight
     const clientHeight = window.innerHeight
-    return scrollHeight - (scrollTop + clientHeight) <= SCROLL_THRESHOLD_PX
-  }
+    return scrollHeight - (scrollTop + clientHeight)
+  }, [])
 
-  const queueScrollToBottom = () => {
+  const isNearBottom = useCallback(() => {
+    const container = mainColumnRef.current
+    const threshold = getNearBottomThresholdPx(container)
+    return getBottomDistancePx(container) <= threshold
+  }, [getBottomDistancePx, getNearBottomThresholdPx])
+
+  const isAtBottom = useCallback(() => {
+    const container = mainColumnRef.current
+    return getBottomDistancePx(container) <= SCROLL_STICK_BOTTOM_PX
+  }, [getBottomDistancePx])
+
+  const markProgrammaticScroll = useCallback(() => {
+    scrollIgnoreUntilRef.current = Date.now() + 200
+  }, [])
+
+  const getScrollPeekPx = useCallback((element: HTMLElement | null) => {
+    if (!element) {
+      return SCROLL_CONTEXT_PEEK_FALLBACK_PX
+    }
+    const computed = window.getComputedStyle(element)
+    const lineHeight = Number.parseFloat(computed.lineHeight)
+    if (!Number.isFinite(lineHeight) || lineHeight <= 0) {
+      return SCROLL_CONTEXT_PEEK_FALLBACK_PX
+    }
+    return Math.round(lineHeight * SCROLL_CONTEXT_PEEK_LINES)
+  }, [])
+
+  const handleMainScroll = useCallback(() => {
+    if (Date.now() < scrollIgnoreUntilRef.current) {
+      return
+    }
+    const container = mainColumnRef.current
+    const bottomDistance = getBottomDistancePx(container)
+    const isBottom = bottomDistance <= getNearBottomThresholdPx(container)
+    const isStuck = bottomDistance <= SCROLL_STICK_BOTTOM_PX
+    if (followRef.current && !isBottom) {
+      nearBottomBreakRef.current += 1
+    }
+    followRef.current = isBottom
+    stickToBottomRef.current = isStuck
+  }, [getBottomDistancePx, getNearBottomThresholdPx])
+
+  useEffect(() => {
+    draftRef.current = draft
+    trimmedDraftRef.current = trimmedDraft
+    hasNewlineRef.current = hasNewline
+    isSendingRef.current = isSending
+  }, [draft, trimmedDraft, hasNewline, isSending])
+
+  useLayoutEffect(() => {
+    followRef.current = isNearBottom()
+    stickToBottomRef.current = isAtBottom()
+  }, [isAtBottom, isNearBottom, messages.length])
+
+  const queueScrollToBottom = useCallback(() => {
     window.requestAnimationFrame(() => {
-      endRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+      markProgrammaticScroll()
+      const container = mainColumnRef.current
+      if (container) {
+        const maxScrollTop = container.scrollHeight - container.clientHeight
+        container.scrollTop = Math.max(0, maxScrollTop)
+      } else {
+        endRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+      }
+      followRef.current = true
+      stickToBottomRef.current = true
     })
-  }
+  }, [markProgrammaticScroll])
 
-  const queueScrollToMessagePeek = (messageId: string) => {
+  const queueScrollToMessageForReading = useCallback((messageId: string) => {
     window.requestAnimationFrame(() => {
       const container = mainColumnRef.current
       const node = messageRefs.current.get(messageId)
       if (!container || !node) {
-        endRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+        queueScrollToBottom()
         return
       }
       const containerRect = container.getBoundingClientRect()
+      const railRect = contextRailRef.current?.getBoundingClientRect()
+      const effectiveBottom = railRect?.top ?? containerRect.bottom
+      const availableHeight = effectiveBottom - containerRect.top
+      if (availableHeight <= 0) {
+        queueScrollToBottom()
+        return
+      }
       const nodeRect = node.getBoundingClientRect()
-      const delta = nodeRect.top - containerRect.top - SCROLL_CONTEXT_PEEK_PX
+      const rawPeekPx = getScrollPeekPx(node)
+      const peekPx = Math.min(rawPeekPx, availableHeight * 0.5)
+      const desiredTop = containerRect.top + peekPx
+      const delta = nodeRect.top - desiredTop
+      if (Math.abs(delta) < 1 && nodeRect.bottom <= effectiveBottom) {
+        followRef.current = isNearBottom()
+        stickToBottomRef.current = isAtBottom()
+        return
+      }
       const nextScrollTop = container.scrollTop + delta
       const maxScrollTop = container.scrollHeight - container.clientHeight
-      container.scrollTop = Math.min(Math.max(nextScrollTop, 0), maxScrollTop)
+      markProgrammaticScroll()
+      container.scrollTop = Math.min(
+        Math.max(nextScrollTop, 0),
+        maxScrollTop,
+      )
+      followRef.current = isNearBottom()
+      stickToBottomRef.current = isAtBottom()
     })
-  }
+  }, [getScrollPeekPx, isAtBottom, isNearBottom, markProgrammaticScroll, queueScrollToBottom])
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -1177,13 +1277,40 @@ function App() {
       return
     }
 
+    const container = mainColumnRef.current
+    const wasAtBottom =
+      container &&
+      getBottomDistancePx(container) <= SCROLL_STICK_BOTTOM_PX
+    const previousScrollTop = container?.scrollTop ?? 0
+    const previousClientHeight = container?.clientHeight ?? 0
+    stickToBottomRef.current = Boolean(wasAtBottom)
+
     textarea.style.height = 'auto'
     const computed = window.getComputedStyle(textarea)
     const lineHeight = Number.parseFloat(computed.lineHeight)
     const maxHeight = lineHeight ? lineHeight * maxRows : 200
     const nextHeight = Math.min(textarea.scrollHeight, maxHeight)
     textarea.style.height = `${nextHeight}px`
-  }, [draft, maxRows])
+
+    if (container && wasAtBottom) {
+      markProgrammaticScroll()
+      const maxScrollTop = container.scrollHeight - container.clientHeight
+      container.scrollTop = Math.max(0, maxScrollTop)
+    }
+  }, [draft, getBottomDistancePx, markProgrammaticScroll, maxRows])
+
+  useLayoutEffect(() => {
+    const pending = pendingScrollRef.current
+    if (!pending) {
+      return
+    }
+    pendingScrollRef.current = null
+    if (pending.mode === 'bottom') {
+      queueScrollToBottom()
+      return
+    }
+    queueScrollToMessageForReading(pending.id)
+  }, [messages, queueScrollToBottom, queueScrollToMessageForReading])
 
   useLayoutEffect(() => {
     const appEl = appRef.current
@@ -1305,10 +1432,13 @@ function App() {
     setMessages((prev) => [...prev, userMessage, assistantMessage])
     setDraft('')
     const shouldAutoScroll = isNearBottom()
-    autoScrollRef.current = shouldAutoScroll
+    followRef.current = shouldAutoScroll
 
     if (shouldAutoScroll) {
-      queueScrollToBottom()
+      submitFollowBreakRef.current = nearBottomBreakRef.current
+      pendingScrollRef.current = { id: assistantMessage.id, mode: 'bottom' }
+    } else {
+      submitFollowBreakRef.current = null
     }
 
     let targetCollectionId = collectionId
@@ -1431,7 +1561,9 @@ function App() {
         response,
       })
 
-      const shouldAutoScroll = autoScrollRef.current && isNearBottom()
+      const shouldAutoScroll =
+        submitFollowBreakRef.current !== null &&
+        submitFollowBreakRef.current === nearBottomBreakRef.current
       setMessages((prev) =>
         prev.map((message) =>
           message.id === assistantMessage.id
@@ -1472,11 +1604,13 @@ function App() {
           .catch(() => {})
       }
       if (shouldAutoScroll) {
-        queueScrollToMessagePeek(assistantMessage.id)
+        pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
       }
     } catch (error) {
       if (isAbortError(error)) {
-        const shouldAutoScroll = autoScrollRef.current && isNearBottom()
+        const shouldAutoScroll =
+          submitFollowBreakRef.current !== null &&
+          submitFollowBreakRef.current === nearBottomBreakRef.current
         setMessages((prev) =>
           prev.map((item) =>
             item.id === assistantMessage.id
@@ -1485,13 +1619,15 @@ function App() {
           ),
         )
         if (shouldAutoScroll) {
-          queueScrollToMessagePeek(assistantMessage.id)
+          pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
         }
         return
       }
       const message =
         error instanceof Error ? error.message : 'Unknown error occurred.'
-      const shouldAutoScroll = autoScrollRef.current && isNearBottom()
+      const shouldAutoScroll =
+        submitFollowBreakRef.current !== null &&
+        submitFollowBreakRef.current === nearBottomBreakRef.current
       setMessages((prev) =>
         prev.map((item) =>
           item.id === assistantMessage.id
@@ -1500,13 +1636,13 @@ function App() {
         ),
       )
       if (shouldAutoScroll) {
-        queueScrollToMessagePeek(assistantMessage.id)
+        pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
       }
     } finally {
       setIsSending(false)
       timeoutController.clear()
       abortControllerRef.current = null
-      autoScrollRef.current = false
+      submitFollowBreakRef.current = null
     }
   }
 
@@ -1762,7 +1898,11 @@ function App() {
               </div>
             </div>
           </header>
-          <div className="main-column" ref={mainColumnRef}>
+          <div
+            className="main-column"
+            ref={mainColumnRef}
+            onScroll={handleMainScroll}
+          >
             {isSettingsOpen ? (
               <section className="settings" id="settings-panel">
                 <div className="settings-inner">
@@ -1861,7 +2001,11 @@ function App() {
               registerMessageRef={registerMessageRef}
             />
           </div>
-          <div className="context-rail" aria-label="Context controls">
+          <div
+            className="context-rail"
+            aria-label="Context controls"
+            ref={contextRailRef}
+          >
             <div
               className="context-rail-minimap"
               aria-label="Conversation map"
