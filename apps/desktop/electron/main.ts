@@ -6,10 +6,12 @@ import {
   ipcMain,
   safeStorage,
   nativeImage,
+  nativeTheme,
   type MenuItemConstructorOptions,
 } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import fs from 'node:fs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -35,7 +37,9 @@ app.setName('Mir')
 
 let win: BrowserWindow | null
 let isSidebarOpen = false
-const appIconPath = path.join(process.env.VITE_PUBLIC ?? process.env.APP_ROOT, 'Mir-Icon.png')
+const windowIconPath = path.join(process.env.VITE_PUBLIC ?? process.env.APP_ROOT, 'icon.png')
+const devDockIconPath = path.join(process.env.APP_ROOT, 'assets', 'icon-dev.png')
+
 
 const isMac = process.platform === 'darwin'
 
@@ -320,8 +324,13 @@ function setAppMenu() {
 }
 
 function createWindow() {
+  const windowBackground = nativeTheme.shouldUseDarkColors
+    ? '#1a1a1e'
+    : '#ffffff'
   win = new BrowserWindow({
-    icon: appIconPath,
+    ...(isMac ? {} : { icon: windowIconPath }),
+    backgroundColor: windowBackground,
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
     },
@@ -331,8 +340,12 @@ function createWindow() {
     win = null
   })
 
-  if (isMac && app.dock) {
-    const icon = nativeImage.createFromPath(appIconPath)
+  win.once('ready-to-show', () => {
+    win?.show()
+  })
+
+  if (isMac && app.dock && !app.isPackaged && fs.existsSync(devDockIconPath)) {
+    const icon = nativeImage.createFromPath(devDockIconPath)
     if (!icon.isEmpty()) {
       app.dock.setIcon(icon)
     }

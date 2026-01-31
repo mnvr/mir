@@ -298,6 +298,7 @@ const MessageRow = memo(function MessageRow({
 type ChatPaneProps = {
   messages: Message[]
   activeMessageId: string | null
+  showEmptyState: boolean
   endRef: React.RefObject<HTMLDivElement | null>
   onChatClick: (event: MouseEvent<HTMLElement>) => void
   onMessageMouseDown: () => void
@@ -308,6 +309,7 @@ type ChatPaneProps = {
 const ChatPane = memo(function ChatPane({
   messages,
   activeMessageId,
+  showEmptyState,
   endRef,
   onChatClick,
   onMessageMouseDown,
@@ -316,7 +318,7 @@ const ChatPane = memo(function ChatPane({
 }: ChatPaneProps) {
   return (
     <main className="chat" onClick={onChatClick}>
-      {messages.length === 0 ? (
+      {messages.length === 0 && showEmptyState ? (
         <div className="chat-empty">
           <div className="chat-empty-title">No context yet</div>
           <div className="chat-empty-body">
@@ -345,6 +347,7 @@ const ChatPane = memo(function ChatPane({
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
+  const [hasLoadedMessages, setHasLoadedMessages] = useState(false)
   const [draft, setDraft] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
@@ -714,6 +717,7 @@ function App() {
     }
 
     const loadMessages = async () => {
+      setHasLoadedMessages(false)
       try {
         const collection = await getActiveCollection()
         if (!isMounted) {
@@ -725,6 +729,7 @@ function App() {
           setPendingCollection(null)
           setSelectedCollectionId(null)
           setMessages([])
+          setHasLoadedMessages(true)
           return
         }
         const storedMessages = await listCollectionMessages(collection.id)
@@ -736,11 +741,15 @@ function App() {
         setPendingCollection(null)
         setSelectedCollectionId(collection.id)
         setMessages(storedMessages.map(recordToMessage))
+        setHasLoadedMessages(true)
         if (storedMessages.length > 0) {
           pendingScrollRef.current = { mode: 'bottom', id: '' }
         }
       } catch {
         // Ignore local persistence failures on cold start.
+        if (isMounted) {
+          setHasLoadedMessages(true)
+        }
       }
     }
 
@@ -1815,13 +1824,16 @@ function App() {
     setLastRunStats(null)
 
     if (collection.id === demoCollection.id) {
+      setHasLoadedMessages(false)
       setMessages(demoCollectionMessages.map(recordToMessage))
+      setHasLoadedMessages(true)
       if (demoCollectionMessages.length > 0) {
         pendingScrollRef.current = { mode: 'bottom', id: '' }
       }
       return
     }
 
+    setHasLoadedMessages(false)
     setMessages([])
     void setActiveCollectionId(collection.id)
     void listCollectionMessages(collection.id)
@@ -1830,6 +1842,7 @@ function App() {
           return
         }
         setMessages(records.map(recordToMessage))
+        setHasLoadedMessages(true)
         if (records.length > 0) {
           pendingScrollRef.current = { mode: 'bottom', id: '' }
         }
@@ -1839,6 +1852,7 @@ function App() {
           return
         }
         setMessages([])
+        setHasLoadedMessages(true)
       })
   }
 
@@ -2019,6 +2033,7 @@ function App() {
             <ChatPane
               messages={messages}
               activeMessageId={activeMessageId}
+              showEmptyState={hasLoadedMessages}
               endRef={endRef}
               onChatClick={handleChatClick}
               onMessageMouseDown={handleMessageMouseDown}
