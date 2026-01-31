@@ -76,12 +76,6 @@ A new collection can be started using the _New Collection_ button on the top bar
 
 A list of collections can be seen in the _Collections_ tab of the sidebar (Use `Ctrl + E` on Linux/Windows, `Cmd + E` on macOS to quickly toggle it on and off).
 
-### Minimap
-
-Each collection shows a minimap in the context bar above the message composer.
-
-Every dot represents a message in the collection, ordered from oldest to newest. The active message is emphasized, and messages currently within the viewport are shown with a lighter highlight so you can orient yourself at a glance.
-
 ## Messages
 
 A new message can be added to a collection using the composer at the bottom of the main pane. Tokens you add become a message, are folded into the current context, the resultant context is submitted to the model for generation, and the model’s continuation is stored as a new message.
@@ -105,6 +99,43 @@ The _TEMP_ pill near the Add button lets you set the temperature for the next co
 
 > Temperature controls how deterministic or varied the model output is. Lower values are more focused and repeatable; higher values are more exploratory.
 
+## Inspect panel
+
+The _Inspect_ tab in the sidebar shows metadata about the active collection or message.
+
+The top area displays a compact summary meant for a quick scan. The first information here is the local time when the item was created.
+
+For generated messages, this area will also show the model name, the completion token count and the response latency.
+
+This summary is followed by actions applicable to that item type.
+
+* **Copy Message**: Copy the message text.
+
+This is then followed by various sections giving low-level details about the active item, when applicable:
+
+#### Message
+
+- **Time**: Full local timestamp for the selected message.
+- **Role**: The message role (user, assistant, system).
+- **Words**: Word count for the message content.
+- **Characters**: Character count for the message content.
+
+#### Request (generated messages)
+
+- **Source**: Where the completion request was sent (remote backend or local engine).
+- **Model**: The name of the model specified in the completion request.
+- **Temperature**: Sampling temperature used by the request.
+
+#### Response (generated messages)
+
+- **Model**: The model used for the chat completion (shown when it differs from the requested model).
+- **Latency**: The total time in milliseconds between sending the request and receiving the response.
+- **Prompt tokens**: Number of tokens in the prompt.
+- **Completion tokens**: Number of tokens in the generated completion.
+- **Total tokens**: Total tokens used (prompt + completion).
+- **Finish reason**: The reason the model stopped generating tokens. This will be `stop` if the model hit a natural stop point or a provided stop sequence, `length` if the maximum number of tokens specified in the request was reached, `tool_calls` if the model called a tool, and other provider specific values.
+- **Response ID**: The provider's unique identifier for the generated completion.
+
 ## Other features
 
 - Automatic light/dark mode that follows the system's setting.
@@ -124,6 +155,8 @@ The _TEMP_ pill near the Add button lets you set the temperature for the next co
 | Select previous block | Up | Up |
 | Select next block / focus composer | Down | Down |
 | Clear active block / blur composer | Esc | Esc |
+| Scroll to top | Ctrl + Up | Cmd + Up |
+| Scroll to end | Ctrl + Down | Cmd + Down |
 | Generate continuation | Enter | Enter |
 | New line | Shift + Enter | Shift + Enter |
 | Generate continuation (multi-line draft) | Ctrl + Enter | Cmd + Enter |

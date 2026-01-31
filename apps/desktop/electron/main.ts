@@ -164,6 +164,22 @@ function setAppMenu() {
       sendToWindow('selection:next')
     },
   }
+  const scrollTopItem: MenuItemConstructorOptions = {
+    label: 'Scroll to Top',
+    accelerator: 'CmdOrCtrl+Up',
+    registerAccelerator: false,
+    click: () => {
+      sendToWindow('scroll:top')
+    },
+  }
+  const scrollEndItem: MenuItemConstructorOptions = {
+    label: 'Scroll to End',
+    accelerator: 'CmdOrCtrl+Down',
+    registerAccelerator: false,
+    click: () => {
+      sendToWindow('scroll:end')
+    },
+  }
   const focusComposerItem: MenuItemConstructorOptions = {
     label: 'Focus Composer',
     accelerator: 'CmdOrCtrl+L',
@@ -270,6 +286,9 @@ function setAppMenu() {
     viewSubmenu.insert(2, new MenuItem(interactionsItem))
     viewSubmenu.insert(3, new MenuItem(inspectItem))
     viewSubmenu.insert(4, new MenuItem({ type: 'separator' }))
+    viewSubmenu.insert(5, new MenuItem(scrollTopItem))
+    viewSubmenu.insert(6, new MenuItem(scrollEndItem))
+    viewSubmenu.insert(7, new MenuItem({ type: 'separator' }))
   }
 
   const windowMenuItem = menu.items.find(

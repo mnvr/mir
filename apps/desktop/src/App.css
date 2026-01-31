@@ -27,6 +27,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
 }
 
 .header {
@@ -483,6 +484,7 @@
 .sidebar-body {
   flex: 1;
   overflow-y: auto;
+  overflow-x: visible;
   padding: 14px 16px 20px;
   display: flex;
   flex-direction: column;
@@ -603,6 +605,47 @@
   font-size: 0.85rem;
   color: #5c5c5c;
   font-weight: 400;
+  padding-left: 12px;
+}
+
+.sidebar-quick-fact:first-child {
+  font-weight: 600;
+}
+
+.sidebar-quick-fact-action {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding-left: 6px;
+}
+
+.sidebar-icon-button {
+  border: none;
+  background: transparent;
+  color: #4a4a4a;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  appearance: none;
+  cursor: pointer;
+}
+
+.sidebar-icon-button:hover {
+  background: #f0f0f0;
+  color: #4a4a4a;
+}
+
+.sidebar-icon-button .codicon {
+  font-size: 14px;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  display: block;
+  text-align: center;
 }
 
 .sidebar-group {
@@ -612,6 +655,24 @@
   padding: 10px 0;
 }
 
+.sidebar-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-group-header .section-title {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.sidebar-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 12px;
+  margin-top: 6px;
+}
 
 .sidebar-field {
   display: flex;
@@ -630,30 +691,6 @@
   word-break: break-word;
 }
 
-.sidebar-actions {
-  margin-top: 6px;
-}
-
-.sidebar-action {
-  border: 1px solid #d0d0d0;
-  background: #ffffff;
-  color: #1f1f1f;
-  border-radius: 10px;
-  padding: 6px 10px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  font-size: 0.85rem;
-}
-
-.sidebar-action:hover {
-  background: #f0f0f0;
-}
-
-.sidebar-action .codicon {
-  font-size: 14px;
-}
 
 .sidebar-empty {
   font-size: 0.85rem;
@@ -662,7 +699,7 @@
 }
 
 .composer {
-  padding: 0 24px 12px;
+  padding: 0 24px 6px;
   background: #ffffff;
   border-top: 0;
   position: sticky;
@@ -675,10 +712,10 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 24px;
+  padding: 10px 24px 6px 24px;
   background: #ffffff;
-  border-top: 1px solid #ededed;
-  border-bottom: 1px solid #ededed;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 0;
   flex: 0 0 auto;
 }
 
@@ -710,35 +747,6 @@
   color: #7a7a7a;
 }
 
-.context-rail-minimap {
-  flex: 0 1 50%;
-  width: fit-content;
-  max-width: 50%;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  position: relative;
-}
-
-.context-rail-block {
-  width: 5px;
-  height: 5px;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  border: none;
-  background: #e2e2e2;
-  padding: 0;
-  cursor: pointer;
-}
-
-.context-rail-block.in-view {
-  background: #b5b5b5;
-}
-
-.context-rail-block.active {
-  background: #6a6a6a;
-}
 
 @keyframes message-tick-in {
   0% {
@@ -761,7 +769,7 @@
 .composer-box {
   max-width: 784px;
   margin: 0 auto;
-  padding: 12px 0 2px;
+  padding: 0px 0 2px;
 }
 
 .composer-input {
@@ -972,8 +980,8 @@
 
 @media (prefers-color-scheme: dark) {
   .app {
-    background: #1a1a1e;
-    color: #e6e6e6;
+    background: #16161a;
+    color: #d4d4d8;
     --settings-surface: #202026;
   }
 
@@ -987,18 +995,18 @@
 
   .header {
     border-bottom: none;
-    background: #1a1a1e;
+    background: #16161a;
     box-shadow: none;
   }
 
   .composer {
-    background: #1a1a1e;
+    background: transparent;
     border-top-color: transparent;
   }
 
   .context-rail {
-    background: #1a1a1e;
-    border-top-color: #24242b;
+    background: #16161a;
+    border-top-color: rgba(255, 255, 255, 0.08);
     border-bottom-color: #24242b;
   }
 
@@ -1012,18 +1020,6 @@
 
   .context-rail-run {
     color: #8a8a92;
-  }
-
-  .context-rail-block {
-    background: #2a2a31;
-  }
-
-  .context-rail-block.in-view {
-    background: #3a3a42;
-  }
-
-  .context-rail-block.active {
-    background: #b5b5bb;
   }
 
   .message-tick {
@@ -1091,7 +1087,7 @@
   }
 
   .chat {
-    color: #e6e6e6;
+    color: #d4d4d8;
   }
 
   .chat-empty {
@@ -1103,11 +1099,11 @@
   }
 
   .message {
-    color: #e6e6e6;
+    color: #d4d4d8;
   }
 
   .message.input {
-    color: #b2b2b7;
+    color: #b0b0b6;
   }
 
   .message.selected::after {
@@ -1117,7 +1113,7 @@
   .input-quote {
     border-left-color: #3a3a42;
     background: transparent;
-    color: #c9c9cf;
+    color: #c2c2c8;
   }
 
   .message.output.pending .output-markdown {
@@ -1134,14 +1130,14 @@
 
   .composer-box {
     border-color: #3a3a42;
-    background: #222228;
+    background: transparent;
   }
 
   .composer-input {
     border: none;
     background: transparent;
     box-shadow: none;
-    color: #f1f1f1;
+    color: #dcdcdf;
   }
 
   .composer-input::placeholder {
@@ -1184,20 +1180,21 @@
   .sidebar {
     background: linear-gradient(
         90deg,
-        rgba(0, 0, 0, 0.09),
-        rgba(0, 0, 0, 0) 14px
+        rgba(0, 0, 0, 0.18),
+        rgba(0, 0, 0, 0) 18px
       ),
       linear-gradient(
         90deg,
-        rgba(0, 0, 0, 0.02),
-        rgba(0, 0, 0, 0) 120px
+        rgba(0, 0, 0, 0.06),
+        rgba(0, 0, 0, 0) 160px
       ),
-      linear-gradient(180deg, #0c0c10 0%, #070709 100%),
-      #09090c;
+      linear-gradient(180deg, #16161b 0%, #0f0f13 100%),
+      #0f0f13;
+    box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.04);
   }
 
   .layout.sidebar-open .sidebar {
-    border-left-color: #34343a;
+    border-left-color: #2f2f36;
   }
 
   .sidebar-title {
@@ -1273,6 +1270,15 @@
     color: #b5b5bb;
   }
 
+  .sidebar-icon-button {
+    color: #9a9aa0;
+  }
+
+  .sidebar-icon-button:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #e6e6e6;
+  }
+
 
   .sidebar-group {
     border-top-color: #2d2d34;
@@ -1286,15 +1292,6 @@
     color: #b5b5bb;
   }
 
-  .sidebar-action {
-    border-color: #3a3a42;
-    background: #1a1a1e;
-    color: #f1f1f1;
-  }
-
-  .sidebar-action:hover {
-    background: #2a2a31;
-  }
 
   .sidebar-empty {
     color: #9a9aa0;

@@ -379,14 +379,14 @@ function App() {
     completionTokens?: number
     latencyMs?: number
   } | null>(null)
+  const [copyAckId, setCopyAckId] = useState<string | null>(null)
+  const copyAckTimeoutRef = useRef<number | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLElement | null>(null)
   const mainColumnRef = useRef<HTMLDivElement | null>(null)
   const contextRailRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const messageRefs = useRef(new Map<string, HTMLDivElement>())
-  const observerRef = useRef<IntersectionObserver | null>(null)
-  const visibleMessageIdSetRef = useRef(new Set<string>())
   const suppressMessageActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
   const scrollIgnoreUntilRef = useRef(0)
@@ -406,6 +406,9 @@ function App() {
   const focusComposerRef = useRef<() => void>(() => {})
   const selectPreviousMessageRef = useRef<() => void>(() => {})
   const selectNextMessageRef = useRef<() => void>(() => {})
+  const scrollToTopRef = useRef<() => void>(() => {})
+  const scrollToEndRef = useRef<() => void>(() => {})
+  const sendMessageGuardRef = useRef(false)
   const maxRows = 9
   const hasNewline = draft.includes('\n')
   const trimmedDraft = draft.trim()
@@ -537,19 +540,6 @@ function App() {
   const collectionMessageCountLabel = formatMessageCount(messages.length)
   const modelLabel = model || 'Default'
   const temperatureLabel = temperature.toFixed(1)
-  const [visibleMessageIds, setVisibleMessageIds] = useState<string[]>([])
-  const visibleMessageIdSet = useMemo(
-    () => new Set(visibleMessageIds),
-    [visibleMessageIds],
-  )
-  const minimapBlocks = useMemo(
-    () =>
-      messages.map((message) => ({
-        id: message.id,
-        isActive: message.id === activeMessageId,
-      })),
-    [activeMessageId, messages],
-  )
 
   const upsertCollection = useCallback((collection: CollectionRecord) => {
     setCollections((prev) => {
@@ -746,6 +736,9 @@ function App() {
         setPendingCollection(null)
         setSelectedCollectionId(collection.id)
         setMessages(storedMessages.map(recordToMessage))
+        if (storedMessages.length > 0) {
+          pendingScrollRef.current = { mode: 'bottom', id: '' }
+        }
       } catch {
         // Ignore local persistence failures on cold start.
       }
@@ -774,6 +767,10 @@ function App() {
     if (textarea && document.activeElement === textarea) {
       textarea.blur()
     }
+  }, [])
+
+  const markProgrammaticScroll = useCallback(() => {
+    scrollIgnoreUntilRef.current = Date.now() + 200
   }, [])
 
   const scrollToMessage = useCallback((messageId: string) => {
@@ -821,54 +818,6 @@ function App() {
     scrollToMessage(messages[currentIndex + 1].id)
   }, [activeMessageId, messages, focusComposer, scrollToMessage])
 
-  useEffect(() => {
-    focusComposerRef.current = focusComposer
-    selectPreviousMessageRef.current = selectPreviousMessage
-    selectNextMessageRef.current = selectNextMessage
-  }, [focusComposer, selectNextMessage, selectPreviousMessage])
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const hasPrimaryModifier = IS_MAC ? event.metaKey : event.ctrlKey
-      if (!hasPrimaryModifier) {
-        if (event.key === 'Escape') {
-          event.preventDefault()
-          setActiveMessageId(null)
-          blurComposer()
-        }
-        return
-      }
-
-      const key = event.key.toLowerCase()
-      if (key === 'b') {
-        event.preventDefault()
-        updateSidebarOpen((prev) => !prev)
-        return
-      }
-
-      if (key === 'l') {
-        event.preventDefault()
-        focusComposer()
-        return
-      }
-
-      if (key === 'i') {
-        event.preventDefault()
-        toggleSidebarTab('inspect')
-        return
-      }
-
-      if (key === 'e') {
-        event.preventDefault()
-        toggleSidebarTab('chats')
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [blurComposer, focusComposer, toggleSidebarTab, updateSidebarOpen])
 
   useEffect(() => {
     const handleArrowNavigation = (event: KeyboardEvent) => {
@@ -934,61 +883,38 @@ function App() {
     }
   }, [selectNextMessage, selectPreviousMessage])
 
-  useEffect(() => {
-    visibleMessageIdSetRef.current = new Set()
-    setVisibleMessageIds([])
-
-    const container = mainColumnRef.current
-    if (!container || typeof IntersectionObserver === 'undefined') {
-      return
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visibleSet = visibleMessageIdSetRef.current
-        let changed = false
-        entries.forEach((entry) => {
-          const target = entry.target as HTMLElement
-          const id = target.dataset.messageId
-          if (!id) {
-            return
-          }
-          if (entry.isIntersecting) {
-            if (!visibleSet.has(id)) {
-              visibleSet.add(id)
-              changed = true
-            }
-            return
-          }
-          if (visibleSet.delete(id)) {
-            changed = true
-          }
-        })
-
-        if (changed) {
-          setVisibleMessageIds(Array.from(visibleSet))
-        }
-      },
-      { root: container, threshold: 0 },
-    )
-
-    observerRef.current = observer
-    messageRefs.current.forEach((node) => observer.observe(node))
-
-    return () => {
-      observer.disconnect()
-      observerRef.current = null
-    }
-  }, [messages])
-
   const handleCopyActiveMessage = useCallback(() => {
     if (!activeMessage) {
       return
     }
+    const messageId = activeMessage.id
     void navigator.clipboard
       ?.writeText(activeMessage.content)
+      .then(() => {
+        setCopyAckId(messageId)
+        if (copyAckTimeoutRef.current) {
+          window.clearTimeout(copyAckTimeoutRef.current)
+        }
+        copyAckTimeoutRef.current = window.setTimeout(() => {
+          setCopyAckId((prev) => (prev === messageId ? null : prev))
+        }, 2000)
+      })
       .catch(() => {})
   }, [activeMessage])
+
+  useEffect(() => {
+    if (copyAckId && activeMessage?.id !== copyAckId) {
+      setCopyAckId(null)
+    }
+  }, [activeMessage?.id, copyAckId])
+
+  useEffect(() => {
+    return () => {
+      if (copyAckTimeoutRef.current) {
+        window.clearTimeout(copyAckTimeoutRef.current)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     const handleCopyShortcut = (event: KeyboardEvent) => {
@@ -1048,15 +974,25 @@ function App() {
     const handleSelectNext = () => {
       selectNextMessageRef.current()
     }
+    const handleScrollTop = () => {
+      scrollToTopRef.current()
+    }
+    const handleScrollEnd = () => {
+      scrollToEndRef.current()
+    }
 
     window.ipcRenderer.on('composer:focus', handleFocusComposer)
     window.ipcRenderer.on('selection:prev', handleSelectPrevious)
     window.ipcRenderer.on('selection:next', handleSelectNext)
+    window.ipcRenderer.on('scroll:top', handleScrollTop)
+    window.ipcRenderer.on('scroll:end', handleScrollEnd)
 
     return () => {
       window.ipcRenderer.off('composer:focus', handleFocusComposer)
       window.ipcRenderer.off('selection:prev', handleSelectPrevious)
       window.ipcRenderer.off('selection:next', handleSelectNext)
+      window.ipcRenderer.off('scroll:top', handleScrollTop)
+      window.ipcRenderer.off('scroll:end', handleScrollEnd)
     }
   }, [])
 
@@ -1175,10 +1111,6 @@ function App() {
     return getBottomDistancePx(container) <= SCROLL_STICK_BOTTOM_PX
   }, [getBottomDistancePx])
 
-  const markProgrammaticScroll = useCallback(() => {
-    scrollIgnoreUntilRef.current = Date.now() + 200
-  }, [])
-
   const getScrollPeekPx = useCallback((element: HTMLElement | null) => {
     if (!element) {
       return SCROLL_CONTEXT_PEEK_FALLBACK_PX
@@ -1271,6 +1203,101 @@ function App() {
     })
   }, [getScrollPeekPx, isAtBottom, isNearBottom, markProgrammaticScroll, queueScrollToBottom])
 
+  const scrollToTop = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      markProgrammaticScroll()
+      const container = mainColumnRef.current
+      if (container) {
+        container.scrollTop = 0
+      } else {
+        window.scrollTo({ top: 0 })
+      }
+      followRef.current = false
+      stickToBottomRef.current = false
+    })
+  }, [markProgrammaticScroll])
+
+  const scrollToEnd = useCallback(() => {
+    queueScrollToBottom()
+  }, [queueScrollToBottom])
+
+  useEffect(() => {
+    focusComposerRef.current = focusComposer
+    selectPreviousMessageRef.current = selectPreviousMessage
+    selectNextMessageRef.current = selectNextMessage
+    scrollToTopRef.current = scrollToTop
+    scrollToEndRef.current = scrollToEnd
+  }, [
+    focusComposer,
+    scrollToEnd,
+    scrollToTop,
+    selectNextMessage,
+    selectPreviousMessage,
+  ])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const hasPrimaryModifier = IS_MAC ? event.metaKey : event.ctrlKey
+      if (!hasPrimaryModifier) {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setActiveMessageId(null)
+          blurComposer()
+        }
+        return
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        scrollToTop()
+        return
+      }
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        scrollToEnd()
+        return
+      }
+
+      const key = event.key.toLowerCase()
+      if (key === 'b') {
+        event.preventDefault()
+        updateSidebarOpen((prev) => !prev)
+        return
+      }
+
+      if (key === 'l') {
+        event.preventDefault()
+        focusComposer()
+        return
+      }
+
+      if (key === 'i') {
+        event.preventDefault()
+        toggleSidebarTab('inspect')
+        return
+      }
+
+      if (key === 'e') {
+        event.preventDefault()
+        toggleSidebarTab('chats')
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [
+    blurComposer,
+    focusComposer,
+    scrollToEnd,
+    scrollToTop,
+    toggleSidebarTab,
+    updateSidebarOpen,
+  ])
+
+
   useLayoutEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) {
@@ -1281,8 +1308,6 @@ function App() {
     const wasAtBottom =
       container &&
       getBottomDistancePx(container) <= SCROLL_STICK_BOTTOM_PX
-    const previousScrollTop = container?.scrollTop ?? 0
-    const previousClientHeight = container?.clientHeight ?? 0
     stickToBottomRef.current = Boolean(wasAtBottom)
 
     textarea.style.height = 'auto'
@@ -1319,25 +1344,24 @@ function App() {
       return
     }
 
-    const updateComposerHeight = () => {
+    const updateLayoutHeights = () => {
       appEl.style.setProperty(
         '--composer-height',
         `${composerEl.offsetHeight}px`,
       )
     }
 
-    updateComposerHeight()
+    updateLayoutHeights()
 
     if (typeof ResizeObserver === 'undefined') {
       return
     }
 
     const observer = new ResizeObserver(() => {
-      updateComposerHeight()
+      updateLayoutHeights()
     })
 
     observer.observe(composerEl)
-
     return () => {
       observer.disconnect()
     }
@@ -1403,246 +1427,251 @@ function App() {
     error instanceof Error && error.name === 'AbortError'
 
   const sendMessage = async () => {
-    if (!trimmedDraft || isSending) {
+    if (!trimmedDraft || isSending || sendMessageGuardRef.current) {
       return
     }
-
-    const parentMessageId = getLatestPersistedMessageId(messages)
-    const derivedTitle = deriveCollectionTitle(trimmedDraft)
-    const endpoint = buildChatCompletionEndpoint(baseUrl)
-    const request = buildMessageRequest(baseUrl, model, temperature)
-    const timestamp = Date.now()
-    const userPayload = toMessagePayload('user', trimmedDraft, {
-      request,
-    })
-    const userMessage: Message = {
-      id: `m-${timestamp}-input`,
-      direction: 'input',
-      content: trimmedDraft,
-      payload: userPayload,
-    }
-
-    const assistantMessage: Message = {
-      id: `m-${timestamp}-output`,
-      direction: 'output',
-      content: 'Generating continuation…',
-      status: 'pending',
-    }
-
-    setMessages((prev) => [...prev, userMessage, assistantMessage])
-    setDraft('')
-    const shouldAutoScroll = isNearBottom()
-    followRef.current = shouldAutoScroll
-
-    if (shouldAutoScroll) {
-      submitFollowBreakRef.current = nearBottomBreakRef.current
-      pendingScrollRef.current = { id: assistantMessage.id, mode: 'bottom' }
-    } else {
-      submitFollowBreakRef.current = null
-    }
-
-    let targetCollectionId = collectionId
-    let userRecordPromise: Promise<MessageRecord | null> | null = null
-    if (!selectedCollectionId && !targetCollectionId) {
-      try {
-        const pendingTitle = pendingCollection?.title
-        const pendingTimestamp = pendingCollection?.localTimestamp
-        const collection = await createCollection({
-          title:
-            pendingTitle && pendingTitle !== NEW_COLLECTION_TITLE
-              ? pendingTitle
-              : derivedTitle,
-          localTimestamp:
-            pendingTimestamp ?? formatLocalTimestamp(new Date()),
-        })
-        targetCollectionId = collection.id
-        setCollectionId(collection.id)
-        setActiveCollection(collection)
-        setPendingCollection(null)
-        upsertCollection(collection)
-      } catch {
-        targetCollectionId = null
-      }
-    }
-
-    if (
-      targetCollectionId &&
-      messages.length === 0 &&
-      activeCollection?.id === targetCollectionId &&
-      activeCollection.payload.title === NEW_COLLECTION_TITLE &&
-      activeCollection.id !== demoCollection.id
-    ) {
-      void updateCollectionTitle(targetCollectionId, derivedTitle)
-        .then((updated) => {
-          if (!updated) {
-            return
-          }
-          setActiveCollection(updated)
-          upsertCollection(updated)
-        })
-        .catch(() => {})
-    }
-
-    if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
-      const pendingUserRecord = appendMessage(
-        targetCollectionId,
-        userPayload,
-        {
-          parentIds: parentMessageId ? [parentMessageId] : undefined,
-        },
-      )
-      userRecordPromise = pendingUserRecord
-      void pendingUserRecord
-        .then((record) => {
-          setMessages((prev) =>
-            prev.map((message) =>
-              message.id === userMessage.id
-                ? { ...message, id: record.id }
-                : message,
-            ),
-          )
-          setActiveMessageId((prev) =>
-            prev === userMessage.id ? record.id : prev,
-          )
-        })
-        .catch(() => {})
-    }
-
-    if (!endpoint) {
-      setMessages((prev) =>
-        prev.map((message) =>
-          message.id === assistantMessage.id
-            ? {
-                ...message,
-                content:
-                  'Error: Add a base URL (OPENAI_BASE_URL style) in Connection settings first.',
-                status: 'error',
-              }
-            : message,
-        ),
-      )
-      return
-    }
-
-    const contextPayloads = [...messages, userMessage]
-      .filter(
-        (
-          message,
-        ): message is Message & { payload: MessagePayload } =>
-          !message.status && Boolean(message.payload),
-      )
-      .map((message) => message.payload)
-    const contextMessages = toChatMessages(contextPayloads)
-    const token = apiKey
-    const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
-    abortControllerRef.current = timeoutController
-    setIsSending(true)
-    const requestStart = Date.now()
+    sendMessageGuardRef.current = true
 
     try {
-      const { content: nextContent, raw } = await createChatCompletion({
-        baseUrl,
-        apiKey: token || undefined,
-        messages: contextMessages,
-        model: model || undefined,
-        temperature,
-        fetchFn: (input, init) =>
-          window.fetch(input, init as RequestInit | undefined),
-        signal: timeoutController.signal,
-      })
-      const latencyMs = Date.now() - requestStart
-      const response = buildMessageResponse(raw, latencyMs)
-      setLastRunStats({
-        completionTokens: response?.usage?.completionTokens,
-        latencyMs,
-      })
-      const assistantPayload = toMessagePayload('assistant', nextContent, {
+      const parentMessageId = getLatestPersistedMessageId(messages)
+      const derivedTitle = deriveCollectionTitle(trimmedDraft)
+      const endpoint = buildChatCompletionEndpoint(baseUrl)
+      const request = buildMessageRequest(baseUrl, model, temperature)
+      const timestamp = Date.now()
+      const userPayload = toMessagePayload('user', trimmedDraft, {
         request,
-        response,
       })
+      const userMessage: Message = {
+        id: `m-${timestamp}-input`,
+        direction: 'input',
+        content: trimmedDraft,
+        payload: userPayload,
+      }
 
-      const shouldAutoScroll =
-        submitFollowBreakRef.current !== null &&
-        submitFollowBreakRef.current === nearBottomBreakRef.current
-      setMessages((prev) =>
-        prev.map((message) =>
-          message.id === assistantMessage.id
-            ? {
-                ...message,
-                content: nextContent,
-                status: undefined,
-                payload: assistantPayload,
-              }
-            : message,
-        ),
-      )
-      if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
-        let assistantParentId: string | null = null
-        if (userRecordPromise) {
-          const userRecord = await userRecordPromise.catch(() => null)
-          assistantParentId = userRecord?.id ?? null
+      const assistantMessage: Message = {
+        id: `m-${timestamp}-output`,
+        direction: 'output',
+        content: 'Generating continuation…',
+        status: 'pending',
+      }
+
+      setMessages((prev) => [...prev, userMessage, assistantMessage])
+      setDraft('')
+      const shouldAutoScroll = isNearBottom()
+      followRef.current = shouldAutoScroll
+
+      if (shouldAutoScroll) {
+        submitFollowBreakRef.current = nearBottomBreakRef.current
+        pendingScrollRef.current = { id: assistantMessage.id, mode: 'bottom' }
+      } else {
+        submitFollowBreakRef.current = null
+      }
+
+      let targetCollectionId = collectionId
+      let userRecordPromise: Promise<MessageRecord | null> | null = null
+      if (!selectedCollectionId && !targetCollectionId) {
+        try {
+          const pendingTitle = pendingCollection?.title
+          const pendingTimestamp = pendingCollection?.localTimestamp
+          const collection = await createCollection({
+            title:
+              pendingTitle && pendingTitle !== NEW_COLLECTION_TITLE
+                ? pendingTitle
+                : derivedTitle,
+            localTimestamp:
+              pendingTimestamp ?? formatLocalTimestamp(new Date()),
+          })
+          targetCollectionId = collection.id
+          setCollectionId(collection.id)
+          setActiveCollection(collection)
+          setPendingCollection(null)
+          upsertCollection(collection)
+        } catch {
+          targetCollectionId = null
         }
-        void appendMessage(
+      }
+
+      if (
+        targetCollectionId &&
+        messages.length === 0 &&
+        activeCollection?.id === targetCollectionId &&
+        activeCollection.payload.title === NEW_COLLECTION_TITLE &&
+        activeCollection.id !== demoCollection.id
+      ) {
+        void updateCollectionTitle(targetCollectionId, derivedTitle)
+          .then((updated) => {
+            if (!updated) {
+              return
+            }
+            setActiveCollection(updated)
+            upsertCollection(updated)
+          })
+          .catch(() => {})
+      }
+
+      if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
+        const pendingUserRecord = appendMessage(
           targetCollectionId,
-          assistantPayload,
+          userPayload,
           {
-            parentIds: assistantParentId ? [assistantParentId] : undefined,
+            parentIds: parentMessageId ? [parentMessageId] : undefined,
           },
         )
+        userRecordPromise = pendingUserRecord
+        void pendingUserRecord
           .then((record) => {
             setMessages((prev) =>
               prev.map((message) =>
-                message.id === assistantMessage.id
-                  ? { ...message, id: record.id, content: nextContent }
+                message.id === userMessage.id
+                  ? { ...message, id: record.id }
                   : message,
               ),
             )
             setActiveMessageId((prev) =>
-              prev === assistantMessage.id ? record.id : prev,
+              prev === userMessage.id ? record.id : prev,
             )
           })
           .catch(() => {})
       }
-      if (shouldAutoScroll) {
-        pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
+
+      if (!endpoint) {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessage.id
+              ? {
+                  ...message,
+                  content:
+                    'Error: Add a base URL (OPENAI_BASE_URL style) in Connection settings first.',
+                  status: 'error',
+                }
+              : message,
+          ),
+        )
+        return
       }
-    } catch (error) {
-      if (isAbortError(error)) {
+
+      const contextPayloads = [...messages, userMessage]
+        .filter(
+          (
+            message,
+          ): message is Message & { payload: MessagePayload } =>
+            !message.status && Boolean(message.payload),
+        )
+        .map((message) => message.payload)
+      const contextMessages = toChatMessages(contextPayloads)
+      const token = apiKey
+      const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
+      abortControllerRef.current = timeoutController
+      setIsSending(true)
+      const requestStart = Date.now()
+
+      try {
+        const { content: nextContent, raw } = await createChatCompletion({
+          baseUrl,
+          apiKey: token || undefined,
+          messages: contextMessages,
+          model: model || undefined,
+          temperature,
+          fetchFn: (input, init) =>
+            window.fetch(input, init as RequestInit | undefined),
+          signal: timeoutController.signal,
+        })
+        const latencyMs = Date.now() - requestStart
+        const response = buildMessageResponse(raw, latencyMs)
+        setLastRunStats({
+          completionTokens: response?.usage?.completionTokens,
+          latencyMs,
+        })
+        const assistantPayload = toMessagePayload('assistant', nextContent, {
+          request,
+          response,
+        })
+
+        const shouldAutoScroll =
+          submitFollowBreakRef.current !== null &&
+          submitFollowBreakRef.current === nearBottomBreakRef.current
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessage.id
+              ? {
+                  ...message,
+                  content: nextContent,
+                  status: undefined,
+                  payload: assistantPayload,
+                }
+              : message,
+          ),
+        )
+        if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
+          let assistantParentId: string | null = null
+          if (userRecordPromise) {
+            const userRecord = await userRecordPromise.catch(() => null)
+            assistantParentId = userRecord?.id ?? null
+          }
+          void appendMessage(
+            targetCollectionId,
+            assistantPayload,
+            {
+              parentIds: assistantParentId ? [assistantParentId] : undefined,
+            },
+          )
+            .then((record) => {
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === assistantMessage.id
+                    ? { ...message, id: record.id, content: nextContent }
+                    : message,
+                ),
+              )
+              setActiveMessageId((prev) =>
+                prev === assistantMessage.id ? record.id : prev,
+              )
+            })
+            .catch(() => {})
+        }
+        if (shouldAutoScroll) {
+          pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
+        }
+      } catch (error) {
+        if (isAbortError(error)) {
+          const shouldAutoScroll =
+            submitFollowBreakRef.current !== null &&
+            submitFollowBreakRef.current === nearBottomBreakRef.current
+          setMessages((prev) =>
+            prev.map((item) =>
+              item.id === assistantMessage.id
+                ? { ...item, content: 'Request stopped.', status: 'canceled' }
+                : item,
+            ),
+          )
+          if (shouldAutoScroll) {
+            pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
+          }
+          return
+        }
+        const message =
+          error instanceof Error ? error.message : 'Unknown error occurred.'
         const shouldAutoScroll =
           submitFollowBreakRef.current !== null &&
           submitFollowBreakRef.current === nearBottomBreakRef.current
         setMessages((prev) =>
           prev.map((item) =>
             item.id === assistantMessage.id
-              ? { ...item, content: 'Request stopped.', status: 'canceled' }
+              ? { ...item, content: `Error: ${message}`, status: 'error' }
               : item,
           ),
         )
         if (shouldAutoScroll) {
           pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
         }
-        return
-      }
-      const message =
-        error instanceof Error ? error.message : 'Unknown error occurred.'
-      const shouldAutoScroll =
-        submitFollowBreakRef.current !== null &&
-        submitFollowBreakRef.current === nearBottomBreakRef.current
-      setMessages((prev) =>
-        prev.map((item) =>
-          item.id === assistantMessage.id
-            ? { ...item, content: `Error: ${message}`, status: 'error' }
-            : item,
-        ),
-      )
-      if (shouldAutoScroll) {
-        pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
+      } finally {
+        setIsSending(false)
+        timeoutController.clear()
+        abortControllerRef.current = null
+        submitFollowBreakRef.current = null
       }
     } finally {
-      setIsSending(false)
-      timeoutController.clear()
-      abortControllerRef.current = null
-      submitFollowBreakRef.current = null
+      sendMessageGuardRef.current = false
     }
   }
 
@@ -1761,21 +1790,11 @@ function App() {
   const registerMessageRef = useCallback(
     (id: string, node: HTMLDivElement | null) => {
       const current = messageRefs.current
-      const previous = current.get(id)
-      if (previous && observerRef.current) {
-        observerRef.current.unobserve(previous)
-      }
       if (!node) {
         current.delete(id)
-        if (visibleMessageIdSetRef.current.delete(id)) {
-          setVisibleMessageIds(Array.from(visibleMessageIdSetRef.current))
-        }
         return
       }
       current.set(id, node)
-      if (observerRef.current) {
-        observerRef.current.observe(node)
-      }
     },
     [],
   )
@@ -1797,6 +1816,9 @@ function App() {
 
     if (collection.id === demoCollection.id) {
       setMessages(demoCollectionMessages.map(recordToMessage))
+      if (demoCollectionMessages.length > 0) {
+        pendingScrollRef.current = { mode: 'bottom', id: '' }
+      }
       return
     }
 
@@ -1808,6 +1830,9 @@ function App() {
           return
         }
         setMessages(records.map(recordToMessage))
+        if (records.length > 0) {
+          pendingScrollRef.current = { mode: 'bottom', id: '' }
+        }
       })
       .catch(() => {
         if (collectionLoadIdRef.current !== requestId) {
@@ -2006,25 +2031,6 @@ function App() {
             aria-label="Context controls"
             ref={contextRailRef}
           >
-            <div
-              className="context-rail-minimap"
-              aria-label="Conversation map"
-            >
-              {minimapBlocks.map((block) => {
-                const isInView = visibleMessageIdSet.has(block.id)
-                return (
-                  <button
-                    key={block.id}
-                    type="button"
-                    className={`context-rail-block${
-                      block.isActive ? ' active' : ''
-                    }${isInView ? ' in-view' : ''}`}
-                    onClick={() => scrollToMessage(block.id)}
-                    aria-label="Jump to message"
-                  />
-                )
-              })}
-            </div>
             <div className="context-rail-meta">
               <span className="context-rail-title">Context</span>
               <span className="context-rail-value">
@@ -2241,148 +2247,182 @@ function App() {
                         {fact.content}
                       </div>
                     ))}
+                    <div className="sidebar-quick-fact sidebar-quick-fact-action">
+                      <span
+                        className="tooltip tooltip-hover-only tooltip-left"
+                        data-tooltip={
+                          copyAckId === activeMessage?.id
+                            ? 'Copied'
+                            : 'Copy message'
+                        }
+                      >
+                        <button
+                          className="sidebar-icon-button"
+                          type="button"
+                          onClick={handleCopyActiveMessage}
+                          aria-label="Copy message"
+                        >
+                          <span
+                            className={`codicon ${
+                              copyAckId === activeMessage?.id
+                                ? 'codicon-check'
+                                : 'codicon-copy'
+                            }`}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </span>
+                    </div>
                   </div>
                 ) : null}
                 <div className="sidebar-section">
                   <div className="sidebar-group">
-                    <div className="section-title">Message</div>
-                    {inspectorMeta?.localTimestamp ? (
-                      <div className="sidebar-field">
-                        <div className="sidebar-field-label">Time</div>
-                        <div className="sidebar-field-value">
-                          {inspectorMeta.localTimestamp}
-                        </div>
-                      </div>
-                    ) : null}
-                    {inspectorMeta?.role ? (
-                      <div className="sidebar-field">
-                        <div className="sidebar-field-label">Role</div>
-                        <div className="sidebar-field-value">
-                          {inspectorMeta.role}
-                        </div>
-                      </div>
-                    ) : null}
-                    <div className="sidebar-field">
-                      <div className="sidebar-field-label">Words</div>
-                      <div className="sidebar-field-value">
-                        {inspectorStats.words}
-                      </div>
+                    <div className="sidebar-group-header">
+                      <div className="section-title">Message</div>
                     </div>
-                    <div className="sidebar-field">
-                      <div className="sidebar-field-label">Characters</div>
-                      <div className="sidebar-field-value">
-                        {inspectorStats.characters}
+                    <div className="sidebar-group-body">
+                      {inspectorMeta?.localTimestamp ? (
+                        <div className="sidebar-field">
+                          <div className="sidebar-field-label">Time</div>
+                          <div className="sidebar-field-value">
+                            {inspectorMeta.localTimestamp}
+                          </div>
+                        </div>
+                      ) : null}
+                      {inspectorMeta?.role ? (
+                        <div className="sidebar-field">
+                          <div className="sidebar-field-label">Role</div>
+                          <div className="sidebar-field-value">
+                            {inspectorMeta.role}
+                          </div>
+                        </div>
+                      ) : null}
+                      <div className="sidebar-field">
+                        <div className="sidebar-field-label">Words</div>
+                        <div className="sidebar-field-value">
+                          {inspectorStats.words}
+                        </div>
+                      </div>
+                      <div className="sidebar-field">
+                        <div className="sidebar-field-label">Characters</div>
+                        <div className="sidebar-field-value">
+                          {inspectorStats.characters}
+                        </div>
                       </div>
                     </div>
                   </div>
                   {isAssistantMessage ? (
                     <>
                       <div className="sidebar-group">
-                        <div className="section-title">Request</div>
-                        {formatMessageSource(inspectorMeta?.backend) ? (
-                          <div className="sidebar-field">
-                            <div className="sidebar-field-label">Source</div>
-                            <div className="sidebar-field-value">
-                              {formatMessageSource(inspectorMeta?.backend)}
+                        <div className="sidebar-group-header">
+                          <div className="section-title">Request</div>
+                        </div>
+                        <div className="sidebar-group-body">
+                          {formatMessageSource(inspectorMeta?.backend) ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">Source</div>
+                              <div className="sidebar-field-value">
+                                {formatMessageSource(inspectorMeta?.backend)}
+                              </div>
                             </div>
-                          </div>
-                        ) : null}
-                    {inspectorMeta?.requestModel ? (
-                      <div className="sidebar-field">
-                        <div className="sidebar-field-label">Model</div>
-                        <div className="sidebar-field-value">
-                          {inspectorMeta.requestModel}
+                          ) : null}
+                          {inspectorMeta?.requestModel ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">Model</div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.requestModel}
+                              </div>
+                            </div>
+                          ) : null}
+                          {typeof inspectorMeta?.temperature === 'number' ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Temperature
+                              </div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.temperature.toFixed(1)}
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                       </div>
-                    ) : null}
-                    {typeof inspectorMeta?.temperature === 'number' ? (
-                      <div className="sidebar-field">
-                        <div className="sidebar-field-label">Temperature</div>
-                        <div className="sidebar-field-value">
-                          {inspectorMeta.temperature.toFixed(1)}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
                       <div className="sidebar-group">
-                        <div className="section-title">Response</div>
-                        {inspectorMeta?.responseModel &&
-                        inspectorMeta.responseModel !==
-                          inspectorMeta.requestModel ? (
-                          <div className="sidebar-field">
-                            <div className="sidebar-field-label">Model</div>
-                            <div className="sidebar-field-value">
-                              {inspectorMeta.responseModel}
+                        <div className="sidebar-group-header">
+                          <div className="section-title">Response</div>
+                        </div>
+                        <div className="sidebar-group-body">
+                          {inspectorMeta?.responseModel &&
+                          inspectorMeta.responseModel !==
+                            inspectorMeta.requestModel ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">Model</div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.responseModel}
+                              </div>
                             </div>
-                          </div>
-                        ) : null}
-                        {formatLatency(inspectorMeta?.latencyMs) ? (
-                          <div className="sidebar-field">
-                            <div className="sidebar-field-label">Latency</div>
-                            <div className="sidebar-field-value">
-                              {formatLatency(inspectorMeta?.latencyMs)}
+                          ) : null}
+                          {formatLatency(inspectorMeta?.latencyMs) ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">Latency</div>
+                              <div className="sidebar-field-value">
+                                {formatLatency(inspectorMeta?.latencyMs)}
+                              </div>
                             </div>
-                          </div>
-                        ) : null}
-                        {promptTokens ? (
-                          <div className="sidebar-field">
-                            <div className="sidebar-field-label">
-                              Prompt tokens
+                          ) : null}
+                          {promptTokens ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Prompt tokens
+                              </div>
+                              <div className="sidebar-field-value">
+                                {promptTokens}
+                              </div>
                             </div>
-                            <div className="sidebar-field-value">
-                              {promptTokens}
+                          ) : null}
+                          {completionTokens ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Completion tokens
+                              </div>
+                              <div className="sidebar-field-value">
+                                {completionTokens}
+                              </div>
                             </div>
-                          </div>
-                        ) : null}
-                        {completionTokens ? (
-                          <div className="sidebar-field">
-                            <div className="sidebar-field-label">
-                              Completion tokens
+                          ) : null}
+                          {totalTokens ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Total tokens
+                              </div>
+                              <div className="sidebar-field-value">
+                                {totalTokens}
+                              </div>
                             </div>
-                            <div className="sidebar-field-value">
-                              {completionTokens}
+                          ) : null}
+                          {inspectorMeta?.finishReason ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Finish reason
+                              </div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.finishReason}
+                              </div>
                             </div>
-                          </div>
-                        ) : null}
-                        {totalTokens ? (
-                          <div className="sidebar-field">
-                            <div className="sidebar-field-label">Total tokens</div>
-                            <div className="sidebar-field-value">
-                              {totalTokens}
+                          ) : null}
+                          {inspectorMeta?.responseId ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Response ID
+                              </div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.responseId}
+                              </div>
                             </div>
-                          </div>
-                        ) : null}
-                        {inspectorMeta?.finishReason ? (
-                          <div className="sidebar-field">
-                            <div className="sidebar-field-label">
-                              Finish reason
-                            </div>
-                            <div className="sidebar-field-value">
-                              {inspectorMeta.finishReason}
-                            </div>
-                          </div>
-                        ) : null}
-                        {inspectorMeta?.responseId ? (
-                          <div className="sidebar-field">
-                            <div className="sidebar-field-label">Response ID</div>
-                            <div className="sidebar-field-value">
-                              {inspectorMeta.responseId}
-                            </div>
-                          </div>
-                        ) : null}
+                          ) : null}
+                        </div>
                       </div>
                     </>
                   ) : null}
-                </div>
-                <div className="sidebar-actions">
-                  <button
-                    className="sidebar-action"
-                    type="button"
-                    onClick={handleCopyActiveMessage}
-                  >
-                    <span className="codicon codicon-copy" aria-hidden="true" />
-                    Copy
-                  </button>
                 </div>
               </>
             ) : collectionTimestamp ? (
