@@ -38,14 +38,14 @@ Fields:
 
 Relation types:
 
-- `contains`: `fromId = collection`, `toId = message` (grouping)
+- `contains`: `fromId = collection`, `toId = block` (grouping)
 - `parent`: `fromId = child`, `toId = parent` (lineage)
 
 ### KV
 
 Ad-hoc key value pairs. Keys are strings, values are JSON values.
 
-The sync strategy for the KV pairs is not defined yet, but it likely will be bespoke since many of these are per-device state that wouldn't make sense being synced.
+The sync strategy for the KV pairs is not defined yet, but it likely will be bespoke since many of these are per-device state that shouldn't be synced.
 
 ## Sync model
 

@@ -1,5 +1,5 @@
 import type { ChatCompletionMessage } from './chat'
-import type { CollectionRecord, MessagePayload } from './storage'
+import type { CollectionRecord, BlockPayload } from './storage'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -87,16 +87,16 @@ export const groupCollectionsByDay = (collections: CollectionRecord[]) => {
 }
 
 const isChatRole = (
-  role: MessagePayload['role'],
+  role: BlockPayload['role'],
 ): role is ChatCompletionMessage['role'] =>
   role === 'user' || role === 'assistant' || role === 'system'
 
 export const toChatMessages = (
-  payloads: MessagePayload[],
+  payloads: BlockPayload[],
 ): ChatCompletionMessage[] =>
   payloads
     .filter(
-      (payload): payload is MessagePayload & {
+      (payload): payload is BlockPayload & {
         role: ChatCompletionMessage['role']
       } => isChatRole(payload.role),
     )

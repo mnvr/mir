@@ -3,21 +3,21 @@ import {
   createChatCompletion,
   createTimeoutController,
   demoCollection,
-  demoCollectionMessages,
+  demoCollectionBlocks,
   formatLocalTimestamp,
   formatLocalTimestampHeading,
   groupCollectionsByDay,
   parseLocalTimestampDate,
-  buildMessageRequest,
-  buildMessageResponse,
-  toMessagePayload,
-  formatMessageSource,
+  buildBlockRequest,
+  buildBlockResponse,
+  toBlockPayload,
+  formatBlockSource,
   formatLatency,
   toChatMessages,
   type CollectionPayload,
   type CollectionRecord,
-  type MessagePayload,
-  type MessageRecord,
+  type BlockPayload,
+  type BlockRecord,
 } from 'mir-core'
 import {
   memo,
@@ -32,26 +32,26 @@ import {
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
-  appendMessage,
+  appendBlock,
   createCollection,
   deleteKvValue,
   getActiveCollection,
   getKvValue,
   listCollections,
-  listCollectionMessages,
+  listCollectionBlocks,
   setActiveCollectionId,
   setKvValue,
   updateCollectionTitle,
 } from './services/db'
 import './App.css'
 
-type MessageDirection = 'input' | 'output'
+type BlockDirection = 'input' | 'output'
 
-type Message = {
+type Block = {
   id: string
-  direction: MessageDirection
+  direction: BlockDirection
   content: string
-  payload?: MessagePayload
+  payload?: BlockPayload
   status?: 'pending' | 'error' | 'canceled'
 }
 
@@ -90,28 +90,28 @@ const MARKDOWN_PLUGINS = [remarkGfm]
 
 const demoCollections = [demoCollection]
 
-const messageDirectionForRole = (role?: string): MessageDirection =>
+const blockDirectionForRole = (role?: string): BlockDirection =>
   role === 'user' ? 'input' : 'output'
 
-const isPersistedMessageId = (id: string) => id.startsWith('message_')
+const isPersistedBlockId = (id: string) => id.startsWith('block_')
 
-const getLatestPersistedMessageId = (messages: Message[]) => {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (!message?.payload) {
+const getLatestPersistedBlockId = (blocks: Block[]) => {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]
+    if (!block?.payload) {
       continue
     }
-    if (!isPersistedMessageId(message.id)) {
+    if (!isPersistedBlockId(block.id)) {
       continue
     }
-    return message.id
+    return block.id
   }
   return null
 }
 
-const recordToMessage = (record: MessageRecord): Message => ({
+const recordToBlock = (record: BlockRecord): Block => ({
   id: record.id,
-  direction: messageDirectionForRole(record.payload.role),
+  direction: blockDirectionForRole(record.payload.role),
   content: record.payload.content,
   payload: record.payload,
 })
@@ -131,8 +131,8 @@ const deriveCollectionTitle = (content: string) => {
 const formatTokenCount = (count?: number) =>
   typeof count === 'number' ? `${count.toLocaleString()} tokens` : null
 
-const formatMessageCount = (count: number) =>
-  `${count} message${count === 1 ? '' : 's'}`
+const formatBlockCount = (count: number) =>
+  `${count} block${count === 1 ? '' : 's'}`
 
 const formatLatencySeconds = (latencyMs?: number) => {
   if (typeof latencyMs !== 'number') {
@@ -202,8 +202,8 @@ const decryptSecret = async (cipherText: string) => {
   )) as string
 }
 
-type MessageRowProps = {
-  message: Message
+type BlockRowProps = {
+  block: Block
   isActive: boolean
   onMouseDown: () => void
   onClick: (id: string) => void
@@ -239,14 +239,14 @@ const TickTrail = memo(function TickTrail() {
   }
 
   return (
-    <div className="message-ticks" aria-hidden="true">
+    <div className="block-ticks" aria-hidden="true">
       {ticks.map((tick, index) => {
         const total = ticks.length
         const opacity = total <= 1 ? 0.7 : 0.2 + (0.6 * (index + 1)) / total
         return (
           <span
             key={tick}
-            className="message-tick"
+            className="block-tick"
             style={{ opacity }}
           />
         )
@@ -255,40 +255,40 @@ const TickTrail = memo(function TickTrail() {
   )
 })
 
-const MessageRow = memo(function MessageRow({
-  message,
+const BlockRow = memo(function BlockRow({
+  block,
   isActive,
   onMouseDown,
   onClick,
   registerRef,
-}: MessageRowProps) {
+}: BlockRowProps) {
   return (
     <div
-      ref={(node) => registerRef(message.id, node)}
-      data-message-id={message.id}
-      className={`message ${message.direction}${
-        message.status ? ` ${message.status}` : ''
+      ref={(node) => registerRef(block.id, node)}
+      data-block-id={block.id}
+      className={`block ${block.direction}${
+        block.status ? ` ${block.status}` : ''
       }${isActive ? ' selected' : ''}`}
       onMouseDown={onMouseDown}
       onClick={(event) => {
         event.stopPropagation()
-        onClick(message.id)
+        onClick(block.id)
       }}
     >
-      {message.direction === 'input' ? (
+      {block.direction === 'input' ? (
         <blockquote className="input-quote">
           <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>
-            {message.content}
+            {block.content}
           </ReactMarkdown>
         </blockquote>
       ) : (
         <>
           <div className="output-markdown">
             <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>
-              {message.content}
+              {block.content}
             </ReactMarkdown>
           </div>
-          {message.status === 'pending' ? <TickTrail /> : null}
+          {block.status === 'pending' ? <TickTrail /> : null}
         </>
       )}
     </div>
@@ -296,45 +296,45 @@ const MessageRow = memo(function MessageRow({
 })
 
 type ChatPaneProps = {
-  messages: Message[]
-  activeMessageId: string | null
+  blocks: Block[]
+  activeBlockId: string | null
   showEmptyState: boolean
   endRef: React.RefObject<HTMLDivElement | null>
   onChatClick: (event: MouseEvent<HTMLElement>) => void
-  onMessageMouseDown: () => void
-  onMessageClick: (id: string) => void
-  registerMessageRef: (id: string, node: HTMLDivElement | null) => void
+  onBlockMouseDown: () => void
+  onBlockClick: (id: string) => void
+  registerBlockRef: (id: string, node: HTMLDivElement | null) => void
 }
 
 const ChatPane = memo(function ChatPane({
-  messages,
-  activeMessageId,
+  blocks,
+  activeBlockId,
   showEmptyState,
   endRef,
   onChatClick,
-  onMessageMouseDown,
-  onMessageClick,
-  registerMessageRef,
+  onBlockMouseDown,
+  onBlockClick,
+  registerBlockRef,
 }: ChatPaneProps) {
   return (
     <main className="chat" onClick={onChatClick}>
-      {messages.length === 0 && showEmptyState ? (
+      {blocks.length === 0 && showEmptyState ? (
         <div className="chat-empty">
           <div className="chat-empty-title">No context yet</div>
           <div className="chat-empty-body">
-            Add a message to start building context
+            Add a block to start building context
           </div>
         </div>
       ) : (
         <div className="chat-stream">
-          {messages.map((message) => (
-            <MessageRow
-              key={message.id}
-              message={message}
-              isActive={message.id === activeMessageId}
-              onMouseDown={onMessageMouseDown}
-              onClick={onMessageClick}
-              registerRef={registerMessageRef}
+          {blocks.map((block) => (
+            <BlockRow
+              key={block.id}
+              block={block}
+              isActive={block.id === activeBlockId}
+              onMouseDown={onBlockMouseDown}
+              onClick={onBlockClick}
+              registerRef={registerBlockRef}
             />
           ))}
         </div>
@@ -346,8 +346,8 @@ const ChatPane = memo(function ChatPane({
 
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null)
-  const [messages, setMessages] = useState<Message[]>([])
-  const [hasLoadedMessages, setHasLoadedMessages] = useState(false)
+  const [blocks, setBlocks] = useState<Block[]>([])
+  const [hasLoadedBlocks, setHasLoadedBlocks] = useState(false)
   const [draft, setDraft] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
@@ -371,7 +371,7 @@ function App() {
     useState<CollectionPayload | null>(null)
   const [activeCollection, setActiveCollection] =
     useState<CollectionRecord | null>(null)
-  const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
+  const [activeBlockId, setActiveBlockId] = useState<string | null>(null)
   const [selectedCollectionId, setSelectedCollectionId] =
     useState<string | null>(null)
   const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect'>(
@@ -389,8 +389,8 @@ function App() {
   const mainColumnRef = useRef<HTMLDivElement | null>(null)
   const contextRailRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
-  const messageRefs = useRef(new Map<string, HTMLDivElement>())
-  const suppressMessageActivationRef = useRef(false)
+  const blockRefs = useRef(new Map<string, HTMLDivElement>())
+  const suppressBlockActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
   const scrollIgnoreUntilRef = useRef(0)
   const pendingScrollRef = useRef<PendingScroll | null>(null)
@@ -407,8 +407,8 @@ function App() {
   const submitContinuationMultilineRef = useRef<() => void>(() => {})
   const insertNewlineRef = useRef<() => void>(() => {})
   const focusComposerRef = useRef<() => void>(() => {})
-  const selectPreviousMessageRef = useRef<() => void>(() => {})
-  const selectNextMessageRef = useRef<() => void>(() => {})
+  const selectPreviousBlockRef = useRef<() => void>(() => {})
+  const selectNextBlockRef = useRef<() => void>(() => {})
   const scrollToTopRef = useRef<() => void>(() => {})
   const scrollToEndRef = useRef<() => void>(() => {})
   const sendMessageGuardRef = useRef(false)
@@ -420,14 +420,14 @@ function App() {
   const hasNewlineRef = useRef(hasNewline)
   const isSendingRef = useRef(isSending)
   const sendMessageRef = useRef<(() => Promise<void>) | null>(null)
-  const activeMessage = useMemo(
-    () => messages.find((message) => message.id === activeMessageId) ?? null,
-    [activeMessageId, messages],
+  const activeBlock = useMemo(
+    () => blocks.find((block) => block.id === activeBlockId) ?? null,
+    [activeBlockId, blocks],
   )
-  const activePayload = activeMessage?.payload
+  const activePayload = activeBlock?.payload
   const activeWordMatches = useMemo(
-    () => (activeMessage ? activeMessage.content.match(/\S+/g) : null),
-    [activeMessage],
+    () => (activeBlock ? activeBlock.content.match(/\S+/g) : null),
+    [activeBlock],
   )
   const groupedCollections = useMemo(
     () => groupCollectionsByDay(collections),
@@ -435,13 +435,13 @@ function App() {
   )
   const inspectorStats = useMemo(
     () =>
-      activeMessage
+      activeBlock
         ? {
-            characters: activeMessage.content.length,
+            characters: activeBlock.content.length,
             words: activeWordMatches ? activeWordMatches.length : 0,
           }
         : null,
-    [activeMessage, activeWordMatches],
+    [activeBlock, activeWordMatches],
   )
   const inspectorMeta = useMemo(
     () =>
@@ -461,7 +461,7 @@ function App() {
         : null,
     [activePayload],
   )
-  const isAssistantMessage = inspectorMeta?.role === 'assistant'
+  const isAssistantBlock = inspectorMeta?.role === 'assistant'
   const completionTokensValue = inspectorMeta?.usage?.completionTokens
   const latencySeconds = formatLatencySeconds(inspectorMeta?.latencyMs)
   const quickFacts = useMemo(() => {
@@ -470,7 +470,7 @@ function App() {
     if (quickTime) {
       items.push({ key: 'time', content: quickTime })
     }
-    if (isAssistantMessage) {
+    if (isAssistantBlock) {
       const quickModel =
         inspectorMeta?.requestModel ?? inspectorMeta?.responseModel ?? null
       if (quickModel) {
@@ -499,7 +499,7 @@ function App() {
     inspectorMeta?.localTimestamp,
     inspectorMeta?.requestModel,
     inspectorMeta?.responseModel,
-    isAssistantMessage,
+    isAssistantBlock,
     latencySeconds,
   ])
   const promptTokens = formatTokenCount(inspectorMeta?.usage?.promptTokens)
@@ -508,14 +508,14 @@ function App() {
   )
   const totalTokens = formatTokenCount(inspectorMeta?.usage?.totalTokens)
   const contextTokens = useMemo(() => {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const usage = messages[index]?.payload?.response?.usage
+    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+      const usage = blocks[index]?.payload?.response?.usage
       if (usage?.totalTokens) {
         return usage.totalTokens
       }
     }
     return null
-  }, [messages])
+  }, [blocks])
   const lastRunLatency = formatLatencySeconds(lastRunStats?.latencyMs)
   const lastRunTokensLabel =
     typeof lastRunStats?.completionTokens === 'number'
@@ -540,7 +540,7 @@ function App() {
   const collectionTimestamp =
     activeCollection?.payload.localTimestamp ?? pendingCollection?.localTimestamp
   const collectionDateLabel = formatLocalTimestampHeading(collectionTimestamp)
-  const collectionMessageCountLabel = formatMessageCount(messages.length)
+  const collectionBlockCountLabel = formatBlockCount(blocks.length)
   const modelLabel = model || 'Default'
   const temperatureLabel = temperature.toFixed(1)
 
@@ -716,8 +716,8 @@ function App() {
       }
     }
 
-    const loadMessages = async () => {
-      setHasLoadedMessages(false)
+    const loadBlocks = async () => {
+      setHasLoadedBlocks(false)
       try {
         const collection = await getActiveCollection()
         if (!isMounted) {
@@ -728,11 +728,11 @@ function App() {
           setActiveCollection(null)
           setPendingCollection(null)
           setSelectedCollectionId(null)
-          setMessages([])
-          setHasLoadedMessages(true)
+          setBlocks([])
+          setHasLoadedBlocks(true)
           return
         }
-        const storedMessages = await listCollectionMessages(collection.id)
+        const storedBlocks = await listCollectionBlocks(collection.id)
         if (!isMounted) {
           return
         }
@@ -740,21 +740,20 @@ function App() {
         setActiveCollection(collection)
         setPendingCollection(null)
         setSelectedCollectionId(collection.id)
-        setMessages(storedMessages.map(recordToMessage))
-        setHasLoadedMessages(true)
-        if (storedMessages.length > 0) {
+        setBlocks(storedBlocks.map(recordToBlock))
+        setHasLoadedBlocks(true)
+        if (storedBlocks.length > 0) {
           pendingScrollRef.current = { mode: 'bottom', id: '' }
         }
       } catch {
         // Ignore local persistence failures on cold start.
         if (isMounted) {
-          setHasLoadedMessages(true)
+          setHasLoadedBlocks(true)
         }
       }
     }
 
-    void loadCollections()
-    void loadMessages()
+    void Promise.all([loadCollections(), loadBlocks()])
 
     return () => {
       isMounted = false
@@ -762,7 +761,7 @@ function App() {
   }, [])
 
   const focusComposer = useCallback(() => {
-    setActiveMessageId(null)
+    setActiveBlockId(null)
     const textarea = textareaRef.current
     if (textarea) {
       textarea.focus()
@@ -782,50 +781,50 @@ function App() {
     scrollIgnoreUntilRef.current = Date.now() + 200
   }, [])
 
-  const scrollToMessage = useCallback((messageId: string) => {
-    setActiveMessageId(messageId)
+  const scrollToBlock = useCallback((blockId: string) => {
+    setActiveBlockId(blockId)
     window.requestAnimationFrame(() => {
-      messageRefs.current
-        .get(messageId)
+      blockRefs.current
+        .get(blockId)
         ?.scrollIntoView({ block: 'nearest' })
     })
   }, [])
 
-  const selectPreviousMessage = useCallback(() => {
-    if (!messages.length) {
+  const selectPreviousBlock = useCallback(() => {
+    if (!blocks.length) {
       return
     }
 
-    const currentIndex = activeMessageId
-      ? messages.findIndex((message) => message.id === activeMessageId)
+    const currentIndex = activeBlockId
+      ? blocks.findIndex((block) => block.id === activeBlockId)
       : -1
 
     if (currentIndex === -1) {
-      scrollToMessage(messages[messages.length - 1].id)
+      scrollToBlock(blocks[blocks.length - 1].id)
       return
     }
 
     if (currentIndex > 0) {
-      scrollToMessage(messages[currentIndex - 1].id)
+      scrollToBlock(blocks[currentIndex - 1].id)
     }
-  }, [activeMessageId, messages, scrollToMessage])
+  }, [activeBlockId, blocks, scrollToBlock])
 
-  const selectNextMessage = useCallback(() => {
-    if (!messages.length) {
+  const selectNextBlock = useCallback(() => {
+    if (!blocks.length) {
       return
     }
 
-    const currentIndex = activeMessageId
-      ? messages.findIndex((message) => message.id === activeMessageId)
+    const currentIndex = activeBlockId
+      ? blocks.findIndex((block) => block.id === activeBlockId)
       : -1
 
-    if (currentIndex === -1 || currentIndex >= messages.length - 1) {
+    if (currentIndex === -1 || currentIndex >= blocks.length - 1) {
       focusComposer()
       return
     }
 
-    scrollToMessage(messages[currentIndex + 1].id)
-  }, [activeMessageId, messages, focusComposer, scrollToMessage])
+    scrollToBlock(blocks[currentIndex + 1].id)
+  }, [activeBlockId, blocks, focusComposer, scrollToBlock])
 
 
   useEffect(() => {
@@ -873,49 +872,49 @@ function App() {
 
         event.preventDefault()
         textarea.blur()
-        selectPreviousMessage()
+        selectPreviousBlock()
         return
       }
 
       if (event.key === 'ArrowUp') {
         event.preventDefault()
-        selectPreviousMessage()
+        selectPreviousBlock()
         return
       }
       event.preventDefault()
-      selectNextMessage()
+      selectNextBlock()
     }
 
     window.addEventListener('keydown', handleArrowNavigation)
     return () => {
       window.removeEventListener('keydown', handleArrowNavigation)
     }
-  }, [selectNextMessage, selectPreviousMessage])
+  }, [selectNextBlock, selectPreviousBlock])
 
-  const handleCopyActiveMessage = useCallback(() => {
-    if (!activeMessage) {
+  const handleCopyActiveBlock = useCallback(() => {
+    if (!activeBlock) {
       return
     }
-    const messageId = activeMessage.id
+    const blockId = activeBlock.id
     void navigator.clipboard
-      ?.writeText(activeMessage.content)
+      ?.writeText(activeBlock.content)
       .then(() => {
-        setCopyAckId(messageId)
+        setCopyAckId(blockId)
         if (copyAckTimeoutRef.current) {
           window.clearTimeout(copyAckTimeoutRef.current)
         }
         copyAckTimeoutRef.current = window.setTimeout(() => {
-          setCopyAckId((prev) => (prev === messageId ? null : prev))
+          setCopyAckId((prev) => (prev === blockId ? null : prev))
         }, 2000)
       })
       .catch(() => {})
-  }, [activeMessage])
+  }, [activeBlock])
 
   useEffect(() => {
-    if (copyAckId && activeMessage?.id !== copyAckId) {
+    if (copyAckId && activeBlock?.id !== copyAckId) {
       setCopyAckId(null)
     }
-  }, [activeMessage?.id, copyAckId])
+  }, [activeBlock?.id, copyAckId])
 
   useEffect(() => {
     return () => {
@@ -955,19 +954,19 @@ function App() {
         return
       }
 
-      if (!activeMessage) {
+      if (!activeBlock) {
         return
       }
 
       event.preventDefault()
-      void handleCopyActiveMessage()
+      void handleCopyActiveBlock()
     }
 
     window.addEventListener('keydown', handleCopyShortcut)
     return () => {
       window.removeEventListener('keydown', handleCopyShortcut)
     }
-  }, [activeMessage, handleCopyActiveMessage])
+  }, [activeBlock, handleCopyActiveBlock])
 
   useEffect(() => {
     if (!window.ipcRenderer?.on) {
@@ -978,10 +977,10 @@ function App() {
       focusComposerRef.current()
     }
     const handleSelectPrevious = () => {
-      selectPreviousMessageRef.current()
+      selectPreviousBlockRef.current()
     }
     const handleSelectNext = () => {
-      selectNextMessageRef.current()
+      selectNextBlockRef.current()
     }
     const handleScrollTop = () => {
       scrollToTopRef.current()
@@ -1157,7 +1156,7 @@ function App() {
   useLayoutEffect(() => {
     followRef.current = isNearBottom()
     stickToBottomRef.current = isAtBottom()
-  }, [isAtBottom, isNearBottom, messages.length])
+  }, [isAtBottom, isNearBottom, blocks.length])
 
   const queueScrollToBottom = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -1174,10 +1173,10 @@ function App() {
     })
   }, [markProgrammaticScroll])
 
-  const queueScrollToMessageForReading = useCallback((messageId: string) => {
+  const queueScrollToBlockForReading = useCallback((blockId: string) => {
     window.requestAnimationFrame(() => {
       const container = mainColumnRef.current
-      const node = messageRefs.current.get(messageId)
+      const node = blockRefs.current.get(blockId)
       if (!container || !node) {
         queueScrollToBottom()
         return
@@ -1232,16 +1231,16 @@ function App() {
 
   useEffect(() => {
     focusComposerRef.current = focusComposer
-    selectPreviousMessageRef.current = selectPreviousMessage
-    selectNextMessageRef.current = selectNextMessage
+    selectPreviousBlockRef.current = selectPreviousBlock
+    selectNextBlockRef.current = selectNextBlock
     scrollToTopRef.current = scrollToTop
     scrollToEndRef.current = scrollToEnd
   }, [
     focusComposer,
     scrollToEnd,
     scrollToTop,
-    selectNextMessage,
-    selectPreviousMessage,
+    selectNextBlock,
+    selectPreviousBlock,
   ])
 
   useEffect(() => {
@@ -1250,7 +1249,7 @@ function App() {
       if (!hasPrimaryModifier) {
         if (event.key === 'Escape') {
           event.preventDefault()
-          setActiveMessageId(null)
+          setActiveBlockId(null)
           blurComposer()
         }
         return
@@ -1343,8 +1342,8 @@ function App() {
       queueScrollToBottom()
       return
     }
-    queueScrollToMessageForReading(pending.id)
-  }, [messages, queueScrollToBottom, queueScrollToMessageForReading])
+    queueScrollToBlockForReading(pending.id)
+  }, [blocks, queueScrollToBottom, queueScrollToBlockForReading])
 
   useLayoutEffect(() => {
     const appEl = appRef.current
@@ -1394,7 +1393,7 @@ function App() {
   const startNewCollection = useCallback(() => {
     setSuppressNewCollectionTooltip(true)
     setSelectedCollectionId(null)
-    setMessages([])
+    setBlocks([])
     setDraft('')
     setCollectionId(null)
     setActiveCollection(null)
@@ -1402,7 +1401,7 @@ function App() {
       title: NEW_COLLECTION_TITLE,
       localTimestamp: formatLocalTimestamp(new Date()),
     })
-    setActiveMessageId(null)
+    setActiveBlockId(null)
     setLastRunStats(null)
 
     focusComposer()
@@ -1442,42 +1441,42 @@ function App() {
     sendMessageGuardRef.current = true
 
     try {
-      const parentMessageId = getLatestPersistedMessageId(messages)
+      const parentBlockId = getLatestPersistedBlockId(blocks)
       const derivedTitle = deriveCollectionTitle(trimmedDraft)
       const endpoint = buildChatCompletionEndpoint(baseUrl)
-      const request = buildMessageRequest(baseUrl, model, temperature)
+      const request = buildBlockRequest(baseUrl, model, temperature)
       const timestamp = Date.now()
-      const userPayload = toMessagePayload('user', trimmedDraft, {
+      const userPayload = toBlockPayload('user', trimmedDraft, {
         request,
       })
-      const userMessage: Message = {
-        id: `m-${timestamp}-input`,
+      const userBlock: Block = {
+        id: `b-${timestamp}-input`,
         direction: 'input',
         content: trimmedDraft,
         payload: userPayload,
       }
 
-      const assistantMessage: Message = {
-        id: `m-${timestamp}-output`,
+      const assistantBlock: Block = {
+        id: `b-${timestamp}-output`,
         direction: 'output',
         content: 'Generating continuation…',
         status: 'pending',
       }
 
-      setMessages((prev) => [...prev, userMessage, assistantMessage])
+      setBlocks((prev) => [...prev, userBlock, assistantBlock])
       setDraft('')
       const shouldAutoScroll = isNearBottom()
       followRef.current = shouldAutoScroll
 
       if (shouldAutoScroll) {
         submitFollowBreakRef.current = nearBottomBreakRef.current
-        pendingScrollRef.current = { id: assistantMessage.id, mode: 'bottom' }
+        pendingScrollRef.current = { id: assistantBlock.id, mode: 'bottom' }
       } else {
         submitFollowBreakRef.current = null
       }
 
       let targetCollectionId = collectionId
-      let userRecordPromise: Promise<MessageRecord | null> | null = null
+      let userRecordPromise: Promise<BlockRecord | null> | null = null
       if (!selectedCollectionId && !targetCollectionId) {
         try {
           const pendingTitle = pendingCollection?.title
@@ -1502,7 +1501,7 @@ function App() {
 
       if (
         targetCollectionId &&
-        messages.length === 0 &&
+        blocks.length === 0 &&
         activeCollection?.id === targetCollectionId &&
         activeCollection.payload.title === NEW_COLLECTION_TITLE &&
         activeCollection.id !== demoCollection.id
@@ -1519,54 +1518,54 @@ function App() {
       }
 
       if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
-        const pendingUserRecord = appendMessage(
+        const pendingUserRecord = appendBlock(
           targetCollectionId,
           userPayload,
           {
-            parentIds: parentMessageId ? [parentMessageId] : undefined,
+            parentIds: parentBlockId ? [parentBlockId] : undefined,
           },
         )
         userRecordPromise = pendingUserRecord
         void pendingUserRecord
           .then((record) => {
-            setMessages((prev) =>
-              prev.map((message) =>
-                message.id === userMessage.id
-                  ? { ...message, id: record.id }
-                  : message,
+            setBlocks((prev) =>
+              prev.map((block) =>
+                block.id === userBlock.id
+                  ? { ...block, id: record.id }
+                  : block,
               ),
             )
-            setActiveMessageId((prev) =>
-              prev === userMessage.id ? record.id : prev,
+            setActiveBlockId((prev) =>
+              prev === userBlock.id ? record.id : prev,
             )
           })
           .catch(() => {})
       }
 
       if (!endpoint) {
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMessage.id
+        setBlocks((prev) =>
+          prev.map((block) =>
+            block.id === assistantBlock.id
               ? {
-                  ...message,
+                  ...block,
                   content:
                     'Error: Add a base URL (OPENAI_BASE_URL style) in Connection settings first.',
                   status: 'error',
                 }
-              : message,
+              : block,
           ),
         )
         return
       }
 
-      const contextPayloads = [...messages, userMessage]
+      const contextPayloads = [...blocks, userBlock]
         .filter(
           (
-            message,
-          ): message is Message & { payload: MessagePayload } =>
-            !message.status && Boolean(message.payload),
+            block,
+          ): block is Block & { payload: BlockPayload } =>
+            !block.status && Boolean(block.payload),
         )
-        .map((message) => message.payload)
+        .map((block) => block.payload)
       const contextMessages = toChatMessages(contextPayloads)
       const token = apiKey
       const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
@@ -1586,12 +1585,12 @@ function App() {
           signal: timeoutController.signal,
         })
         const latencyMs = Date.now() - requestStart
-        const response = buildMessageResponse(raw, latencyMs)
+        const response = buildBlockResponse(raw, latencyMs)
         setLastRunStats({
           completionTokens: response?.usage?.completionTokens,
           latencyMs,
         })
-        const assistantPayload = toMessagePayload('assistant', nextContent, {
+        const assistantPayload = toBlockPayload('assistant', nextContent, {
           request,
           response,
         })
@@ -1599,16 +1598,16 @@ function App() {
         const shouldAutoScroll =
           submitFollowBreakRef.current !== null &&
           submitFollowBreakRef.current === nearBottomBreakRef.current
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMessage.id
+        setBlocks((prev) =>
+          prev.map((block) =>
+            block.id === assistantBlock.id
               ? {
-                  ...message,
+                  ...block,
                   content: nextContent,
                   status: undefined,
                   payload: assistantPayload,
                 }
-              : message,
+              : block,
           ),
         )
         if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
@@ -1617,7 +1616,7 @@ function App() {
             const userRecord = await userRecordPromise.catch(() => null)
             assistantParentId = userRecord?.id ?? null
           }
-          void appendMessage(
+          void appendBlock(
             targetCollectionId,
             assistantPayload,
             {
@@ -1625,53 +1624,53 @@ function App() {
             },
           )
             .then((record) => {
-              setMessages((prev) =>
-                prev.map((message) =>
-                  message.id === assistantMessage.id
-                    ? { ...message, id: record.id, content: nextContent }
-                    : message,
+              setBlocks((prev) =>
+                prev.map((block) =>
+                  block.id === assistantBlock.id
+                    ? { ...block, id: record.id, content: nextContent }
+                    : block,
                 ),
               )
-              setActiveMessageId((prev) =>
-                prev === assistantMessage.id ? record.id : prev,
+              setActiveBlockId((prev) =>
+                prev === assistantBlock.id ? record.id : prev,
               )
             })
             .catch(() => {})
         }
         if (shouldAutoScroll) {
-          pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
+          pendingScrollRef.current = { id: assistantBlock.id, mode: 'read' }
         }
       } catch (error) {
         if (isAbortError(error)) {
           const shouldAutoScroll =
             submitFollowBreakRef.current !== null &&
             submitFollowBreakRef.current === nearBottomBreakRef.current
-          setMessages((prev) =>
+          setBlocks((prev) =>
             prev.map((item) =>
-              item.id === assistantMessage.id
+              item.id === assistantBlock.id
                 ? { ...item, content: 'Request stopped.', status: 'canceled' }
                 : item,
             ),
           )
           if (shouldAutoScroll) {
-            pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
+            pendingScrollRef.current = { id: assistantBlock.id, mode: 'read' }
           }
           return
         }
-        const message =
+        const errorMessage =
           error instanceof Error ? error.message : 'Unknown error occurred.'
         const shouldAutoScroll =
           submitFollowBreakRef.current !== null &&
           submitFollowBreakRef.current === nearBottomBreakRef.current
-        setMessages((prev) =>
+        setBlocks((prev) =>
           prev.map((item) =>
-            item.id === assistantMessage.id
-              ? { ...item, content: `Error: ${message}`, status: 'error' }
+            item.id === assistantBlock.id
+              ? { ...item, content: `Error: ${errorMessage}`, status: 'error' }
               : item,
           ),
         )
         if (shouldAutoScroll) {
-          pendingScrollRef.current = { id: assistantMessage.id, mode: 'read' }
+          pendingScrollRef.current = { id: assistantBlock.id, mode: 'read' }
         }
       } finally {
         setIsSending(false)
@@ -1767,10 +1766,10 @@ function App() {
     if (!target) {
       return
     }
-    if (target.closest('.message')) {
+    if (target.closest('.block')) {
       return
     }
-    setActiveMessageId(null)
+    setActiveBlockId(null)
   }, [])
 
   const hasTextSelection = useCallback(() => {
@@ -1778,27 +1777,27 @@ function App() {
     return Boolean(selection && selection.toString().length > 0)
   }, [])
 
-  const handleMessageMouseDown = useCallback(() => {
+  const handleBlockMouseDown = useCallback(() => {
     if (hasTextSelection()) {
-      suppressMessageActivationRef.current = true
+      suppressBlockActivationRef.current = true
     }
   }, [hasTextSelection])
 
-  const handleMessageClick = useCallback(
-    (messageId: string) => {
-      if (suppressMessageActivationRef.current || hasTextSelection()) {
-        suppressMessageActivationRef.current = false
+  const handleBlockClick = useCallback(
+    (blockId: string) => {
+      if (suppressBlockActivationRef.current || hasTextSelection()) {
+        suppressBlockActivationRef.current = false
         return
       }
-      suppressMessageActivationRef.current = false
-      setActiveMessageId((prev) => (prev === messageId ? null : messageId))
+      suppressBlockActivationRef.current = false
+      setActiveBlockId((prev) => (prev === blockId ? null : blockId))
     },
     [hasTextSelection],
   )
 
-  const registerMessageRef = useCallback(
+  const registerBlockRef = useCallback(
     (id: string, node: HTMLDivElement | null) => {
-      const current = messageRefs.current
+      const current = blockRefs.current
       if (!node) {
         current.delete(id)
         return
@@ -1820,29 +1819,29 @@ function App() {
     setCollectionId(collection.id)
     setActiveCollection(collection)
     setPendingCollection(null)
-    setActiveMessageId(null)
+    setActiveBlockId(null)
     setLastRunStats(null)
 
     if (collection.id === demoCollection.id) {
-      setHasLoadedMessages(false)
-      setMessages(demoCollectionMessages.map(recordToMessage))
-      setHasLoadedMessages(true)
-      if (demoCollectionMessages.length > 0) {
+      setHasLoadedBlocks(false)
+      setBlocks(demoCollectionBlocks.map(recordToBlock))
+      setHasLoadedBlocks(true)
+      if (demoCollectionBlocks.length > 0) {
         pendingScrollRef.current = { mode: 'bottom', id: '' }
       }
       return
     }
 
-    setHasLoadedMessages(false)
-    setMessages([])
+    setHasLoadedBlocks(false)
+    setBlocks([])
     void setActiveCollectionId(collection.id)
-    void listCollectionMessages(collection.id)
+    void listCollectionBlocks(collection.id)
       .then((records) => {
         if (collectionLoadIdRef.current !== requestId) {
           return
         }
-        setMessages(records.map(recordToMessage))
-        setHasLoadedMessages(true)
+        setBlocks(records.map(recordToBlock))
+        setHasLoadedBlocks(true)
         if (records.length > 0) {
           pendingScrollRef.current = { mode: 'bottom', id: '' }
         }
@@ -1851,8 +1850,8 @@ function App() {
         if (collectionLoadIdRef.current !== requestId) {
           return
         }
-        setMessages([])
-        setHasLoadedMessages(true)
+        setBlocks([])
+        setHasLoadedBlocks(true)
       })
   }
 
@@ -2031,14 +2030,14 @@ function App() {
               </section>
             ) : null}
             <ChatPane
-              messages={messages}
-              activeMessageId={activeMessageId}
-              showEmptyState={hasLoadedMessages}
+              blocks={blocks}
+              activeBlockId={activeBlockId}
+              showEmptyState={hasLoadedBlocks}
               endRef={endRef}
               onChatClick={handleChatClick}
-              onMessageMouseDown={handleMessageMouseDown}
-              onMessageClick={handleMessageClick}
-              registerMessageRef={registerMessageRef}
+              onBlockMouseDown={handleBlockMouseDown}
+              onBlockClick={handleBlockClick}
+              registerBlockRef={registerBlockRef}
             />
           </div>
           <div
@@ -2253,7 +2252,7 @@ function App() {
                   </div>
                 ) : null}
               </div>
-            ) : activeMessage && inspectorStats ? (
+            ) : activeBlock && inspectorStats ? (
               <>
                 {quickFacts.length > 0 ? (
                   <div className="sidebar-quick-facts">
@@ -2266,20 +2265,20 @@ function App() {
                       <span
                         className="tooltip tooltip-hover-only tooltip-left"
                         data-tooltip={
-                          copyAckId === activeMessage?.id
+                          copyAckId === activeBlock?.id
                             ? 'Copied'
-                            : 'Copy message'
+                            : 'Copy block'
                         }
                       >
                         <button
                           className="sidebar-icon-button"
                           type="button"
-                          onClick={handleCopyActiveMessage}
-                          aria-label="Copy message"
+                          onClick={handleCopyActiveBlock}
+                          aria-label="Copy block"
                         >
                           <span
                             className={`codicon ${
-                              copyAckId === activeMessage?.id
+                              copyAckId === activeBlock?.id
                                 ? 'codicon-check'
                                 : 'codicon-copy'
                             }`}
@@ -2293,7 +2292,7 @@ function App() {
                 <div className="sidebar-section">
                   <div className="sidebar-group">
                     <div className="sidebar-group-header">
-                      <div className="section-title">Message</div>
+                      <div className="section-title">Block</div>
                     </div>
                     <div className="sidebar-group-body">
                       {inspectorMeta?.localTimestamp ? (
@@ -2326,18 +2325,18 @@ function App() {
                       </div>
                     </div>
                   </div>
-                  {isAssistantMessage ? (
+                  {isAssistantBlock ? (
                     <>
                       <div className="sidebar-group">
                         <div className="sidebar-group-header">
                           <div className="section-title">Request</div>
                         </div>
                         <div className="sidebar-group-body">
-                          {formatMessageSource(inspectorMeta?.backend) ? (
+                          {formatBlockSource(inspectorMeta?.backend) ? (
                             <div className="sidebar-field">
                               <div className="sidebar-field-label">Source</div>
                               <div className="sidebar-field-value">
-                                {formatMessageSource(inspectorMeta?.backend)}
+                                {formatBlockSource(inspectorMeta?.backend)}
                               </div>
                             </div>
                           ) : null}
@@ -2448,13 +2447,13 @@ function App() {
                       collectionTimestamp}
                   </div>
                   <div className="sidebar-quick-fact">
-                    {collectionMessageCountLabel}
+                    {collectionBlockCountLabel}
                   </div>
                 </div>
               </div>
             ) : (
               <div className="sidebar-empty">
-                Select a message to inspect.
+                Select a block to inspect.
               </div>
             )}
           </div>

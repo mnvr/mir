@@ -4,8 +4,8 @@ import type {
   RelationType,
   CollectionPayload,
   CollectionRecord,
-  MessagePayload,
-  MessageRecord,
+  BlockPayload,
+  BlockRecord,
   KvEntry,
   MirRecord,
   RecordType,
@@ -335,25 +335,22 @@ export const listCollections = async (): Promise<CollectionRecord[]> => {
   })
 }
 
-const sortMessagesByParent = async (
-  messages: MessageRecord[],
-): Promise<MessageRecord[]> => {
-  if (messages.length <= 1) {
-    return messages
+const sortBlocksByParent = async (
+  blocks: BlockRecord[],
+): Promise<BlockRecord[]> => {
+  if (blocks.length <= 1) {
+    return blocks
   }
 
-  const messageById = new Map(messages.map((message) => [message.id, message]))
-  const parentIdsByMessageId = new Map<string, string[]>()
+  const blockById = new Map(blocks.map((block) => [block.id, block]))
+  const parentIdsByBlockId = new Map<string, string[]>()
 
   await Promise.all(
-    messages.map(async (message) => {
-      const parentIds = await listRelationTargetsByFromType(
-        message.id,
-        'parent',
-      )
-      parentIdsByMessageId.set(
-        message.id,
-        parentIds.filter((parentId) => messageById.has(parentId)),
+    blocks.map(async (block) => {
+      const parentIds = await listRelationTargetsByFromType(block.id, 'parent')
+      parentIdsByBlockId.set(
+        block.id,
+        parentIds.filter((parentId) => blockById.has(parentId)),
       )
     }),
   )
@@ -361,26 +358,26 @@ const sortMessagesByParent = async (
   const childrenByParent = new Map<string, string[]>()
   const indegreeById = new Map<string, number>()
 
-  messages.forEach((message) => {
-    const parentIds = parentIdsByMessageId.get(message.id) ?? []
-    indegreeById.set(message.id, parentIds.length)
+  blocks.forEach((block) => {
+    const parentIds = parentIdsByBlockId.get(block.id) ?? []
+    indegreeById.set(block.id, parentIds.length)
     parentIds.forEach((parentId) => {
       const siblings = childrenByParent.get(parentId) ?? []
-      siblings.push(message.id)
+      siblings.push(block.id)
       childrenByParent.set(parentId, siblings)
     })
   })
 
   const compareIds = (a: string, b: string) => {
-    const messageA = messageById.get(a)
-    const messageB = messageById.get(b)
-    if (!messageA || !messageB) {
+    const blockA = blockById.get(a)
+    const blockB = blockById.get(b)
+    if (!blockA || !blockB) {
       return a.localeCompare(b)
     }
-    if (messageA.createdAt !== messageB.createdAt) {
-      return messageA.createdAt - messageB.createdAt
+    if (blockA.createdAt !== blockB.createdAt) {
+      return blockA.createdAt - blockB.createdAt
     }
-    return messageA.id.localeCompare(messageB.id)
+    return blockA.id.localeCompare(blockB.id)
   }
 
   const ready = Array.from(indegreeById.entries())
@@ -388,7 +385,7 @@ const sortMessagesByParent = async (
     .map(([id]) => id)
     .sort(compareIds)
 
-  const ordered: MessageRecord[] = []
+  const ordered: BlockRecord[] = []
   const visited = new Set<string>()
 
   while (ready.length > 0) {
@@ -396,11 +393,11 @@ const sortMessagesByParent = async (
     if (!nextId) {
       break
     }
-    const message = messageById.get(nextId)
-    if (!message) {
+    const block = blockById.get(nextId)
+    if (!block) {
       continue
     }
-    ordered.push(message)
+    ordered.push(block)
     visited.add(nextId)
     const children = childrenByParent.get(nextId) ?? []
     children.forEach((childId) => {
@@ -417,12 +414,12 @@ const sortMessagesByParent = async (
     })
   }
 
-  if (ordered.length === messages.length) {
+  if (ordered.length === blocks.length) {
     return ordered
   }
 
-  const remaining = messages
-    .filter((message) => !visited.has(message.id))
+  const remaining = blocks
+    .filter((block) => !visited.has(block.id))
     .slice()
     .sort((a, b) => {
       if (a.createdAt !== b.createdAt) {
@@ -434,35 +431,35 @@ const sortMessagesByParent = async (
   return [...ordered, ...remaining]
 }
 
-export const listCollectionMessages = async (
+export const listCollectionBlocks = async (
   collectionId: string,
-): Promise<MessageRecord[]> => {
+): Promise<BlockRecord[]> => {
   const db = await getDb()
   const toIds = await listRelationTargetsByFromType(collectionId, 'contains')
   const records = await Promise.all(
     toIds.map((toId) => db.get('records', toId)),
   )
 
-  const messages = records.filter((record): record is MessageRecord => {
-    if (!record || record.type !== 'message') {
+  const blocks = records.filter((record): record is BlockRecord => {
+    if (!record || record.type !== 'block') {
       return false
     }
     return !record.deletedAt
   })
 
-  return sortMessagesByParent(messages)
+  return sortBlocksByParent(blocks)
 }
 
-export const appendMessage = async (
+export const appendBlock = async (
   collectionId: string,
-  payload: MessagePayload,
+  payload: BlockPayload,
   options?: {
     parentIds?: string[]
   },
 ) => {
   const db = await getDb()
-  const record = buildRecord<MessageRecord['type'], MessagePayload>(
-    'message',
+  const record = buildRecord<BlockRecord['type'], BlockPayload>(
+    'block',
     payload,
   )
   const relations: Relation[] = [
@@ -483,7 +480,7 @@ export const appendMessage = async (
     void indexRelation(relation)
   })
 
-  return record as MessageRecord
+  return record as BlockRecord
 }
 
 export const getKvValue = async <T>(key: string): Promise<T | undefined> => {

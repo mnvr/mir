@@ -1,4 +1,4 @@
-export type RecordType = 'collection' | 'message'
+export type RecordType = 'collection' | 'block'
 
 export type RelationType = 'contains' | 'parent'
 
@@ -21,7 +21,7 @@ export type CollectionRecord = MirRecord & {
   payload: CollectionPayload
 }
 
-export type MessageBackend =
+export type BlockBackend =
   | {
     kind: 'remote'
     baseUrl?: string
@@ -31,37 +31,37 @@ export type MessageBackend =
     engine?: string
   }
 
-export type MessageRequest = {
+export type BlockRequest = {
   model?: string
-  backend?: MessageBackend
+  backend?: BlockBackend
   temperature?: number
 }
 
-export type MessageUsage = {
+export type BlockUsage = {
   promptTokens: number
   completionTokens: number
   totalTokens: number
 }
 
-export type MessageResponse = {
+export type BlockResponse = {
   id?: string
   model?: string
-  usage?: MessageUsage
+  usage?: BlockUsage
   latencyMs?: number
   finishReason?: string
 }
 
-export type MessagePayload = {
+export type BlockPayload = {
   role?: string
   content: string
   localTimestamp: string
-  request?: MessageRequest
-  response?: MessageResponse
+  request?: BlockRequest
+  response?: BlockResponse
 }
 
-export type MessageRecord = MirRecord & {
-  type: 'message'
-  payload: MessagePayload
+export type BlockRecord = MirRecord & {
+  type: 'block'
+  payload: BlockPayload
 }
 
 export type Relation = {

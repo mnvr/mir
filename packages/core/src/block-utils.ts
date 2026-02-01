@@ -1,28 +1,28 @@
 import type { ChatCompletionResponse } from './chat'
 import type {
-  MessageBackend,
-  MessagePayload,
-  MessageRequest,
-  MessageResponse,
-  MessageUsage,
+  BlockBackend,
+  BlockPayload,
+  BlockRequest,
+  BlockResponse,
+  BlockUsage,
 } from './storage'
 import { formatLocalTimestamp } from './time'
 
-export const buildMessageBackend = (
+export const buildBlockBackend = (
   baseUrl: string,
-): MessageBackend | undefined => {
+): BlockBackend | undefined => {
   if (!baseUrl) {
     return undefined
   }
   return { kind: 'remote', baseUrl }
 }
 
-export const buildMessageRequest = (
+export const buildBlockRequest = (
   baseUrl: string,
   model: string,
   temperature?: number,
-): MessageRequest | undefined => {
-  const backend = buildMessageBackend(baseUrl)
+): BlockRequest | undefined => {
+  const backend = buildBlockBackend(baseUrl)
   if (!backend && !model) {
     return undefined
   }
@@ -36,9 +36,9 @@ export const buildMessageRequest = (
   }
 }
 
-export const toMessageUsage = (
+export const toBlockUsage = (
   response: ChatCompletionResponse,
-): MessageUsage | undefined => {
+): BlockUsage | undefined => {
   const usage = response.usage
   if (!usage) {
     return undefined
@@ -60,11 +60,11 @@ export const toMessageUsage = (
   }
 }
 
-export const buildMessageResponse = (
+export const buildBlockResponse = (
   response: ChatCompletionResponse,
   latencyMs?: number,
-): MessageResponse | undefined => {
-  const usage = toMessageUsage(response)
+): BlockResponse | undefined => {
+  const usage = toBlockUsage(response)
   const model = typeof response.model === 'string' ? response.model : undefined
   const id = typeof response.id === 'string' ? response.id : undefined
   const choice = response.choices?.[0]
@@ -90,14 +90,14 @@ export const buildMessageResponse = (
   }
 }
 
-export const toMessagePayload = (
+export const toBlockPayload = (
   role: string,
   content: string,
   options?: {
-    request?: MessageRequest
-    response?: MessageResponse
+    request?: BlockRequest
+    response?: BlockResponse
   },
-): MessagePayload => ({
+): BlockPayload => ({
   role,
   content,
   localTimestamp: formatLocalTimestamp(new Date()),
@@ -105,7 +105,7 @@ export const toMessagePayload = (
   response: options?.response,
 })
 
-export const formatMessageSource = (backend?: MessageBackend) => {
+export const formatBlockSource = (backend?: BlockBackend) => {
   if (!backend) {
     return null
   }
@@ -122,7 +122,7 @@ export const formatLatency = (latencyMs?: number) => {
   return `${Math.round(latencyMs)} ms`
 }
 
-export const formatUsage = (usage?: MessageUsage) => {
+export const formatUsage = (usage?: BlockUsage) => {
   if (!usage) {
     return null
   }

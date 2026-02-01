@@ -1,4 +1,4 @@
-import type { CollectionRecord, MessageRecord } from './storage'
+import type { CollectionRecord, BlockRecord } from './storage'
 import { formatLocalTimestamp } from './time'
 
 const demoDate = new Date('2026-01-24T17:53:31+05:30')
@@ -60,16 +60,16 @@ export const demoCollection: CollectionRecord = {
   },
 }
 
-const buildDemoMessage = (
+const buildDemoBlock = (
   id: string,
   role: 'user' | 'assistant',
   content: string,
   offsetMs: number,
-): MessageRecord => {
+): BlockRecord => {
   const timestamp = demoCreatedAt + offsetMs
   return {
     id,
-    type: 'message',
+    type: 'block',
     createdAt: timestamp,
     updatedAt: timestamp,
     payload: {
@@ -80,15 +80,15 @@ const buildDemoMessage = (
   }
 }
 
-export const demoCollectionMessages: MessageRecord[] = [
-  buildDemoMessage(
-    'message_demo_user',
+export const demoCollectionBlocks: BlockRecord[] = [
+  buildDemoBlock(
+    'block_demo_user',
     'user',
     'Tell me a story about a unicorn visiting a mall for a coffee',
     0,
   ),
-  buildDemoMessage(
-    'message_demo_assistant',
+  buildDemoBlock(
+    'block_demo_assistant',
     'assistant',
     assistantParagraphs.join('\n\n'),
     2000,
