@@ -2,6 +2,7 @@ import {
   buildChatCompletionEndpoint,
   createChatCompletion,
   createTimeoutController,
+  createId,
   demoCollection,
   demoCollectionBlocks,
   formatLocalTimestamp,
@@ -35,15 +36,19 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import {
   appendBlock,
+  buildExportPayload,
   createCollection,
   deleteKvValue,
+  deleteCollection,
   getActiveCollection,
   getKvValue,
+  importMirData,
   listCollections,
   listCollectionBlocks,
   setActiveCollectionId,
   setKvValue,
   updateCollectionTitle,
+  type MirExport,
 } from './services/db'
 import './App.css'
 import 'katex/dist/katex.min.css'
@@ -88,6 +93,8 @@ const SCROLL_CONTEXT_PEEK_LINES = 3
 const SCROLL_CONTEXT_PEEK_FALLBACK_PX = 48
 const SCROLL_NEAR_BOTTOM_RATIO = 0.5
 const SCROLL_STICK_BOTTOM_PX = 8
+const COPY_ACK_DURATION_MS = 1200
+const COPY_TOOLTIP_SUPPRESS_MS = 1100
 
 const MARKDOWN_PLUGINS = [remarkGfm, remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex]
@@ -101,6 +108,68 @@ const normalizeMathDelimiters = (markdown: string) => {
     normalized = normalized.replace(/\\\(/g, '$').replace(/\\\)/g, '$')
   }
   return normalized
+}
+
+const parseExportPayload = (raw: string): MirExport => {
+  const parsed = JSON.parse(raw)
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Invalid export file.')
+  }
+  const { version, exportedAt, records, relations } = parsed as {
+    version?: unknown
+    exportedAt?: unknown
+    records?: unknown
+    relations?: unknown
+  }
+  if (version !== 1) {
+    throw new Error('Unsupported export version.')
+  }
+  if (!Array.isArray(records) || !Array.isArray(relations)) {
+    throw new Error('Invalid export contents.')
+  }
+  return {
+    version: 1,
+    exportedAt: typeof exportedAt === 'string' ? exportedAt : '',
+    records: records as MirExport['records'],
+    relations: relations as MirExport['relations'],
+  }
+}
+
+const summarizeExportPayload = (payload: MirExport) => {
+  let collectionsCount = 0
+  let blocksCount = 0
+  payload.records.forEach((record) => {
+    if (record && typeof record === 'object' && 'type' in record) {
+      const typeValue = (record as { type?: string }).type
+      if (typeValue === 'collection') {
+        collectionsCount += 1
+      } else if (typeValue === 'block') {
+        blocksCount += 1
+      }
+    }
+  })
+  return {
+    collections: collectionsCount,
+    blocks: blocksCount,
+    records: payload.records.length,
+    relations: payload.relations.length,
+  }
+}
+
+const formatExportedAt = (value?: string) => {
+  if (!value) {
+    return null
+  }
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) {
+    return value
+  }
+  return parsed.toLocaleString()
+}
+
+const getFileBasename = (filePath: string) => {
+  const segments = filePath.split(/[/\\]/)
+  return segments[segments.length - 1] ?? filePath
 }
 
 const demoCollections = [demoCollection]
@@ -132,7 +201,7 @@ const recordToBlock = (record: BlockRecord): Block => ({
 })
 
 const getCollectionTitle = (collection: CollectionRecord) =>
-  collection.payload.title!
+  collection.payload.title ?? 'Untitled'
 
 const getCollectionTimestamp = (collection: CollectionRecord) =>
   collection.payload.localTimestamp
@@ -383,9 +452,24 @@ function App() {
     useState(false)
   const [suppressSettingsTooltip, setSuppressSettingsTooltip] = useState(false)
   const [suppressSidebarTooltip, setSuppressSidebarTooltip] = useState(false)
+  const [suppressDeleteCollectionTooltip, setSuppressDeleteCollectionTooltip] =
+    useState(false)
   const [isSending, setIsSending] = useState(false)
   const [settingsReady, setSettingsReady] = useState(false)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
+  const [dataNotice, setDataNotice] = useState<string | null>(null)
+  const [dataError, setDataError] = useState<string | null>(null)
+  const [importSummary, setImportSummary] = useState<string | null>(null)
+  const [importPreview, setImportPreview] = useState<{
+    payload: MirExport
+    filePath: string
+    summary: ReturnType<typeof summarizeExportPayload>
+  } | null>(null)
+  const [isPickingExport, setIsPickingExport] = useState(false)
+  const [isExporting, setIsExporting] = useState(false)
+  const [isPickingImport, setIsPickingImport] = useState(false)
+  const [isReadingImport, setIsReadingImport] = useState(false)
+  const [isImportingData, setIsImportingData] = useState(false)
   const [collectionId, setCollectionId] = useState<string | null>(null)
   const [collections, setCollections] = useState<CollectionRecord[]>([])
   const [pendingCollection, setPendingCollection] =
@@ -404,13 +488,22 @@ function App() {
     latencyMs?: number
   } | null>(null)
   const [copyAckId, setCopyAckId] = useState<string | null>(null)
+  const [copyCollectionAck, setCopyCollectionAck] = useState(false)
+  const [suppressCopyBlockTooltip, setSuppressCopyBlockTooltip] =
+    useState(false)
+  const [suppressCopyCollectionTooltip, setSuppressCopyCollectionTooltip] =
+    useState(false)
   const copyAckTimeoutRef = useRef<number | null>(null)
+  const copyCollectionTimeoutRef = useRef<number | null>(null)
+  const suppressCopyBlockTooltipRef = useRef<number | null>(null)
+  const suppressCopyCollectionTooltipRef = useRef<number | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLElement | null>(null)
   const mainColumnRef = useRef<HTMLDivElement | null>(null)
   const contextRailRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const blockRefs = useRef(new Map<string, HTMLDivElement>())
+  const isMountedRef = useRef(true)
   const suppressBlockActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
   const scrollIgnoreUntilRef = useRef(0)
@@ -562,8 +655,27 @@ function App() {
     activeCollection?.payload.localTimestamp ?? pendingCollection?.localTimestamp
   const collectionDateLabel = formatLocalTimestampHeading(collectionTimestamp)
   const collectionBlockCountLabel = formatBlockCount(blocks.length)
+  const canDeleteCollection =
+    Boolean(activeCollection) && activeCollection?.id !== demoCollection.id
+  const orderedCollections = useMemo(
+    () => groupedCollections.flatMap((group) => group.collections),
+    [groupedCollections],
+  )
+  const headerSubtitle = isSettingsOpen
+    ? 'Settings'
+    : collectionDateLabel ?? (hasLoadedBlocks ? 'Undated' : '')
   const modelLabel = model || 'Default'
   const temperatureLabel = temperature.toFixed(1)
+  const exportSummary = importPreview?.summary ?? null
+  const exportPreviewTime = formatExportedAt(importPreview?.payload.exportedAt)
+  const exportPreviewFile = importPreview?.filePath
+    ? getFileBasename(importPreview.filePath)
+    : null
+  const isImportLocked =
+    Boolean(importPreview) || isReadingImport || isImportingData
+  const canUseFileDialogs =
+    typeof window !== 'undefined' &&
+    typeof window.ipcRenderer?.invoke === 'function'
 
   const upsertCollection = useCallback((collection: CollectionRecord) => {
     setCollections((prev) => {
@@ -610,6 +722,13 @@ function App() {
       toggleSidebarTab(tab)
     }
   }, [toggleSidebarTab])
+
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     let isMounted = true
@@ -722,64 +841,61 @@ function App() {
     }
   }, [])
 
-  useEffect(() => {
-    let isMounted = true
-
-    const loadCollections = async () => {
-      try {
-        const storedCollections = await listCollections()
-        if (!isMounted) {
-          return
-        }
-        setCollections(storedCollections)
-      } catch {
-        // Ignore local persistence failures on cold start.
+  const loadCollections = useCallback(async () => {
+    try {
+      const storedCollections = await listCollections()
+      if (!isMountedRef.current) {
+        return
       }
-    }
-
-    const loadBlocks = async () => {
-      setHasLoadedBlocks(false)
-      try {
-        const collection = await getActiveCollection()
-        if (!isMounted) {
-          return
-        }
-        if (!collection) {
-          setCollectionId(null)
-          setActiveCollection(null)
-          setPendingCollection(null)
-          setSelectedCollectionId(null)
-          setBlocks([])
-          setHasLoadedBlocks(true)
-          return
-        }
-        const storedBlocks = await listCollectionBlocks(collection.id)
-        if (!isMounted) {
-          return
-        }
-        setCollectionId(collection.id)
-        setActiveCollection(collection)
-        setPendingCollection(null)
-        setSelectedCollectionId(collection.id)
-        setBlocks(storedBlocks.map(recordToBlock))
-        setHasLoadedBlocks(true)
-        if (storedBlocks.length > 0) {
-          pendingScrollRef.current = { mode: 'bottom', id: '' }
-        }
-      } catch {
-        // Ignore local persistence failures on cold start.
-        if (isMounted) {
-          setHasLoadedBlocks(true)
-        }
-      }
-    }
-
-    void Promise.all([loadCollections(), loadBlocks()])
-
-    return () => {
-      isMounted = false
+      setCollections(storedCollections)
+    } catch {
+      // Ignore local persistence failures on cold start.
     }
   }, [])
+
+  const loadBlocks = useCallback(async () => {
+    if (!isMountedRef.current) {
+      return
+    }
+    setHasLoadedBlocks(false)
+    try {
+      const collection = await getActiveCollection()
+      if (!isMountedRef.current) {
+        return
+      }
+      if (!collection) {
+        setCollectionId(null)
+        setActiveCollection(null)
+        setPendingCollection(null)
+        setSelectedCollectionId(null)
+        setBlocks([])
+        setHasLoadedBlocks(true)
+        return
+      }
+      const storedBlocks = await listCollectionBlocks(collection.id)
+      if (!isMountedRef.current) {
+        return
+      }
+      setCollectionId(collection.id)
+      setActiveCollection(collection)
+      setPendingCollection(null)
+      setSelectedCollectionId(collection.id)
+      setBlocks(storedBlocks.map(recordToBlock))
+      setHasLoadedBlocks(true)
+      if (storedBlocks.length > 0) {
+        pendingScrollRef.current = { mode: 'bottom', id: '' }
+      }
+    } catch {
+      // Ignore local persistence failures on cold start.
+      if (isMountedRef.current) {
+        setHasLoadedBlocks(true)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    void Promise.all([loadCollections(), loadBlocks()])
+  }, [loadCollections, loadBlocks])
 
   const focusComposer = useCallback(() => {
     setActiveBlockId(null)
@@ -921,26 +1037,143 @@ function App() {
       ?.writeText(activeBlock.content)
       .then(() => {
         setCopyAckId(blockId)
+        setSuppressCopyBlockTooltip(false)
+        if (suppressCopyBlockTooltipRef.current) {
+          window.clearTimeout(suppressCopyBlockTooltipRef.current)
+        }
+        suppressCopyBlockTooltipRef.current = window.setTimeout(() => {
+          setSuppressCopyBlockTooltip(true)
+        }, COPY_TOOLTIP_SUPPRESS_MS)
         if (copyAckTimeoutRef.current) {
           window.clearTimeout(copyAckTimeoutRef.current)
         }
         copyAckTimeoutRef.current = window.setTimeout(() => {
           setCopyAckId((prev) => (prev === blockId ? null : prev))
-        }, 2000)
+        }, COPY_ACK_DURATION_MS)
       })
       .catch(() => {})
   }, [activeBlock])
+
+  const handleCopyCollection = useCallback(() => {
+    if (!activeCollection) {
+      return
+    }
+    const text = blocks
+      .map((block) => {
+        if (block.payload?.role !== 'user') {
+          return block.content
+        }
+        return block.content
+          .split('\n')
+          .map((line) => `> ${line}`)
+          .join('\n')
+      })
+      .join('\n\n')
+    if (!text) {
+      return
+    }
+    void navigator.clipboard
+      ?.writeText(text)
+      .then(() => {
+        setCopyCollectionAck(true)
+        setSuppressCopyCollectionTooltip(false)
+        if (suppressCopyCollectionTooltipRef.current) {
+          window.clearTimeout(suppressCopyCollectionTooltipRef.current)
+        }
+        suppressCopyCollectionTooltipRef.current = window.setTimeout(() => {
+          setSuppressCopyCollectionTooltip(true)
+        }, COPY_TOOLTIP_SUPPRESS_MS)
+        if (copyCollectionTimeoutRef.current) {
+          window.clearTimeout(copyCollectionTimeoutRef.current)
+        }
+        copyCollectionTimeoutRef.current = window.setTimeout(() => {
+          setCopyCollectionAck(false)
+        }, COPY_ACK_DURATION_MS)
+      })
+      .catch(() => {})
+  }, [activeCollection, blocks])
+
+  const handleSelectCollection = useCallback((collection: CollectionRecord) => {
+    const requestId = collectionLoadIdRef.current + 1
+    collectionLoadIdRef.current = requestId
+    setSelectedCollectionId(collection.id)
+    setCollectionId(collection.id)
+    setActiveCollection(collection)
+    setPendingCollection(null)
+    setActiveBlockId(null)
+    setLastRunStats(null)
+
+    if (collection.id === demoCollection.id) {
+      setHasLoadedBlocks(false)
+      setBlocks(demoCollectionBlocks.map(recordToBlock))
+      setHasLoadedBlocks(true)
+      if (demoCollectionBlocks.length > 0) {
+        pendingScrollRef.current = { mode: 'bottom', id: '' }
+      }
+      return
+    }
+
+    setHasLoadedBlocks(false)
+    setBlocks([])
+    void setActiveCollectionId(collection.id)
+    void listCollectionBlocks(collection.id)
+      .then((records) => {
+        if (collectionLoadIdRef.current !== requestId) {
+          return
+        }
+        setBlocks(records.map(recordToBlock))
+        setHasLoadedBlocks(true)
+        if (records.length > 0) {
+          pendingScrollRef.current = { mode: 'bottom', id: '' }
+        }
+      })
+      .catch(() => {
+        if (collectionLoadIdRef.current !== requestId) {
+          return
+        }
+        setBlocks([])
+        setHasLoadedBlocks(true)
+      })
+  }, [])
 
   useEffect(() => {
     if (copyAckId && activeBlock?.id !== copyAckId) {
       setCopyAckId(null)
     }
+    if (suppressCopyBlockTooltipRef.current) {
+      window.clearTimeout(suppressCopyBlockTooltipRef.current)
+      suppressCopyBlockTooltipRef.current = null
+    }
+    setSuppressCopyBlockTooltip(false)
   }, [activeBlock?.id, copyAckId])
+
+  useEffect(() => {
+    setCopyCollectionAck(false)
+    setSuppressCopyCollectionTooltip(false)
+    setSuppressDeleteCollectionTooltip(false)
+    if (copyCollectionTimeoutRef.current) {
+      window.clearTimeout(copyCollectionTimeoutRef.current)
+      copyCollectionTimeoutRef.current = null
+    }
+    if (suppressCopyCollectionTooltipRef.current) {
+      window.clearTimeout(suppressCopyCollectionTooltipRef.current)
+      suppressCopyCollectionTooltipRef.current = null
+    }
+  }, [activeCollection?.id])
 
   useEffect(() => {
     return () => {
       if (copyAckTimeoutRef.current) {
         window.clearTimeout(copyAckTimeoutRef.current)
+      }
+      if (copyCollectionTimeoutRef.current) {
+        window.clearTimeout(copyCollectionTimeoutRef.current)
+      }
+      if (suppressCopyBlockTooltipRef.current) {
+        window.clearTimeout(suppressCopyBlockTooltipRef.current)
+      }
+      if (suppressCopyCollectionTooltipRef.current) {
+        window.clearTimeout(suppressCopyCollectionTooltipRef.current)
       }
     }
   }, [])
@@ -1411,6 +1644,151 @@ function App() {
     setSuppressSidebarTooltip(true)
   }
 
+  const handleExportData = useCallback(async () => {
+    setDataNotice(null)
+    setDataError(null)
+    setImportSummary(null)
+    if (!canUseFileDialogs) {
+      setDataError('Export is not available in this environment.')
+      return
+    }
+    setIsPickingExport(true)
+    let selectedPath = ''
+    try {
+      const result = await window.ipcRenderer.invoke('data:export')
+      if (!result || result.status === 'canceled') {
+        return
+      }
+      if (result.status !== 'picked' || typeof result.path !== 'string') {
+        setDataError('Export failed.')
+        return
+      }
+      selectedPath = result.path
+    } catch {
+      setDataError('Export failed.')
+    } finally {
+      setIsPickingExport(false)
+    }
+    if (!selectedPath) {
+      return
+    }
+    setIsExporting(true)
+    try {
+      const payload = await buildExportPayload()
+      const result = await window.ipcRenderer.invoke('data:export-save', {
+        path: selectedPath,
+        payload,
+      })
+      if (!result || result.status !== 'saved') {
+        setDataError('Export failed.')
+        return
+      }
+      const fileName = selectedPath ? getFileBasename(selectedPath) : 'export'
+      setDataNotice(`Exported data to ${fileName}.`)
+    } catch {
+      setDataError('Export failed.')
+    } finally {
+      setIsExporting(false)
+    }
+  }, [canUseFileDialogs])
+
+  const handleImportData = useCallback(async () => {
+    setDataNotice(null)
+    setDataError(null)
+    setImportPreview(null)
+    setImportSummary(null)
+    if (!canUseFileDialogs) {
+      setDataError('Import is not available in this environment.')
+      return
+    }
+    setIsPickingImport(true)
+    let selectedPath = ''
+    try {
+      const result = await window.ipcRenderer.invoke('data:import')
+      if (!result || result.status === 'canceled') {
+        return
+      }
+      if (result.status !== 'picked' || typeof result.path !== 'string') {
+        setDataError('Import failed.')
+        return
+      }
+      selectedPath = result.path
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Import failed.'
+      setDataError(message)
+    } finally {
+      setIsPickingImport(false)
+    }
+    if (!selectedPath) {
+      return
+    }
+    setIsReadingImport(true)
+    try {
+      const result = await window.ipcRenderer.invoke(
+        'data:import-read',
+        selectedPath,
+      )
+      if (!result || result.status !== 'loaded' || typeof result.contents !== 'string') {
+        setDataError('Import failed.')
+        return
+      }
+      const payload = parseExportPayload(result.contents)
+      setImportPreview({
+        payload,
+        filePath: result.path ?? '',
+        summary: summarizeExportPayload(payload),
+      })
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Import failed.'
+      setDataError(message)
+    } finally {
+      setIsReadingImport(false)
+    }
+  }, [canUseFileDialogs])
+
+  const handleCancelImport = useCallback(() => {
+    setImportPreview(null)
+    setImportSummary(null)
+    setDataError(null)
+  }, [])
+
+  const handleConfirmImport = useCallback(async () => {
+    if (!importPreview) {
+      return
+    }
+    setDataNotice(null)
+    setDataError(null)
+    setImportSummary(null)
+    setIsImportingData(true)
+    try {
+      const summary = await importMirData(importPreview.payload)
+      setImportPreview(null)
+      const ignoredRecords =
+        summary.records.skipped +
+        summary.records.duplicates +
+        summary.records.conflicts
+      const ignoredRelations =
+        summary.relations.skipped +
+        summary.relations.duplicates +
+        summary.relations.conflicts +
+        summary.relations.missingEndpoints
+      setImportSummary(
+        `Imported ${summary.records.imported} records and ${summary.relations.imported} relations. Ignored ${ignoredRecords} records (${summary.records.conflicts} conflicts) and ${ignoredRelations} relations.`,
+      )
+      void Promise.all([loadCollections(), loadBlocks()])
+    } catch {
+      setDataError('Import failed.')
+    } finally {
+      setIsImportingData(false)
+    }
+  }, [importPreview, loadBlocks, loadCollections])
+
+  const handleDismissImportSummary = useCallback(() => {
+    setImportSummary(null)
+  }, [])
+
   const startNewCollection = useCallback(() => {
     setSuppressNewCollectionTooltip(true)
     setSelectedCollectionId(null)
@@ -1427,6 +1805,49 @@ function App() {
 
     focusComposer()
   }, [focusComposer])
+
+  const handleDeleteCollection = useCallback(() => {
+    if (!activeCollection || activeCollection.id === demoCollection.id) {
+      return
+    }
+    const currentIndex = orderedCollections.findIndex(
+      (collection) => collection.id === activeCollection.id,
+    )
+    const nextCollection =
+      currentIndex >= 0 && orderedCollections.length > 1
+        ? orderedCollections[currentIndex + 1] ??
+          orderedCollections[currentIndex - 1] ??
+          null
+        : null
+    setSuppressDeleteCollectionTooltip(true)
+    window.setTimeout(() => {
+      const title = getCollectionTitle(activeCollection)
+      const confirmed = window.confirm(
+        `Delete "${title}"? This cannot be undone.`,
+      )
+      if (!confirmed) {
+        return
+      }
+      setActiveBlockId(null)
+      setLastRunStats(null)
+      void deleteCollection(activeCollection.id)
+        .then(() => {
+          if (nextCollection) {
+            handleSelectCollection(nextCollection)
+          } else {
+            startNewCollection()
+          }
+        })
+        .then(() => loadCollections())
+        .catch(() => {})
+    }, 0)
+  }, [
+    activeCollection,
+    handleSelectCollection,
+    loadCollections,
+    orderedCollections,
+    startNewCollection,
+  ])
 
   useEffect(() => {
     startNewCollectionRef.current = startNewCollection
@@ -1467,6 +1888,8 @@ function App() {
       const endpoint = buildChatCompletionEndpoint(baseUrl)
       const request = buildBlockRequest(baseUrl, model, temperature)
       const timestamp = Date.now()
+      const userRecordId = createId('block')
+      const assistantRecordId = createId('block')
       const userPayload = toBlockPayload('user', trimmedDraft, {
         request,
       })
@@ -1544,6 +1967,7 @@ function App() {
           userPayload,
           {
             parentIds: parentBlockId ? [parentBlockId] : undefined,
+            recordId: userRecordId,
           },
         )
         userRecordPromise = pendingUserRecord
@@ -1560,7 +1984,9 @@ function App() {
               prev === userBlock.id ? record.id : prev,
             )
           })
-          .catch(() => {})
+          .catch((error) => {
+            console.error('[blocks] failed to persist user block', error)
+          })
       }
 
       if (!endpoint) {
@@ -1642,6 +2068,7 @@ function App() {
             assistantPayload,
             {
               parentIds: assistantParentId ? [assistantParentId] : undefined,
+              recordId: assistantRecordId,
             },
           )
             .then((record) => {
@@ -1656,7 +2083,12 @@ function App() {
                 prev === assistantBlock.id ? record.id : prev,
               )
             })
-            .catch(() => {})
+            .catch((error) => {
+              console.error(
+                '[blocks] failed to persist assistant block',
+                error,
+              )
+            })
         }
         if (shouldAutoScroll) {
           pendingScrollRef.current = { id: assistantBlock.id, mode: 'read' }
@@ -1833,49 +2265,6 @@ function App() {
     updateSidebarOpen(true)
   }
 
-  const handleSelectCollection = (collection: CollectionRecord) => {
-    const requestId = collectionLoadIdRef.current + 1
-    collectionLoadIdRef.current = requestId
-    setSelectedCollectionId(collection.id)
-    setCollectionId(collection.id)
-    setActiveCollection(collection)
-    setPendingCollection(null)
-    setActiveBlockId(null)
-    setLastRunStats(null)
-
-    if (collection.id === demoCollection.id) {
-      setHasLoadedBlocks(false)
-      setBlocks(demoCollectionBlocks.map(recordToBlock))
-      setHasLoadedBlocks(true)
-      if (demoCollectionBlocks.length > 0) {
-        pendingScrollRef.current = { mode: 'bottom', id: '' }
-      }
-      return
-    }
-
-    setHasLoadedBlocks(false)
-    setBlocks([])
-    void setActiveCollectionId(collection.id)
-    void listCollectionBlocks(collection.id)
-      .then((records) => {
-        if (collectionLoadIdRef.current !== requestId) {
-          return
-        }
-        setBlocks(records.map(recordToBlock))
-        setHasLoadedBlocks(true)
-        if (records.length > 0) {
-          pendingScrollRef.current = { mode: 'bottom', id: '' }
-        }
-      })
-      .catch(() => {
-        if (collectionLoadIdRef.current !== requestId) {
-          return
-        }
-        setBlocks([])
-        setHasLoadedBlocks(true)
-      })
-  }
-
   return (
     <div className={`app${isSettingsOpen ? ' settings-open' : ''}`} ref={appRef}>
       <div className={`layout${isSidebarOpen ? ' sidebar-open' : ''}`}>
@@ -1884,15 +2273,13 @@ function App() {
             <div className="header-left">
               <div className="header-meta">
                 <div className="header-subtitle">
-                  {isSettingsOpen
-                    ? 'Settings'
-                    : collectionDateLabel ?? 'Undated'}
+                  {headerSubtitle}
                 </div>
               </div>
               <div className="header-actions">
                 <span
                   className={`tooltip tooltip-bottom tooltip-hover-only${suppressNewCollectionTooltip ? ' tooltip-suppressed' : ''}`}
-                  data-tooltip="New Collection"
+                  data-tooltip="New collection"
                   onMouseLeave={() => setSuppressNewCollectionTooltip(false)}
                 >
                   <button
@@ -1901,7 +2288,7 @@ function App() {
                     onClick={() => {
                       void startNewCollection()
                     }}
-                    aria-label="New Collection"
+                    aria-label="New collection"
                     onBlur={() => setSuppressNewCollectionTooltip(false)}
                   >
                     <span
@@ -2047,6 +2434,145 @@ function App() {
                   {keyError ? (
                     <div className="settings-error">{keyError}</div>
                   ) : null}
+                  <div className="settings-heading">Data</div>
+                  <div className="settings-actions">
+                    <button
+                      className={`settings-action-button${isExporting ? ' is-loading' : ''}`}
+                      type="button"
+                      onClick={handleExportData}
+                      disabled={
+                        isPickingExport || isExporting
+                      }
+                    >
+                      Export data
+                    </button>
+                    <button
+                      className={`settings-action-button${
+                        isReadingImport || isImportingData ? ' is-loading' : ''
+                      }`}
+                      type="button"
+                      onClick={handleImportData}
+                      disabled={
+                        isPickingImport || isImportLocked
+                      }
+                    >
+                      Import data
+                    </button>
+                  </div>
+                  {importPreview || importSummary ? (
+                    <div className="settings-import-preview">
+                      {importPreview ? (
+                        <>
+                          <div className="settings-import-header">
+                            <div className="settings-import-title">
+                              Import preview
+                            </div>
+                          </div>
+                          {exportPreviewFile ? (
+                            <div className="settings-import-meta">
+                              File · {exportPreviewFile}
+                            </div>
+                          ) : null}
+                          {exportPreviewTime ? (
+                            <div className="settings-import-meta">
+                              Exported · {exportPreviewTime}
+                            </div>
+                          ) : null}
+                          {exportSummary ? (
+                            <div className="settings-import-metrics">
+                              <div>
+                                <span className="settings-import-label">
+                                  Collections
+                                </span>
+                                <span className="settings-import-value">
+                                  {exportSummary.collections.toLocaleString()}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="settings-import-label">
+                                  Blocks
+                                </span>
+                                <span className="settings-import-value">
+                                  {exportSummary.blocks.toLocaleString()}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="settings-import-label">
+                                  Records
+                                </span>
+                                <span className="settings-import-value">
+                                  {exportSummary.records.toLocaleString()}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="settings-import-label">
+                                  Relations
+                                </span>
+                                <span className="settings-import-value">
+                                  {exportSummary.relations.toLocaleString()}
+                                </span>
+                              </div>
+                            </div>
+                          ) : null}
+                          <div className="settings-import-note">
+                            Import merges into your existing data. Existing IDs
+                            are preserved.
+                          </div>
+                          <div className="settings-actions">
+                            <button
+                              className="settings-action-button"
+                              type="button"
+                              onClick={handleConfirmImport}
+                              disabled={isImportingData}
+                            >
+                              {isImportingData ? 'Importing…' : 'Import now'}
+                            </button>
+                            <button
+                              className="settings-action-button settings-action-secondary"
+                              type="button"
+                              onClick={handleCancelImport}
+                              disabled={isImportingData}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="settings-import-header">
+                            <div className="settings-import-title">
+                              Import summary
+                            </div>
+                            <button
+                              className="settings-button settings-import-dismiss"
+                              type="button"
+                              onClick={handleDismissImportSummary}
+                              aria-label="Dismiss import summary"
+                            >
+                              <span
+                                className="codicon codicon-close"
+                                aria-hidden="true"
+                              />
+                            </button>
+                          </div>
+                          <div className="settings-import-note">
+                            {importSummary}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="settings-note">
+                      Exports include collections, blocks, and relationships.
+                      API keys and local settings are not included.
+                    </div>
+                  )}
+                  {dataNotice ? (
+                    <div className="settings-note">{dataNotice}</div>
+                  ) : null}
+                  {dataError ? (
+                    <div className="settings-error">{dataError}</div>
+                  ) : null}
                 </div>
               </section>
             ) : null}
@@ -2179,10 +2705,10 @@ function App() {
               role="tablist"
               aria-label="Sidebar panels"
             >
-              <span
-                className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
-                data-tooltip="Collections"
-              >
+                <span
+                  className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
+                  data-tooltip="Collections"
+                >
                 <button
                   className={`sidebar-tab${sidebarTab === 'chats' ? ' active' : ''}`}
                   type="button"
@@ -2198,10 +2724,10 @@ function App() {
                   />
                 </button>
               </span>
-              <span
-                className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
-                data-tooltip="Inspect"
-              >
+                <span
+                  className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
+                  data-tooltip="Inspect"
+                >
                 <button
                   className={`sidebar-tab${sidebarTab === 'inspect' ? ' active' : ''}`}
                   type="button"
@@ -2284,15 +2810,16 @@ function App() {
                     ))}
                     <div className="sidebar-quick-fact sidebar-quick-fact-action">
                       <span
-                        className="tooltip tooltip-hover-only tooltip-left"
+                        className={`tooltip tooltip-hover-only tooltip-left${suppressCopyBlockTooltip ? ' tooltip-suppressed' : ''}`}
                         data-tooltip={
                           copyAckId === activeBlock?.id
                             ? 'Copied'
                             : 'Copy block'
                         }
+                        onMouseLeave={() => setSuppressCopyBlockTooltip(false)}
                       >
                         <button
-                          className="sidebar-icon-button"
+                          className={`sidebar-icon-button${copyAckId === activeBlock?.id ? ' sidebar-icon-button-ack' : ''}`}
                           type="button"
                           onClick={handleCopyActiveBlock}
                           aria-label="Copy block"
@@ -2470,6 +2997,56 @@ function App() {
                   <div className="sidebar-quick-fact">
                     {collectionBlockCountLabel}
                   </div>
+                  {activeCollection ? (
+                    <div className="sidebar-quick-fact sidebar-quick-fact-action">
+                      <span
+                        className={`tooltip tooltip-hover-only tooltip-left${suppressCopyCollectionTooltip ? ' tooltip-suppressed' : ''}`}
+                        data-tooltip={
+                          copyCollectionAck ? 'Copied' : 'Copy collection'
+                        }
+                        onMouseLeave={() =>
+                          setSuppressCopyCollectionTooltip(false)
+                        }
+                      >
+                        <button
+                          className={`sidebar-icon-button${copyCollectionAck ? ' sidebar-icon-button-ack' : ''}`}
+                          type="button"
+                          onClick={handleCopyCollection}
+                          aria-label="Copy collection"
+                        >
+                          <span
+                            className={`codicon ${
+                              copyCollectionAck
+                                ? 'codicon-check'
+                                : 'codicon-copy'
+                            }`}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </span>
+                      {canDeleteCollection ? (
+                        <span
+                          className={`tooltip tooltip-hover-only tooltip-left${suppressDeleteCollectionTooltip ? ' tooltip-suppressed' : ''}`}
+                          data-tooltip="Delete collection"
+                          onMouseLeave={() =>
+                            setSuppressDeleteCollectionTooltip(false)
+                          }
+                        >
+                          <button
+                            className="sidebar-icon-button"
+                            type="button"
+                            onClick={handleDeleteCollection}
+                            aria-label="Delete collection"
+                          >
+                            <span
+                              className="codicon codicon-trash"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ) : (

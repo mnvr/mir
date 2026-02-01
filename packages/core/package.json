@@ -9,6 +9,7 @@
     "lint": "tsc -p tsconfig.json --noEmit && eslint src --ext ts --report-unused-disable-directives --max-warnings 0"
   },
   "dependencies": {
+    "@noble/hashes": "^1.8.0",
     "nanoid": "^5.1.6"
   }
 }

@@ -2,13 +2,21 @@ export type RecordType = 'collection' | 'block'
 
 export type RelationType = 'contains' | 'parent'
 
-export type MirRecord = {
+export type BaseRecord = {
   id: string
   type: RecordType
   createdAt: number
   updatedAt: number
-  payload: unknown
-  deletedAt?: number
+}
+
+export type LiveRecord<TPayload> = BaseRecord & {
+  deletedAt?: never
+  payload: TPayload
+}
+
+export type TombstoneRecord = BaseRecord & {
+  deletedAt: number
+  payload?: never
 }
 
 export type CollectionPayload = {
@@ -16,9 +24,8 @@ export type CollectionPayload = {
   localTimestamp: string
 }
 
-export type CollectionRecord = MirRecord & {
+export type CollectionRecord = LiveRecord<CollectionPayload> & {
   type: 'collection'
-  payload: CollectionPayload
 }
 
 export type BlockBackend =
@@ -59,10 +66,23 @@ export type BlockPayload = {
   response?: BlockResponse
 }
 
-export type BlockRecord = MirRecord & {
+export type BlockRecord = LiveRecord<BlockPayload> & {
   type: 'block'
-  payload: BlockPayload
 }
+
+export type CollectionTombstone = TombstoneRecord & {
+  type: 'collection'
+}
+
+export type BlockTombstone = TombstoneRecord & {
+  type: 'block'
+}
+
+export type MirRecord =
+  | CollectionRecord
+  | BlockRecord
+  | CollectionTombstone
+  | BlockTombstone
 
 export type Relation = {
   id: string

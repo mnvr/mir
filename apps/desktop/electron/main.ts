@@ -5,6 +5,7 @@ import {
   MenuItem,
   ipcMain,
   safeStorage,
+  dialog,
   nativeImage,
   nativeTheme,
   type MenuItemConstructorOptions,
@@ -42,6 +43,14 @@ const devDockIconPath = path.join(process.env.APP_ROOT, 'assets', 'icon-dev.png'
 
 
 const isMac = process.platform === 'darwin'
+
+const formatExportTimestamp = () => {
+  const now = new Date()
+  const pad = (value: number) => value.toString().padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(
+    now.getDate(),
+  )}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`
+}
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
@@ -95,6 +104,75 @@ function registerSecretHandlers() {
 
     const buffer = Buffer.from(cipherText, 'base64')
     return safeStorage.decryptString(buffer)
+  })
+}
+
+function registerDataHandlers() {
+  ipcMain.handle('data:export', async () => {
+    const defaultPath = path.join(
+      app.getPath('documents'),
+      `Mir-Export-${formatExportTimestamp()}.json`,
+    )
+    const { canceled, filePath } = win
+      ? await dialog.showSaveDialog(win, {
+          title: 'Export Mir Data',
+          defaultPath,
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+        })
+      : await dialog.showSaveDialog({
+          title: 'Export Mir Data',
+          defaultPath,
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+        })
+    if (canceled || !filePath) {
+      return { status: 'canceled' }
+    }
+    return { status: 'picked', path: filePath }
+  })
+
+  ipcMain.handle('data:export-save', async (_event, payload) => {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('Invalid export payload.')
+    }
+    const { path: filePath, payload: contents } = payload as {
+      path?: unknown
+      payload?: unknown
+    }
+    if (typeof filePath !== 'string' || !contents) {
+      throw new Error('Invalid export payload.')
+    }
+    await fs.promises.writeFile(
+      filePath,
+      JSON.stringify(contents, null, 2),
+      'utf-8',
+    )
+    return { status: 'saved', path: filePath }
+  })
+
+  ipcMain.handle('data:import', async () => {
+    const { canceled, filePaths } = win
+      ? await dialog.showOpenDialog(win, {
+          title: 'Import Mir Data',
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+          properties: ['openFile'],
+        })
+      : await dialog.showOpenDialog({
+          title: 'Import Mir Data',
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+          properties: ['openFile'],
+        })
+    if (canceled || filePaths.length === 0) {
+      return { status: 'canceled' }
+    }
+    return { status: 'picked', path: filePaths[0] }
+  })
+
+  ipcMain.handle('data:import-read', async (_event, filePath) => {
+    if (typeof filePath !== 'string') {
+      throw new Error('Invalid import path.')
+    }
+    const contents = await fs.promises.readFile(filePath, 'utf-8')
+    return { status: 'loaded', path: filePath, contents }
   })
 }
 
@@ -386,6 +464,7 @@ app.on('activate', () => {
 
 void app.whenReady().then(() => {
   registerSecretHandlers()
+  registerDataHandlers()
   registerSidebarHandlers()
   createWindow()
 })

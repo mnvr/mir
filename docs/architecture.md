@@ -2,31 +2,53 @@
 
 ## Core objects
 
-- `records`: immutable domain entities.
+- `records`: domain entities.
 - `relations`: directed links between records.
-- `kv`: arbitrary mutable key values.
+- `kv`: arbitrary key values.
 
 ### Records
 
-Records are immutable.
+Records are domain entities keyed by an unchanging id. Edits and deletes overwrite the existing record in place. The canonical state is whatever has the latest `updatedAt` for that id.
 
-Required fields:
+There are two record shapes:
+
+- **Live records**: carry `payload` and omit `deletedAt`.
+- **Tombstones**: carry `deletedAt` and omit `payload`.
+
+Common fields (both shapes):
 
 - `id`
 - `type`
 - `createdAt`
 - `updatedAt`
+
+Live-only fields:
+
 - `payload`
 
-Optional fields:
+Tombstone-only fields:
 
 - `deletedAt`
 
-Numeric timestamps like `createdAt` are all epoch milliseconds. Payloads also include a `localTimestamp` string in the local timezone where the corresponding record was created.
+Numeric timestamps like `createdAt` are epoch milliseconds.
+
+When present, payloads include a `localTimestamp` string in the local timezone where the record was created.
+
+#### Collections
+
+A container of blocks.
+
+The title of a collection may be mutated in place.
+
+#### Blocks
+
+A single immutable "interaction". Blocks are chained together to form the context when generating and linear flow when reading.
 
 ### Relations
 
-Relations encode edges between records. They are also immutable.
+Relations encode edges between records. They are immutable.
+
+> Note: Relations are deleted (pruned) if either of the records it connects are deleted (tombstoned).
 
 Fields:
 
@@ -49,11 +71,11 @@ The sync strategy for the KV pairs is not defined yet, but it likely will be bes
 
 ## Sync model
 
-### Append-only invariants
+### Local
 
-- No destructive updates to canonical data (records and relations)
-- Deletes are tombstones (`deletedAt` on a new record).
-- Derived state can be rebuilt
+- Locally, records are overwritten in place; the latest `updatedAt` wins.
+- Deletes are tombstones (`deletedAt` on the latest record).
+- Derived state can be rebuilt.
 
 ### Network
 
