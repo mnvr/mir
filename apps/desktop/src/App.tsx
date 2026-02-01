@@ -31,6 +31,8 @@ import {
 } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
 import {
   appendBlock,
   createCollection,
@@ -44,6 +46,7 @@ import {
   updateCollectionTitle,
 } from './services/db'
 import './App.css'
+import 'katex/dist/katex.min.css'
 
 type BlockDirection = 'input' | 'output'
 
@@ -86,7 +89,19 @@ const SCROLL_CONTEXT_PEEK_FALLBACK_PX = 48
 const SCROLL_NEAR_BOTTOM_RATIO = 0.5
 const SCROLL_STICK_BOTTOM_PX = 8
 
-const MARKDOWN_PLUGINS = [remarkGfm]
+const MARKDOWN_PLUGINS = [remarkGfm, remarkMath]
+const REHYPE_PLUGINS = [rehypeKatex]
+
+const normalizeMathDelimiters = (markdown: string) => {
+  let normalized = markdown
+  if (normalized.includes('\\[') && normalized.includes('\\]')) {
+    normalized = normalized.replace(/\\\[/g, '$$').replace(/\\\]/g, '$$')
+  }
+  if (normalized.includes('\\(') && normalized.includes('\\)')) {
+    normalized = normalized.replace(/\\\(/g, '$').replace(/\\\)/g, '$')
+  }
+  return normalized
+}
 
 const demoCollections = [demoCollection]
 
@@ -277,15 +292,21 @@ const BlockRow = memo(function BlockRow({
     >
       {block.direction === 'input' ? (
         <blockquote className="input-quote">
-          <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>
-            {block.content}
+          <ReactMarkdown
+            remarkPlugins={MARKDOWN_PLUGINS}
+            rehypePlugins={REHYPE_PLUGINS}
+          >
+            {normalizeMathDelimiters(block.content)}
           </ReactMarkdown>
         </blockquote>
       ) : (
         <>
           <div className="output-markdown">
-            <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>
-              {block.content}
+            <ReactMarkdown
+              remarkPlugins={MARKDOWN_PLUGINS}
+              rehypePlugins={REHYPE_PLUGINS}
+            >
+              {normalizeMathDelimiters(block.content)}
             </ReactMarkdown>
           </div>
           {block.status === 'pending' ? <TickTrail /> : null}

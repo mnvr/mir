@@ -142,6 +142,7 @@ This is then followed by various sections giving low-level details about the act
 
 - Automatic light/dark mode that follows the system's setting.
 - Easy controls for customizing generation parameters for each block.
+- Markdown and TeX math typesetting support.
 - Keyboard friendly design, with handy and documented keyboard shortcuts for navigation and various functions.
 
 ## Keyboard shortcuts
