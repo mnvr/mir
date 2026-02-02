@@ -1,6 +1,5 @@
 import type { ChatCompletionResponse } from './chat'
 import type {
-  BlockBackend,
   BlockPayload,
   BlockRequest,
   BlockResponse,
@@ -8,27 +7,18 @@ import type {
 } from './storage'
 import { formatLocalTimestamp } from './time'
 
-export const buildBlockBackend = (
-  baseUrl: string,
-): BlockBackend | undefined => {
-  if (!baseUrl) {
-    return undefined
-  }
-  return { kind: 'remote', baseUrl }
-}
-
 export const buildBlockRequest = (
   baseUrl: string,
   model: string,
   temperature?: number,
 ): BlockRequest | undefined => {
-  const backend = buildBlockBackend(baseUrl)
-  if (!backend && !model) {
+  if (!baseUrl && !model) {
     return undefined
   }
   return {
+    type: baseUrl ? 'remote' : undefined,
+    baseUrl: baseUrl || undefined,
     model: model || undefined,
-    backend,
     temperature:
       typeof temperature === 'number' && Number.isFinite(temperature)
         ? temperature
@@ -36,7 +26,7 @@ export const buildBlockRequest = (
   }
 }
 
-export const toBlockUsage = (
+const toBlockUsage = (
   response: ChatCompletionResponse,
 ): BlockUsage | undefined => {
   const usage = response.usage
@@ -105,26 +95,9 @@ export const toBlockPayload = (
   response: options?.response,
 })
 
-export const formatBlockSource = (backend?: BlockBackend) => {
-  if (!backend) {
-    return null
-  }
-  if (backend.kind === 'remote') {
-    return backend.baseUrl ?? 'remote'
-  }
-  return backend.engine ?? 'local'
-}
-
 export const formatLatency = (latencyMs?: number) => {
   if (typeof latencyMs !== 'number') {
     return null
   }
   return `${Math.round(latencyMs)} ms`
-}
-
-export const formatUsage = (usage?: BlockUsage) => {
-  if (!usage) {
-    return null
-  }
-  return `${usage.totalTokens} tokens`
 }

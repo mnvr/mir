@@ -12,7 +12,6 @@ import {
   buildBlockRequest,
   buildBlockResponse,
   toBlockPayload,
-  formatBlockSource,
   formatLatency,
   toChatMessages,
   type CollectionPayload,
@@ -36,20 +35,25 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import {
   appendBlock,
-  buildExportPayload,
   createCollection,
   deleteKvValue,
   deleteCollection,
   getActiveCollection,
   getKvValue,
-  importMirData,
   listCollections,
   listCollectionBlocks,
   setActiveCollectionId,
   setKvValue,
   updateCollectionTitle,
-  type MirExport,
 } from './services/db'
+import {
+  applyImport,
+  exportData,
+  loadImportPreview,
+  revealExportedFile,
+  type ImportPreview,
+} from './services/export'
+import { getFileBasename } from './utils/file'
 import './App.css'
 import 'katex/dist/katex.min.css'
 
@@ -110,52 +114,6 @@ const normalizeMathDelimiters = (markdown: string) => {
   return normalized
 }
 
-const parseExportPayload = (raw: string): MirExport => {
-  const parsed = JSON.parse(raw)
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Invalid export file.')
-  }
-  const { version, exportedAt, records, relations } = parsed as {
-    version?: unknown
-    exportedAt?: unknown
-    records?: unknown
-    relations?: unknown
-  }
-  if (version !== 1) {
-    throw new Error('Unsupported export version.')
-  }
-  if (!Array.isArray(records) || !Array.isArray(relations)) {
-    throw new Error('Invalid export contents.')
-  }
-  return {
-    version: 1,
-    exportedAt: typeof exportedAt === 'string' ? exportedAt : '',
-    records: records as MirExport['records'],
-    relations: relations as MirExport['relations'],
-  }
-}
-
-const summarizeExportPayload = (payload: MirExport) => {
-  let collectionsCount = 0
-  let blocksCount = 0
-  payload.records.forEach((record) => {
-    if (record && typeof record === 'object' && 'type' in record) {
-      const typeValue = (record as { type?: string }).type
-      if (typeValue === 'collection') {
-        collectionsCount += 1
-      } else if (typeValue === 'block') {
-        blocksCount += 1
-      }
-    }
-  })
-  return {
-    collections: collectionsCount,
-    blocks: blocksCount,
-    records: payload.records.length,
-    relations: payload.relations.length,
-  }
-}
-
 const formatExportedAt = (value?: string) => {
   if (!value) {
     return null
@@ -165,11 +123,6 @@ const formatExportedAt = (value?: string) => {
     return value
   }
   return parsed.toLocaleString()
-}
-
-const getFileBasename = (filePath: string) => {
-  const segments = filePath.split(/[/\\]/)
-  return segments[segments.length - 1] ?? filePath
 }
 
 const demoCollections = [demoCollection]
@@ -389,6 +342,8 @@ type ChatPaneProps = {
   blocks: Block[]
   activeBlockId: string | null
   showEmptyState: boolean
+  showConfigureLink: boolean
+  onConfigure: () => void
   endRef: React.RefObject<HTMLDivElement | null>
   onChatClick: (event: MouseEvent<HTMLElement>) => void
   onBlockMouseDown: () => void
@@ -400,6 +355,8 @@ const ChatPane = memo(function ChatPane({
   blocks,
   activeBlockId,
   showEmptyState,
+  showConfigureLink,
+  onConfigure,
   endRef,
   onChatClick,
   onBlockMouseDown,
@@ -407,12 +364,22 @@ const ChatPane = memo(function ChatPane({
   registerBlockRef,
 }: ChatPaneProps) {
   return (
-    <main className="chat" onClick={onChatClick}>
+    <main className="chat chat-pane" onClick={onChatClick}>
       {blocks.length === 0 && showEmptyState ? (
         <div className="chat-empty">
           <div className="chat-empty-title">No context yet</div>
           <div className="chat-empty-body">
-            Add a block to start building context
+            {showConfigureLink ? (
+              <button
+                className="chat-empty-link"
+                type="button"
+                onClick={onConfigure}
+              >
+                Configure your connection to start
+              </button>
+            ) : (
+              <>Add a block to start building context</>
+            )}
           </div>
         </div>
       ) : (
@@ -443,6 +410,7 @@ function App() {
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isSettingsClosing, setIsSettingsClosing] = useState(false)
   const [storageMode, setStorageMode] = useState<StorageMode>('session')
   const [keyError, setKeyError] = useState<string | null>(null)
   const [temperature, setTemperature] = useState(1)
@@ -457,14 +425,13 @@ function App() {
   const [isSending, setIsSending] = useState(false)
   const [settingsReady, setSettingsReady] = useState(false)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
-  const [dataNotice, setDataNotice] = useState<string | null>(null)
+  const [exportSummary, setExportSummary] = useState<{
+    filePath: string
+    fileName: string
+  } | null>(null)
   const [dataError, setDataError] = useState<string | null>(null)
   const [importSummary, setImportSummary] = useState<string | null>(null)
-  const [importPreview, setImportPreview] = useState<{
-    payload: MirExport
-    filePath: string
-    summary: ReturnType<typeof summarizeExportPayload>
-  } | null>(null)
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [isPickingExport, setIsPickingExport] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
   const [isPickingImport, setIsPickingImport] = useState(false)
@@ -503,6 +470,7 @@ function App() {
   const contextRailRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const blockRefs = useRef(new Map<string, HTMLDivElement>())
+  const settingsCloseTimeoutRef = useRef<number | null>(null)
   const isMountedRef = useRef(true)
   const suppressBlockActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
@@ -534,9 +502,11 @@ function App() {
   const hasNewlineRef = useRef(hasNewline)
   const isSendingRef = useRef(isSending)
   const sendMessageRef = useRef<(() => Promise<void>) | null>(null)
+  const effectiveActiveBlockId = isSettingsOpen ? null : activeBlockId
   const activeBlock = useMemo(
-    () => blocks.find((block) => block.id === activeBlockId) ?? null,
-    [activeBlockId, blocks],
+    () =>
+      blocks.find((block) => block.id === effectiveActiveBlockId) ?? null,
+    [effectiveActiveBlockId, blocks],
   )
   const activePayload = activeBlock?.payload
   const activeWordMatches = useMemo(
@@ -570,7 +540,8 @@ function App() {
             localTimestamp: activePayload.localTimestamp,
             latencyMs: activePayload.response?.latencyMs,
             usage: activePayload.response?.usage,
-            backend: activePayload.request?.backend,
+            requestBaseUrl: activePayload.request?.baseUrl,
+            requestEngine: activePayload.request?.engine,
           }
         : null,
     [activePayload],
@@ -621,6 +592,15 @@ function App() {
     inspectorMeta?.usage?.completionTokens,
   )
   const totalTokens = formatTokenCount(inspectorMeta?.usage?.totalTokens)
+  const requestLocation = useMemo(() => {
+    if (inspectorMeta?.requestBaseUrl) {
+      return { label: 'Endpoint', value: inspectorMeta.requestBaseUrl }
+    }
+    if (inspectorMeta?.requestEngine) {
+      return { label: 'Engine', value: inspectorMeta.requestEngine }
+    }
+    return null
+  }, [inspectorMeta?.requestBaseUrl, inspectorMeta?.requestEngine])
   const contextTokens = useMemo(() => {
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
       const usage = blocks[index]?.payload?.response?.usage
@@ -651,12 +631,16 @@ function App() {
     }
     return `${lastRunTokensLabel} · ${lastRunLatencyLabel}`
   })()
-  const collectionTimestamp =
-    activeCollection?.payload.localTimestamp ?? pendingCollection?.localTimestamp
+  const collectionTimestamp = isSettingsOpen
+    ? undefined
+    : activeCollection?.payload.localTimestamp ??
+      pendingCollection?.localTimestamp
   const collectionDateLabel = formatLocalTimestampHeading(collectionTimestamp)
   const collectionBlockCountLabel = formatBlockCount(blocks.length)
   const canDeleteCollection =
-    Boolean(activeCollection) && activeCollection?.id !== demoCollection.id
+    Boolean(activeCollection) &&
+    activeCollection?.id !== demoCollection.id &&
+    !isSettingsOpen
   const orderedCollections = useMemo(
     () => groupedCollections.flatMap((group) => group.collections),
     [groupedCollections],
@@ -664,18 +648,21 @@ function App() {
   const headerSubtitle = isSettingsOpen
     ? 'Settings'
     : collectionDateLabel ?? (hasLoadedBlocks ? 'Undated' : '')
+  const showConfigureLink = settingsLoaded && baseUrl === ''
   const modelLabel = model || 'Default'
   const temperatureLabel = temperature.toFixed(1)
-  const exportSummary = importPreview?.summary ?? null
+  const importPreviewSummary = importPreview?.summary ?? null
   const exportPreviewTime = formatExportedAt(importPreview?.payload.exportedAt)
   const exportPreviewFile = importPreview?.filePath
     ? getFileBasename(importPreview.filePath)
     : null
+  const hasDataPanel = Boolean(importPreview || importSummary || exportSummary)
   const isImportLocked =
     Boolean(importPreview) || isReadingImport || isImportingData
   const canUseFileDialogs =
     typeof window !== 'undefined' &&
     typeof window.ipcRenderer?.invoke === 'function'
+  const isSidebarVisible = isSidebarOpen
 
   const upsertCollection = useCallback((collection: CollectionRecord) => {
     setCollections((prev) => {
@@ -702,11 +689,36 @@ function App() {
     [sidebarTab, updateSidebarOpen],
   )
 
+  const openSettings = useCallback(() => {
+    if (settingsCloseTimeoutRef.current) {
+      window.clearTimeout(settingsCloseTimeoutRef.current)
+      settingsCloseTimeoutRef.current = null
+    }
+    setIsSettingsClosing(false)
+    setIsSettingsOpen(true)
+  }, [])
+
+  const closeSettings = useCallback(() => {
+    if (!isSettingsOpen) {
+      return
+    }
+    if (settingsCloseTimeoutRef.current) {
+      window.clearTimeout(settingsCloseTimeoutRef.current)
+      settingsCloseTimeoutRef.current = null
+    }
+    setIsSettingsClosing(true)
+    settingsCloseTimeoutRef.current = window.setTimeout(() => {
+      setIsSettingsOpen(false)
+      setIsSettingsClosing(false)
+      settingsCloseTimeoutRef.current = null
+    }, 120)
+  }, [isSettingsOpen])
+
   useEffect(() => {
     openSettingsRef.current = () => {
-      setIsSettingsOpen(true)
+      openSettings()
     }
-  }, [])
+  }, [openSettings])
 
   useEffect(() => {
     toggleSidebarRef.current = () => {
@@ -748,10 +760,20 @@ function App() {
           typeof storedModel === 'string' ? storedModel : ''
         setBaseUrl(nextBaseUrl)
         setModel(nextModel)
+        if (settingsCloseTimeoutRef.current) {
+          window.clearTimeout(settingsCloseTimeoutRef.current)
+          settingsCloseTimeoutRef.current = null
+        }
+        setIsSettingsClosing(false)
         setIsSettingsOpen(!nextBaseUrl)
         setSettingsLoaded(true)
       } catch {
         if (isMounted) {
+          if (settingsCloseTimeoutRef.current) {
+            window.clearTimeout(settingsCloseTimeoutRef.current)
+            settingsCloseTimeoutRef.current = null
+          }
+          setIsSettingsClosing(false)
           setIsSettingsOpen(true)
           setSettingsLoaded(true)
         }
@@ -792,6 +814,15 @@ function App() {
       setShowKey(false)
     }
   }, [isSettingsOpen])
+
+  useEffect(() => {
+    return () => {
+      if (settingsCloseTimeoutRef.current) {
+        window.clearTimeout(settingsCloseTimeoutRef.current)
+      }
+    }
+  }, [])
+
 
   useEffect(() => {
     if (!window.ipcRenderer?.on) {
@@ -1635,7 +1666,11 @@ function App() {
   }
 
   const handleToggleSettings = () => {
-    setIsSettingsOpen((prev) => !prev)
+    if (isSettingsOpen && !isSettingsClosing) {
+      closeSettings()
+    } else {
+      openSettings()
+    }
     setSuppressSettingsTooltip(true)
   }
 
@@ -1645,55 +1680,37 @@ function App() {
   }
 
   const handleExportData = useCallback(async () => {
-    setDataNotice(null)
+    setExportSummary(null)
     setDataError(null)
+    setImportPreview(null)
     setImportSummary(null)
     if (!canUseFileDialogs) {
       setDataError('Export is not available in this environment.')
       return
     }
     setIsPickingExport(true)
-    let selectedPath = ''
     try {
-      const result = await window.ipcRenderer.invoke('data:export')
-      if (!result || result.status === 'canceled') {
+      const result = await exportData(() => {
+        setIsPickingExport(false)
+        setIsExporting(true)
+      })
+      if (result.status === 'canceled') {
         return
       }
-      if (result.status !== 'picked' || typeof result.path !== 'string') {
-        setDataError('Export failed.')
-        return
-      }
-      selectedPath = result.path
+      setExportSummary({
+        filePath: result.filePath,
+        fileName: result.fileName,
+      })
     } catch {
       setDataError('Export failed.')
     } finally {
       setIsPickingExport(false)
-    }
-    if (!selectedPath) {
-      return
-    }
-    setIsExporting(true)
-    try {
-      const payload = await buildExportPayload()
-      const result = await window.ipcRenderer.invoke('data:export-save', {
-        path: selectedPath,
-        payload,
-      })
-      if (!result || result.status !== 'saved') {
-        setDataError('Export failed.')
-        return
-      }
-      const fileName = selectedPath ? getFileBasename(selectedPath) : 'export'
-      setDataNotice(`Exported data to ${fileName}.`)
-    } catch {
-      setDataError('Export failed.')
-    } finally {
       setIsExporting(false)
     }
   }, [canUseFileDialogs])
 
   const handleImportData = useCallback(async () => {
-    setDataNotice(null)
+    setExportSummary(null)
     setDataError(null)
     setImportPreview(null)
     setImportSummary(null)
@@ -1702,48 +1719,21 @@ function App() {
       return
     }
     setIsPickingImport(true)
-    let selectedPath = ''
     try {
-      const result = await window.ipcRenderer.invoke('data:import')
-      if (!result || result.status === 'canceled') {
+      const result = await loadImportPreview(() => {
+        setIsPickingImport(false)
+        setIsReadingImport(true)
+      })
+      if (result.status === 'canceled') {
         return
       }
-      if (result.status !== 'picked' || typeof result.path !== 'string') {
-        setDataError('Import failed.')
-        return
-      }
-      selectedPath = result.path
+      setImportPreview(result.preview)
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Import failed.'
       setDataError(message)
     } finally {
       setIsPickingImport(false)
-    }
-    if (!selectedPath) {
-      return
-    }
-    setIsReadingImport(true)
-    try {
-      const result = await window.ipcRenderer.invoke(
-        'data:import-read',
-        selectedPath,
-      )
-      if (!result || result.status !== 'loaded' || typeof result.contents !== 'string') {
-        setDataError('Import failed.')
-        return
-      }
-      const payload = parseExportPayload(result.contents)
-      setImportPreview({
-        payload,
-        filePath: result.path ?? '',
-        summary: summarizeExportPayload(payload),
-      })
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Import failed.'
-      setDataError(message)
-    } finally {
       setIsReadingImport(false)
     }
   }, [canUseFileDialogs])
@@ -1758,12 +1748,12 @@ function App() {
     if (!importPreview) {
       return
     }
-    setDataNotice(null)
+    setExportSummary(null)
     setDataError(null)
     setImportSummary(null)
     setIsImportingData(true)
     try {
-      const summary = await importMirData(importPreview.payload)
+      const { summary } = await applyImport(importPreview.payload)
       setImportPreview(null)
       const ignoredRecords =
         summary.records.skipped +
@@ -1789,6 +1779,17 @@ function App() {
     setImportSummary(null)
   }, [])
 
+  const handleDismissExportSummary = useCallback(() => {
+    setExportSummary(null)
+  }, [])
+
+  const handleRevealExport = useCallback(() => {
+    if (!exportSummary?.filePath) {
+      return
+    }
+    void revealExportedFile(exportSummary.filePath)
+  }, [exportSummary?.filePath])
+
   const startNewCollection = useCallback(() => {
     setSuppressNewCollectionTooltip(true)
     setSelectedCollectionId(null)
@@ -1805,6 +1806,11 @@ function App() {
 
     focusComposer()
   }, [focusComposer])
+
+  const handleStartNewCollection = useCallback(() => {
+    closeSettings()
+    startNewCollection()
+  }, [closeSettings, startNewCollection])
 
   const handleDeleteCollection = useCallback(() => {
     if (!activeCollection || activeCollection.id === demoCollection.id) {
@@ -2265,9 +2271,17 @@ function App() {
     updateSidebarOpen(true)
   }
 
+  const handleSidebarSelectCollection = useCallback(
+    (collection: CollectionRecord) => {
+      closeSettings()
+      handleSelectCollection(collection)
+    },
+    [closeSettings, handleSelectCollection],
+  )
+
   return (
     <div className={`app${isSettingsOpen ? ' settings-open' : ''}`} ref={appRef}>
-      <div className={`layout${isSidebarOpen ? ' sidebar-open' : ''}`}>
+      <div className={`layout${isSidebarVisible ? ' sidebar-open' : ''}`}>
         <div className="main-stack">
           <header className="header">
             <div className="header-left">
@@ -2286,7 +2300,7 @@ function App() {
                     className="new-chat-toggle"
                     type="button"
                     onClick={() => {
-                      void startNewCollection()
+                      handleStartNewCollection()
                     }}
                     aria-label="New collection"
                     onBlur={() => setSuppressNewCollectionTooltip(false)}
@@ -2344,14 +2358,31 @@ function App() {
               </div>
             </div>
           </header>
-          <div
-            className="main-column"
-            ref={mainColumnRef}
-            onScroll={handleMainScroll}
-          >
+          <div className="main-pane">
+            <div
+              className="main-column"
+              ref={mainColumnRef}
+              onScroll={handleMainScroll}
+            >
+              <ChatPane
+                blocks={blocks}
+                activeBlockId={activeBlockId}
+                showEmptyState={hasLoadedBlocks}
+                showConfigureLink={showConfigureLink}
+                onConfigure={() => openSettingsRef.current()}
+                endRef={endRef}
+                onChatClick={handleChatClick}
+                onBlockMouseDown={handleBlockMouseDown}
+                onBlockClick={handleBlockClick}
+                registerBlockRef={registerBlockRef}
+              />
+            </div>
             {isSettingsOpen ? (
-              <section className="settings" id="settings-panel">
-                <div className="settings-inner">
+              <div
+                className={`settings-overlay${isSettingsClosing ? ' is-closing' : ''}`}
+              >
+                <section className="settings settings-pane" id="settings-panel">
+                  <div className="settings-inner">
                   <div className="settings-heading">Connection</div>
                   <div className="settings-grid">
                     <label className="settings-field">
@@ -2459,7 +2490,7 @@ function App() {
                       Import data
                     </button>
                   </div>
-                  {importPreview || importSummary ? (
+                  {hasDataPanel ? (
                     <div className="settings-import-preview">
                       {importPreview ? (
                         <>
@@ -2478,14 +2509,14 @@ function App() {
                               Exported · {exportPreviewTime}
                             </div>
                           ) : null}
-                          {exportSummary ? (
+                          {importPreviewSummary ? (
                             <div className="settings-import-metrics">
                               <div>
                                 <span className="settings-import-label">
                                   Collections
                                 </span>
                                 <span className="settings-import-value">
-                                  {exportSummary.collections.toLocaleString()}
+                                  {importPreviewSummary.collections.toLocaleString()}
                                 </span>
                               </div>
                               <div>
@@ -2493,7 +2524,7 @@ function App() {
                                   Blocks
                                 </span>
                                 <span className="settings-import-value">
-                                  {exportSummary.blocks.toLocaleString()}
+                                  {importPreviewSummary.blocks.toLocaleString()}
                                 </span>
                               </div>
                               <div>
@@ -2501,7 +2532,7 @@ function App() {
                                   Records
                                 </span>
                                 <span className="settings-import-value">
-                                  {exportSummary.records.toLocaleString()}
+                                  {importPreviewSummary.records.toLocaleString()}
                                 </span>
                               </div>
                               <div>
@@ -2509,7 +2540,7 @@ function App() {
                                   Relations
                                 </span>
                                 <span className="settings-import-value">
-                                  {exportSummary.relations.toLocaleString()}
+                                  {importPreviewSummary.relations.toLocaleString()}
                                 </span>
                               </div>
                             </div>
@@ -2537,7 +2568,7 @@ function App() {
                             </button>
                           </div>
                         </>
-                      ) : (
+                      ) : importSummary ? (
                         <>
                           <div className="settings-import-header">
                             <div className="settings-import-title">
@@ -2559,7 +2590,37 @@ function App() {
                             {importSummary}
                           </div>
                         </>
-                      )}
+                      ) : exportSummary ? (
+                        <>
+                          <div className="settings-import-header">
+                            <div className="settings-import-title">
+                              Export complete
+                            </div>
+                            <button
+                              className="settings-button settings-import-dismiss"
+                              type="button"
+                              onClick={handleDismissExportSummary}
+                              aria-label="Dismiss export summary"
+                            >
+                              <span
+                                className="codicon codicon-close"
+                                aria-hidden="true"
+                              />
+                            </button>
+                          </div>
+                          <div className="settings-import-note">
+                            Exported data to{' '}
+                            <button
+                              className="settings-inline-link"
+                              type="button"
+                              onClick={handleRevealExport}
+                            >
+                              {exportSummary.fileName}
+                            </button>
+                            .
+                          </div>
+                        </>
+                      ) : null}
                     </div>
                   ) : (
                     <div className="settings-note">
@@ -2567,135 +2628,139 @@ function App() {
                       API keys and local settings are not included.
                     </div>
                   )}
-                  {dataNotice ? (
-                    <div className="settings-note">{dataNotice}</div>
-                  ) : null}
-                  {dataError ? (
-                    <div className="settings-error">{dataError}</div>
-                  ) : null}
-                </div>
-              </section>
-            ) : null}
-            <ChatPane
-              blocks={blocks}
-              activeBlockId={activeBlockId}
-              showEmptyState={hasLoadedBlocks}
-              endRef={endRef}
-              onChatClick={handleChatClick}
-              onBlockMouseDown={handleBlockMouseDown}
-              onBlockClick={handleBlockClick}
-              registerBlockRef={registerBlockRef}
-            />
-          </div>
-          <div
-            className="context-rail"
-            aria-label="Context controls"
-            ref={contextRailRef}
-          >
-            <div className="context-rail-meta">
-              <span className="context-rail-title">Context</span>
-              <span className="context-rail-value">
-                {contextTokens ? `${contextTokens.toLocaleString()} tokens` : '—'}
-              </span>
-              {showLastRun ? (
-                <span className="context-rail-run">{lastRunBullet}</span>
-              ) : null}
-            </div>
-          </div>
-          <footer className="composer" ref={composerRef}>
-            <div className="composer-box">
-              <textarea
-                ref={textareaRef}
-                className="composer-input"
-                placeholder="Add tokens"
-                value={draft}
-                spellCheck={false}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter') {
-                    return
-                  }
-
-                  if (event.shiftKey) {
-                    return
-                  }
-
-                  if (event.metaKey || event.ctrlKey) {
-                    event.preventDefault()
-                    void sendMessage()
-                    return
-                  }
-
-                  if (hasNewline || isSending) {
-                    return
-                  }
-
-                  event.preventDefault()
-                  void sendMessage()
-                }}
-                rows={1}
-              />
-              <div className="composer-actions">
-                <div className="composer-controls">
-                  <button
-                    className="composer-chip"
-                    type="button"
-                    aria-label="Model settings"
-                  >
-                    <span className="composer-chip-label">Model</span>
-                    <span className="composer-chip-value">{modelLabel}</span>
-                  </button>
-                  <button
-                    className="composer-chip"
-                    type="button"
-                    aria-label="Temperature settings"
-                    onClick={() =>
-                      setTemperature((prev) => {
-                        const rounded = Math.round(prev * 10) / 10
-                        const currentIndex = TEMPERATURE_PRESETS.findIndex(
-                          (value) => value === rounded,
-                        )
-                        const nextIndex =
-                          currentIndex === -1
-                            ? TEMPERATURE_PRESETS.indexOf(1)
-                            : (currentIndex + 1) % TEMPERATURE_PRESETS.length
-                        return TEMPERATURE_PRESETS[nextIndex] ?? 1
-                      })
-                    }
-                  >
-                    <span className="composer-chip-label">Temp</span>
-                    <span className="composer-chip-value">
-                      {temperatureLabel}
-                    </span>
-                  </button>
-                </div>
-                {isSending ? (
-                  <span className="tooltip tooltip-hover-only" data-tooltip="Stop continuation">
-                    <button
-                      className="send-button"
-                      type="button"
-                      onClick={stopRequest}
-                      aria-label="Stop continuation"
-                    >
-                      <span className="codicon codicon-debug-stop" aria-hidden="true" />
-                    </button>
-                  </span>
-                ) : (
-                  <span>
-                    <button
-                      className="send-button"
-                      type="button"
-                      onClick={() => void sendMessage()}
-                      disabled={!trimmedDraft}
-                      aria-label="Add to context"
-                    >
-                      <span className="codicon codicon-arrow-up" aria-hidden="true" />
-                    </button>
-                  </span>
-                )}
+                    {dataError ? (
+                      <div className="settings-error">{dataError}</div>
+                    ) : null}
+                  </div>
+                </section>
               </div>
-            </div>
-          </footer>
+            ) : null}
+          </div>
+          {isSettingsOpen ? null : (
+            <>
+              <div
+                className="context-rail"
+                aria-label="Context controls"
+                ref={contextRailRef}
+              >
+                <div className="context-rail-meta">
+                  <span className="context-rail-title">Context</span>
+                  <span className="context-rail-value">
+                    {contextTokens
+                      ? `${contextTokens.toLocaleString()} tokens`
+                      : '—'}
+                  </span>
+                  {showLastRun ? (
+                    <span className="context-rail-run">{lastRunBullet}</span>
+                  ) : null}
+                </div>
+              </div>
+              <footer className="composer" ref={composerRef}>
+                <div className="composer-box">
+                  <textarea
+                    ref={textareaRef}
+                    className="composer-input"
+                    placeholder="Add tokens"
+                    value={draft}
+                    spellCheck={false}
+                    onChange={(event) => setDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter') {
+                        return
+                      }
+
+                      if (event.shiftKey) {
+                        return
+                      }
+
+                      if (event.metaKey || event.ctrlKey) {
+                        event.preventDefault()
+                        void sendMessage()
+                        return
+                      }
+
+                      if (hasNewline || isSending) {
+                        return
+                      }
+
+                      event.preventDefault()
+                      void sendMessage()
+                    }}
+                    rows={1}
+                  />
+                  <div className="composer-actions">
+                    <div className="composer-controls">
+                      <button
+                        className="composer-chip"
+                        type="button"
+                        aria-label="Model settings"
+                      >
+                        <span className="composer-chip-label">Model</span>
+                        <span className="composer-chip-value">{modelLabel}</span>
+                      </button>
+                      <button
+                        className="composer-chip"
+                        type="button"
+                        aria-label="Temperature settings"
+                        onClick={() =>
+                          setTemperature((prev) => {
+                            const rounded = Math.round(prev * 10) / 10
+                            const currentIndex = TEMPERATURE_PRESETS.findIndex(
+                              (value) => value === rounded,
+                            )
+                            const nextIndex =
+                              currentIndex === -1
+                                ? TEMPERATURE_PRESETS.indexOf(1)
+                                : (currentIndex + 1) %
+                                  TEMPERATURE_PRESETS.length
+                            return TEMPERATURE_PRESETS[nextIndex] ?? 1
+                          })
+                        }
+                      >
+                        <span className="composer-chip-label">Temp</span>
+                        <span className="composer-chip-value">
+                          {temperatureLabel}
+                        </span>
+                      </button>
+                    </div>
+                    {isSending ? (
+                      <span
+                        className="tooltip tooltip-hover-only"
+                        data-tooltip="Stop continuation"
+                      >
+                        <button
+                          className="send-button"
+                          type="button"
+                          onClick={stopRequest}
+                          aria-label="Stop continuation"
+                        >
+                          <span
+                            className="codicon codicon-debug-stop"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </span>
+                    ) : (
+                      <span>
+                        <button
+                          className="send-button"
+                          type="button"
+                          onClick={() => void sendMessage()}
+                          disabled={!trimmedDraft}
+                          aria-label="Add to context"
+                        >
+                          <span
+                            className="codicon codicon-arrow-up"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </footer>
+            </>
+          )}
         </div>
 
         <aside className="sidebar" id="sidebar" aria-hidden={!isSidebarOpen}>
@@ -2705,10 +2770,10 @@ function App() {
               role="tablist"
               aria-label="Sidebar panels"
             >
-                <span
-                  className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
-                  data-tooltip="Collections"
-                >
+              <span
+                className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
+                data-tooltip="Collections"
+              >
                 <button
                   className={`sidebar-tab${sidebarTab === 'chats' ? ' active' : ''}`}
                   type="button"
@@ -2724,10 +2789,10 @@ function App() {
                   />
                 </button>
               </span>
-                <span
-                  className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
-                  data-tooltip="Inspect"
-                >
+              <span
+                className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
+                data-tooltip="Inspect"
+              >
                 <button
                   className={`sidebar-tab${sidebarTab === 'inspect' ? ' active' : ''}`}
                   type="button"
@@ -2737,7 +2802,10 @@ function App() {
                   aria-controls="sidebar-panel"
                   aria-label="Inspect panel"
                 >
-                  <span className="codicon codicon-inspect" aria-hidden="true" />
+                  <span
+                    className="codicon codicon-inspect"
+                    aria-hidden="true"
+                  />
                 </button>
               </span>
             </div>
@@ -2749,9 +2817,9 @@ function App() {
             aria-live="polite"
           >
             {sidebarTab === 'chats' ? (
-              <div className="chat-list" role="listbox" aria-label="Chats">
-                {groupedCollections.map((group) => (
-                  <div key={group.key} className="chat-group">
+                  <div className="chat-list" role="listbox" aria-label="Chats">
+                    {groupedCollections.map((group) => (
+                      <div key={group.key} className="chat-group">
                     <div className="section-title">{group.label}</div>
                     <div className="chat-group-list" role="group">
                       {group.collections.map((collection) => (
@@ -2759,7 +2827,7 @@ function App() {
                           key={collection.id}
                           type="button"
                           className={`chat-list-item${selectedCollectionId === collection.id ? ' active' : ''}`}
-                          onClick={() => handleSelectCollection(collection)}
+                          onClick={() => handleSidebarSelectCollection(collection)}
                           role="option"
                           aria-selected={selectedCollectionId === collection.id}
                         >
@@ -2783,7 +2851,7 @@ function App() {
                           key={collection.id}
                           type="button"
                           className={`chat-list-item${selectedCollectionId === collection.id ? ' active' : ''}`}
-                          onClick={() => handleSelectCollection(collection)}
+                          onClick={() => handleSidebarSelectCollection(collection)}
                           role="option"
                           aria-selected={selectedCollectionId === collection.id}
                         >
@@ -2880,11 +2948,13 @@ function App() {
                           <div className="section-title">Request</div>
                         </div>
                         <div className="sidebar-group-body">
-                          {formatBlockSource(inspectorMeta?.backend) ? (
+                          {requestLocation ? (
                             <div className="sidebar-field">
-                              <div className="sidebar-field-label">Source</div>
+                              <div className="sidebar-field-label">
+                                {requestLocation.label}
+                              </div>
                               <div className="sidebar-field-value">
-                                {formatBlockSource(inspectorMeta?.backend)}
+                                {requestLocation.value}
                               </div>
                             </div>
                           ) : null}
@@ -3051,7 +3121,7 @@ function App() {
               </div>
             ) : (
               <div className="sidebar-empty">
-                Select a block to inspect.
+                Select an item to inspect.
               </div>
             )}
           </div>

@@ -8,6 +8,7 @@ import {
   dialog,
   nativeImage,
   nativeTheme,
+  shell,
   type MenuItemConstructorOptions,
 } from 'electron'
 import { fileURLToPath } from 'node:url'
@@ -28,9 +29,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 process.env.APP_ROOT = path.join(__dirname, '..')
 
 // 🚧 Use ['ENV_NAME'] avoid vite:define plugin - Vite@2.x
-export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
-export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
-export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
+const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
+// const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
+const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
@@ -40,7 +41,6 @@ let win: BrowserWindow | null
 let isSidebarOpen = false
 const windowIconPath = path.join(process.env.VITE_PUBLIC ?? process.env.APP_ROOT, 'icon.png')
 const devDockIconPath = path.join(process.env.APP_ROOT, 'assets', 'icon-dev.png')
-
 
 const isMac = process.platform === 'darwin'
 
@@ -173,6 +173,14 @@ function registerDataHandlers() {
     }
     const contents = await fs.promises.readFile(filePath, 'utf-8')
     return { status: 'loaded', path: filePath, contents }
+  })
+
+  ipcMain.handle('file:reveal', async (_event, filePath) => {
+    if (typeof filePath !== 'string') {
+      throw new Error('Invalid file path.')
+    }
+    shell.showItemInFolder(filePath)
+    return { status: 'revealed', path: filePath }
   })
 }
 

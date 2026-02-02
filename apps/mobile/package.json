@@ -10,7 +10,7 @@
     "ios": "expo run:ios --port 5702",
     "web": "expo start --web --port 5702",
     "android:device": "expo run:android --device --port 5702",
-    "lint": "tsc -p tsconfig.json --noEmit && eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "tsc -p tsconfig.json --noEmit && eslint . --ext ts,tsx --max-warnings 0 --cache --cache-location .eslintcache"
   },
   "dependencies": {
     "expo": "^54.0.32",

@@ -2,7 +2,7 @@ export type RecordType = 'collection' | 'block'
 
 export type RelationType = 'contains' | 'parent'
 
-export type BaseRecord = {
+type BaseRecord = {
   id: string
   type: RecordType
   createdAt: number
@@ -14,7 +14,7 @@ export type LiveRecord<TPayload> = BaseRecord & {
   payload: TPayload
 }
 
-export type TombstoneRecord = BaseRecord & {
+type TombstoneRecord = BaseRecord & {
   deletedAt: number
   payload?: never
 }
@@ -28,19 +28,11 @@ export type CollectionRecord = LiveRecord<CollectionPayload> & {
   type: 'collection'
 }
 
-export type BlockBackend =
-  | {
-    kind: 'remote'
-    baseUrl?: string
-  }
-  | {
-    kind: 'local'
-    engine?: string
-  }
-
 export type BlockRequest = {
+  type?: 'remote' | 'local'
+  baseUrl?: string
+  engine?: string
   model?: string
-  backend?: BlockBackend
   temperature?: number
 }
 

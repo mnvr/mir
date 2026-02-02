@@ -32,8 +32,11 @@ export default [
         version: 'detect',
       },
     },
+    linterOptions: {
+      reportUnusedDisableDirectives: true,
+    },
     rules: {
-      ...tsPlugin.configs['flat/recommended-type-checked'].rules,
+      ...tsPlugin.configs['flat/strict-type-checked'].rules,
       ...reactPlugin.configs.flat.recommended.rules,
       ...reactPlugin.configs.flat['jsx-runtime'].rules,
       ...reactHooks.configs.flat.recommended.rules,

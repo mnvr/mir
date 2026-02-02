@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "lint": "tsc -p tsconfig.json --noEmit && eslint src --ext ts --report-unused-disable-directives --max-warnings 0"
+    "lint": "tsc -p tsconfig.json --noEmit && eslint src --ext ts --max-warnings 0 --cache --cache-location .eslintcache"
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0",

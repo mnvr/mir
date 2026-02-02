@@ -3,7 +3,7 @@ export type ChatCompletionMessage = {
   content: string
 }
 
-export type ChatCompletionRequest = {
+type ChatCompletionRequest = {
   messages: ChatCompletionMessage[]
   model?: string
   temperature?: number
@@ -28,32 +28,32 @@ export type ChatCompletionResponse = {
   }
 }
 
-export type AbortSignalLike = {
+type AbortSignalLike = {
   aborted: boolean
 }
 
-export type AbortControllerLike = {
+type AbortControllerLike = {
   signal: AbortSignalLike
   abort: () => void
 }
 
-export type FetchInit = {
+type FetchInit = {
   method?: string
   headers?: Record<string, string>
   body?: string
   signal?: AbortSignalLike
 }
 
-export type FetchResponse = {
+type FetchResponse = {
   ok: boolean
   status: number
   json(): Promise<unknown>
   text(): Promise<string>
 }
 
-export type FetchFn = (input: string, init?: FetchInit) => Promise<FetchResponse>
+type FetchFn = (input: string, init?: FetchInit) => Promise<FetchResponse>
 
-export type ChatCompletionOptions = {
+type ChatCompletionOptions = {
   baseUrl: string
   apiKey?: string
   messages: ChatCompletionMessage[]
@@ -64,7 +64,7 @@ export type ChatCompletionOptions = {
   signal?: AbortSignalLike
 }
 
-export type TimeoutController = {
+type TimeoutController = {
   signal?: AbortSignalLike
   abort: () => void
   clear: () => void
@@ -124,7 +124,7 @@ export const buildChatCompletionEndpoint = (baseUrl: string) => {
   return `${normalized}/chat/completions`
 }
 
-export const extractAssistantContent = (
+const extractAssistantContent = (
   data: ChatCompletionResponse,
 ): string | null => {
   if (!data || typeof data !== 'object') {

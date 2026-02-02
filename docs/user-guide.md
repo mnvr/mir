@@ -124,7 +124,8 @@ This is then followed by various sections giving low-level details about the act
 
 #### Request (for generated blocks)
 
-- Source: Where the completion request was sent (remote backend or local engine).
+- Engine: The local engine which performed the inference (for local generations).
+- Endpoint: The base URL of the inference provider (for remote generations).
 - Model: The name of the model specified in the completion request.
 - Temperature: Sampling temperature used by the request.
 

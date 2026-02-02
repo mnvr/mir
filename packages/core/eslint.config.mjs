@@ -21,8 +21,11 @@ export default [
     plugins: {
       '@typescript-eslint': tsPlugin,
     },
+    linterOptions: {
+      reportUnusedDisableDirectives: true,
+    },
     rules: {
-      ...tsPlugin.configs['flat/recommended-type-checked'].rules,
+      ...tsPlugin.configs['flat/strict-type-checked'].rules,
     },
   },
 ]

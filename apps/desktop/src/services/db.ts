@@ -85,31 +85,6 @@ type MirIndexSchema = DBSchema & {
   }
 }
 
-export type MirExport = {
-  version: 1
-  exportedAt: string
-  records: MirRecord[]
-  relations: Relation[]
-}
-
-export type MirImportSummary = {
-  records: {
-    incoming: number
-    imported: number
-    skipped: number
-    conflicts: number
-    duplicates: number
-  }
-  relations: {
-    incoming: number
-    imported: number
-    skipped: number
-    conflicts: number
-    duplicates: number
-    missingEndpoints: number
-  }
-}
-
 let dbPromise: Promise<IDBPDatabase<MirDbSchema>> | null = null
 let indexDbPromise: Promise<IDBPDatabase<MirIndexSchema>> | null = null
 
@@ -628,192 +603,41 @@ export const appendBlock = async (
   return record as BlockRecord
 }
 
-export const buildExportPayload = async (): Promise<MirExport> => {
+export const listAllRecords = async () => {
   const db = await getDb()
-  const [records, relations] = await Promise.all([
-    db.getAll('records'),
-    db.getAll('relations'),
-  ])
-  return {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    records,
-    relations,
-  }
+  return db.getAll('records')
 }
 
-export const importMirData = async (
-  payload: MirExport,
-): Promise<MirImportSummary> => {
+export const listAllRelations = async () => {
   const db = await getDb()
-  const [existingRecords, existingRelations] = await Promise.all([
-    db.getAll('records'),
-    db.getAll('relations'),
-  ])
-  const existingRecordMap = new Map(
-    existingRecords.map((record) => [record.id, record]),
-  )
-  const existingRelationMap = new Map(
-    existingRelations.map((relation) => [relation.id, relation]),
-  )
-  const relationKeyFor = (relation: Relation) =>
-    `${relation.type}::${relation.fromId}::${relation.toId}`
-  const existingRelationKeys = new Set(
-    existingRelations.map((relation) => relationKeyFor(relation)),
-  )
+  return db.getAll('relations')
+}
 
-  const seenRecordIds = new Set<string>()
-  const seenRelationIds = new Set<string>()
-  const newRecords: MirRecord[] = []
-  const newCollections: CollectionRecord[] = []
-  const recordConflicts: string[] = []
-  let recordSkipped = 0
-  let recordDuplicates = 0
-
-  payload.records.forEach((record) => {
-    if (!record || typeof record.id !== 'string') {
-      return
-    }
-    if (seenRecordIds.has(record.id)) {
-      recordDuplicates += 1
-      return
-    }
-    seenRecordIds.add(record.id)
-    const existing = existingRecordMap.get(record.id)
-    if (existing) {
-      if (JSON.stringify(existing) !== JSON.stringify(record)) {
-        recordConflicts.push(record.id)
-      } else {
-        recordSkipped += 1
-      }
-      return
-    }
-    newRecords.push(record)
-    if (isCollectionRecord(record)) {
-      newCollections.push(record)
-    }
-  })
-
-  const availableRecordIds = new Set<string>([
-    ...existingRecordMap.keys(),
-    ...newRecords.map((record) => record.id),
-  ])
-  const deletedRecordIds = new Set<string>()
-  existingRecords.forEach((record) => {
-    if (record.deletedAt) {
-      deletedRecordIds.add(record.id)
-    }
-  })
-  newRecords.forEach((record) => {
-    if (record.deletedAt) {
-      deletedRecordIds.add(record.id)
-    }
-  })
-
-  const newRelations: Relation[] = []
-  const relationConflicts: string[] = []
-  let relationSkipped = 0
-  let relationDuplicates = 0
-  let relationMissingEndpoints = 0
-
-  payload.relations.forEach((relation) => {
-    if (!relation || typeof relation.id !== 'string') {
-      return
-    }
-    if (seenRelationIds.has(relation.id)) {
-      relationDuplicates += 1
-      return
-    }
-    seenRelationIds.add(relation.id)
-    const relationKey = relationKeyFor(relation)
-    if (existingRelationKeys.has(relationKey)) {
-      relationDuplicates += 1
-      return
-    }
-    if (
-      !availableRecordIds.has(relation.fromId) ||
-      !availableRecordIds.has(relation.toId)
-    ) {
-      relationMissingEndpoints += 1
-      return
-    }
-    if (
-      deletedRecordIds.has(relation.fromId) ||
-      deletedRecordIds.has(relation.toId)
-    ) {
-      relationMissingEndpoints += 1
-      return
-    }
-    const existing = existingRelationMap.get(relation.id)
-    if (existing) {
-      if (JSON.stringify(existing) !== JSON.stringify(relation)) {
-        relationConflicts.push(relation.id)
-      } else {
-        relationSkipped += 1
-      }
-      return
-    }
-    existingRelationKeys.add(relationKey)
-    newRelations.push(relation)
-  })
-
+export const writeRecordsAndRelations = async (
+  records: MirRecord[],
+  relations: Relation[],
+) => {
+  const db = await getDb()
   const tx = db.transaction(['records', 'relations'], 'readwrite')
   const recordStore = tx.objectStore('records')
   const relationStore = tx.objectStore('relations')
-  newRecords.forEach((record) => {
+  records.forEach((record) => {
     recordStore.put(record)
   })
-  newRelations.forEach((relation) => {
+  relations.forEach((relation) => {
     relationStore.put(relation)
   })
   await tx.done
+}
 
-  await Promise.all(
-    newCollections.map(async (collection) => {
-      await indexCollection(collection)
-    }),
-  )
-  newRelations.forEach((relation) => {
+export const indexCollectionsAndRelations = async (
+  collections: CollectionRecord[],
+  relations: Relation[],
+) => {
+  await Promise.all(collections.map((collection) => indexCollection(collection)))
+  relations.forEach((relation) => {
     void indexRelation(relation)
   })
-
-  if (recordConflicts.length > 0) {
-    console.warn('[import] record id conflicts', recordConflicts.slice(0, 20))
-    if (recordConflicts.length > 20) {
-      console.warn(
-        `[import] ${recordConflicts.length - 20} more record conflicts`,
-      )
-    }
-  }
-  if (relationConflicts.length > 0) {
-    console.warn(
-      '[import] relation id conflicts',
-      relationConflicts.slice(0, 20),
-    )
-    if (relationConflicts.length > 20) {
-      console.warn(
-        `[import] ${relationConflicts.length - 20} more relation conflicts`,
-      )
-    }
-  }
-
-  return {
-    records: {
-      incoming: payload.records.length,
-      imported: newRecords.length,
-      skipped: recordSkipped,
-      conflicts: recordConflicts.length,
-      duplicates: recordDuplicates,
-    },
-    relations: {
-      incoming: payload.relations.length,
-      imported: newRelations.length,
-      skipped: relationSkipped,
-      conflicts: relationConflicts.length,
-      duplicates: relationDuplicates,
-      missingEndpoints: relationMissingEndpoints,
-    },
-  }
 }
 
 export const getKvValue = async <T>(key: string): Promise<T | undefined> => {

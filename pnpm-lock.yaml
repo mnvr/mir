@@ -67,7 +67,7 @@ importers:
         specifier: ^0.0.44
         version: 0.0.44
       electron:
-        specifier: ^40.0.0
+        specifier: 40.0.0
         version: 40.0.0
       electron-builder:
         specifier: ^26.4.0
@@ -6675,7 +6675,7 @@ snapshots:
 
   '@types/yauzl@2.10.3':
     dependencies:
-      '@types/node': 24.10.9
+      '@types/node': 25.0.10
     optional: true
 
   '@typescript-eslint/eslint-plugin@8.53.1(@typescript-eslint/parser@8.53.1(eslint@9.39.2(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.2(jiti@2.6.1))(typescript@5.9.3)':

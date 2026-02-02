@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite --port 5701 --strictPort",
     "build": "tsc && vite build && electron-builder",
-    "lint": "tsc -p tsconfig.json --noEmit && eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "tsc -p tsconfig.json --noEmit && eslint . --ext ts,tsx --max-warnings 0 --cache --cache-location .eslintcache",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -26,7 +26,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react-swc": "^4.2.2",
     "@vscode/codicons": "^0.0.44",
-    "electron": "^40.0.0",
+    "electron": "40.0.0",
     "electron-builder": "^26.4.0",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.1",

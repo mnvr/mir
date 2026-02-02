@@ -4,32 +4,32 @@ This is Mir, a new way to interface with LLMs.
 
 ## Docs 📚
 
-- `docs/user-guide.md`: User-facing documentation.
-- `docs/architecture.md`: High level architecture overview for developers.
+- [docs/user-guide.md](docs/user-guide.md): User-facing documentation.
+- [docs/architecture.md](docs/architecture.md): High level architecture overview for developers.
 
 ## Repository layout 🧭
 
-- `apps/desktop`: Electron + React desktop app.
-- `apps/mobile`: Expo + React Native mobile app.
-- `packages/core`: Shared TypeScript types/logic.
+- _apps/desktop_: Electron + React desktop app.
+- _apps/mobile_: Expo + React Native mobile app.
+- _packages/core_: Shared TypeScript package.
 
 ## Requirements 🧩
 
-### All platforms 🌍
+### All platforms
 
 - Node.js
 - pnpm (`corepack enable` or install pnpm globally).
 
-### Desktop 🖥️
+### Desktop
 
 - No other dependencies.
 
-### iOS 📱
+### iOS
 
 - Xcode (for iOS Simulator and native builds).
 - CocoaPods (`brew install cocoapods` or `sudo gem install cocoapods`).
 
-### Android 🤖
+### Android
 
 - Android Studio + Android SDK (for Android emulator and native builds).
 - `ANDROID_HOME` set, with `platform-tools` on your PATH.
@@ -42,7 +42,7 @@ pnpm install
 
 ## Running 🚀
 
-### Desktop (Electron) 🖥️
+### Desktop (Electron)
 
 ```sh
 pnpm dev:desktop
@@ -52,7 +52,7 @@ pnpm dev:desktop
 pnpm build:desktop
 ```
 
-### Mobile (Expo) 📲
+### Mobile (Expo)
 
 Start Metro, then press `i` in the Metro terminal to run the app in the iOS Simulator, or `a` to run it on the Android emulator.
 
@@ -86,36 +86,11 @@ pnpm android:device
 
 These will create native builds. Hot reload will still work.
 
-### Shared core package 🧰
+### Shared core package
 
 `mir-core` is consumed from source in both apps, so changes should hot reload.
 
 > If the mobile bundler misses updates, restart Metro.
-
-
-### Playwright 🔍
-
-Playwright can be used for scripted UI inspection in the desktop renderer (runs in a browser).
-
-Install the browsers once,
-
-```sh
-pnpm exec playwright install
-```
-
-Start the dev server,
-
-```sh
-pnpm dev:desktop
-```
-
-And then run your playwright script, e.g.:
-
-```sh
-node scripts/inspect-layout.mjs
-```
-
-New scripts can be added as needed. This particular script saves artifacts in `artifacts/`, and the target URL can be overridden by setting the `INSPECT_URL` environment variable.
 
 ## Lint ✅
 
