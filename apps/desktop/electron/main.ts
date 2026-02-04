@@ -59,6 +59,7 @@ if (!hasSingleInstanceLock) {
 
 app.on('second-instance', () => {
   if (!win) {
+    void app.whenReady().then(createWindow)
     return
   }
   if (win.isMinimized()) {
