@@ -495,11 +495,9 @@ function App() {
   const scrollToEndRef = useRef<() => void>(() => {})
   const sendMessageGuardRef = useRef(false)
   const maxRows = 9
-  const hasNewline = draft.includes('\n')
   const trimmedDraft = draft.trim()
   const draftRef = useRef(draft)
   const trimmedDraftRef = useRef(trimmedDraft)
-  const hasNewlineRef = useRef(hasNewline)
   const isSendingRef = useRef(isSending)
   const sendMessageRef = useRef<(() => Promise<void>) | null>(null)
   const effectiveActiveBlockId = isSettingsOpen ? null : activeBlockId
@@ -1434,9 +1432,8 @@ function App() {
   useEffect(() => {
     draftRef.current = draft
     trimmedDraftRef.current = trimmedDraft
-    hasNewlineRef.current = hasNewline
     isSendingRef.current = isSending
-  }, [draft, trimmedDraft, hasNewline, isSending])
+  }, [draft, trimmedDraft, isSending])
 
   useLayoutEffect(() => {
     followRef.current = isNearBottom()
@@ -2145,22 +2142,15 @@ function App() {
   sendMessageRef.current = sendMessage
 
   const handleSubmitContinuation = useCallback(() => {
-    if (
-      isSendingRef.current ||
-      !trimmedDraftRef.current ||
-      hasNewlineRef.current
-    ) {
+    if (isSendingRef.current || !trimmedDraftRef.current) {
       return
     }
     void sendMessageRef.current?.()
   }, [])
 
   const handleSubmitContinuationMultiline = useCallback(() => {
-    if (isSendingRef.current || !trimmedDraftRef.current) {
-      return
-    }
-    void sendMessageRef.current?.()
-  }, [])
+    handleSubmitContinuation()
+  }, [handleSubmitContinuation])
 
   const handleInsertNewline = useCallback(() => {
     if (isSendingRef.current) {
@@ -2670,20 +2660,16 @@ function App() {
                       }
 
                       if (event.shiftKey) {
-                        return
-                      }
-
-                      if (event.metaKey || event.ctrlKey) {
                         event.preventDefault()
-                        void sendMessage()
-                        return
-                      }
-
-                      if (hasNewline || isSending) {
+                        handleInsertNewline()
                         return
                       }
 
                       event.preventDefault()
+                      if (isSending) {
+                        return
+                      }
+
                       void sendMessage()
                     }}
                     rows={1}

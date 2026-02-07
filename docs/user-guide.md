@@ -87,7 +87,8 @@ Compose a block in the composer area. Use the Generate button to add it into the
 You can also use keyboard shortcuts:
 
 - Press `Enter` to complete the block and generate a continuation.
-- Alternatively, use `Shift + Enter` for a newline. Once your draft has newlines, use `Ctrl + Enter` on Linux/Windows or `Cmd + Enter` on macOS to complete the block and trigger generation.
+- Use `Shift + Enter` to insert a newline.
+- `Ctrl + Enter` on Linux/Windows or `Cmd + Enter` on macOS also submits as an alternate shortcut.
 
 ### Customizing generation parameters
 
@@ -198,4 +199,4 @@ To summarize, the import is
 | Scroll to end | Ctrl + Down | Cmd + Down |
 | Generate continuation | Enter | Enter |
 | New line | Shift + Enter | Shift + Enter |
-| Generate continuation (multi-line draft) | Ctrl + Enter | Cmd + Enter |
+| Generate continuation (alternate shortcut) | Ctrl + Enter | Cmd + Enter |

@@ -288,7 +288,7 @@ function setAppMenu() {
     },
   }
   const generateContinuationNewlineItem: MenuItemConstructorOptions = {
-    label: 'Generate Continuation (Multiline)',
+    label: 'Generate Continuation (Alt Shortcut)',
     accelerator: 'CmdOrCtrl+Enter',
     registerAccelerator: false,
     click: () => {

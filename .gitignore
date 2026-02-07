@@ -34,3 +34,9 @@ pnpm-debug.log*
 .DS_Store
 .idea/
 .vscode/*
+
+# local codex memory (intentionally untracked)
+codex/
+
+# local agent workflow notes (intentionally untracked)
+AGENT.md

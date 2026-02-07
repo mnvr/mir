@@ -32,16 +32,16 @@ body {
 
 @media (prefers-color-scheme: dark) {
   :root {
-    color: #e6e6e6;
-    background-color: #1a1a1e;
+    color: #e8e8e8;
+    background-color: #1e1e1e;
   }
 
   body {
-    background: #1a1a1e;
+    background: #1e1e1e;
   }
 
   ::selection {
-    background: #2c3f5c;
+    background: #414756;
   }
 }
 
