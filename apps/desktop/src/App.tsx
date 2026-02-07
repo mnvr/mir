@@ -91,8 +91,6 @@ const IS_MAC =
   /Mac|iPhone|iPad|iPod/.test(navigator.platform)
 
 const REQUEST_TIMEOUT_MS = 60_000
-const TICK_INTERVAL_MS = 1000
-const TICK_TRAIL_LIMIT = 30
 const SCROLL_CONTEXT_PEEK_LINES = 3
 const SCROLL_CONTEXT_PEEK_FALLBACK_PX = 48
 const SCROLL_NEAR_BOTTOM_RATIO = 0.5
@@ -247,51 +245,6 @@ type BlockRowProps = {
   registerRef: (id: string, node: HTMLDivElement | null) => void
 }
 
-const TickTrail = memo(function TickTrail() {
-  const [ticks, setTicks] = useState<number[]>(() => {
-    const tickId = Date.now()
-    return [tickId]
-  })
-
-  useEffect(() => {
-    let tickId = Date.now()
-    const interval = window.setInterval(() => {
-      tickId += 1
-      setTicks((prev) => {
-        const next = [...prev, tickId]
-        if (next.length > TICK_TRAIL_LIMIT) {
-          next.splice(0, next.length - TICK_TRAIL_LIMIT)
-        }
-        return next
-      })
-    }, TICK_INTERVAL_MS)
-
-    return () => {
-      window.clearInterval(interval)
-    }
-  }, [])
-
-  if (ticks.length === 0) {
-    return null
-  }
-
-  return (
-    <div className="block-ticks" aria-hidden="true">
-      {ticks.map((tick, index) => {
-        const total = ticks.length
-        const opacity = total <= 1 ? 0.7 : 0.2 + (0.6 * (index + 1)) / total
-        return (
-          <span
-            key={tick}
-            className="block-tick"
-            style={{ opacity }}
-          />
-        )
-      })}
-    </div>
-  )
-})
-
 const BlockRow = memo(function BlockRow({
   block,
   isActive,
@@ -331,7 +284,6 @@ const BlockRow = memo(function BlockRow({
               {normalizeMathDelimiters(block.content)}
             </ReactMarkdown>
           </div>
-          {block.status === 'pending' ? <TickTrail /> : null}
         </>
       )}
     </div>
@@ -467,7 +419,6 @@ function App() {
   const endRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLElement | null>(null)
   const mainColumnRef = useRef<HTMLDivElement | null>(null)
-  const contextRailRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const blockRefs = useRef(new Map<string, HTMLDivElement>())
   const settingsCloseTimeoutRef = useRef<number | null>(null)
@@ -1464,8 +1415,8 @@ function App() {
         return
       }
       const containerRect = container.getBoundingClientRect()
-      const railRect = contextRailRef.current?.getBoundingClientRect()
-      const effectiveBottom = railRect?.top ?? containerRect.bottom
+      const composerRect = composerRef.current?.getBoundingClientRect()
+      const effectiveBottom = composerRect?.top ?? containerRect.bottom
       const availableHeight = effectiveBottom - containerRect.top
       if (availableHeight <= 0) {
         queueScrollToBottom()
@@ -1906,7 +1857,7 @@ function App() {
       const assistantBlock: Block = {
         id: `b-${timestamp}-output`,
         direction: 'output',
-        content: 'Generating continuation…',
+        content: '',
         status: 'pending',
       }
 
@@ -2628,23 +2579,6 @@ function App() {
           </div>
           {isSettingsOpen ? null : (
             <>
-              <div
-                className="context-rail"
-                aria-label="Context controls"
-                ref={contextRailRef}
-              >
-                <div className="context-rail-meta">
-                  <span className="context-rail-title">Context</span>
-                  <span className="context-rail-value">
-                    {contextTokens
-                      ? `${contextTokens.toLocaleString()} tokens`
-                      : '—'}
-                  </span>
-                  {showLastRun ? (
-                    <span className="context-rail-run">{lastRunBullet}</span>
-                  ) : null}
-                </div>
-              </div>
               <footer className="composer" ref={composerRef}>
                 <div className="composer-box">
                   <textarea
@@ -2675,73 +2609,95 @@ function App() {
                     rows={1}
                   />
                   <div className="composer-actions">
-                    <div className="composer-controls">
-                      <button
-                        className="composer-chip"
-                        type="button"
-                        aria-label="Model settings"
-                      >
-                        <span className="composer-chip-label">Model</span>
-                        <span className="composer-chip-value">{modelLabel}</span>
-                      </button>
-                      <button
-                        className="composer-chip"
-                        type="button"
-                        aria-label="Temperature settings"
-                        onClick={() =>
-                          setTemperature((prev) => {
-                            const rounded = Math.round(prev * 10) / 10
-                            const currentIndex = TEMPERATURE_PRESETS.findIndex(
-                              (value) => value === rounded,
-                            )
-                            const nextIndex =
-                              currentIndex === -1
-                                ? TEMPERATURE_PRESETS.indexOf(1)
-                                : (currentIndex + 1) %
-                                  TEMPERATURE_PRESETS.length
-                            return TEMPERATURE_PRESETS[nextIndex] ?? 1
-                          })
-                        }
-                      >
-                        <span className="composer-chip-label">Temp</span>
-                        <span className="composer-chip-value">
-                          {temperatureLabel}
-                        </span>
-                      </button>
+                    <div
+                      className="context-rail-meta composer-context-meta"
+                      aria-label="Context controls"
+                    >
+                      <span className="context-rail-title">Context</span>
+                      <span className="context-rail-value">
+                        {contextTokens
+                          ? `${contextTokens.toLocaleString()} tokens`
+                          : '—'}
+                      </span>
+                      {isSending ? (
+                        <span
+                          className="context-rail-progress"
+                          role="status"
+                          aria-label="Generating continuation"
+                        />
+                      ) : showLastRun ? (
+                        <span className="context-rail-run">{lastRunBullet}</span>
+                      ) : null}
                     </div>
-                    {isSending ? (
-                      <span
-                        className="tooltip tooltip-hover-only"
-                        data-tooltip="Stop continuation"
-                      >
+                    <div className="composer-actions-right">
+                      <div className="composer-controls">
                         <button
-                          className="send-button"
+                          className="composer-chip"
                           type="button"
-                          onClick={stopRequest}
-                          aria-label="Stop continuation"
+                          aria-label="Model settings"
                         >
-                          <span
-                            className="codicon codicon-debug-stop"
-                            aria-hidden="true"
-                          />
+                          <span className="composer-chip-label">Model</span>
+                          <span className="composer-chip-value">{modelLabel}</span>
                         </button>
-                      </span>
-                    ) : (
-                      <span>
                         <button
-                          className="send-button"
+                          className="composer-chip"
                           type="button"
-                          onClick={() => void sendMessage()}
-                          disabled={!trimmedDraft}
-                          aria-label="Add to context"
+                          aria-label="Temperature settings"
+                          onClick={() =>
+                            setTemperature((prev) => {
+                              const rounded = Math.round(prev * 10) / 10
+                              const currentIndex = TEMPERATURE_PRESETS.findIndex(
+                                (value) => value === rounded,
+                              )
+                              const nextIndex =
+                                currentIndex === -1
+                                  ? TEMPERATURE_PRESETS.indexOf(1)
+                                  : (currentIndex + 1) %
+                                    TEMPERATURE_PRESETS.length
+                              return TEMPERATURE_PRESETS[nextIndex] ?? 1
+                            })
+                          }
                         >
-                          <span
-                            className="codicon codicon-arrow-up"
-                            aria-hidden="true"
-                          />
+                          <span className="composer-chip-label">Temp</span>
+                          <span className="composer-chip-value">
+                            {temperatureLabel}
+                          </span>
                         </button>
-                      </span>
-                    )}
+                      </div>
+                      {isSending ? (
+                        <span
+                          className="tooltip tooltip-hover-only"
+                          data-tooltip="Stop continuation"
+                        >
+                          <button
+                            className="send-button"
+                            type="button"
+                            onClick={stopRequest}
+                            aria-label="Stop continuation"
+                          >
+                            <span
+                              className="codicon codicon-debug-stop"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </span>
+                      ) : (
+                        <span>
+                          <button
+                            className="send-button"
+                            type="button"
+                            onClick={() => void sendMessage()}
+                            disabled={!trimmedDraft}
+                            aria-label="Add to context"
+                          >
+                            <span
+                              className="codicon codicon-arrow-up"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </footer>
