@@ -947,8 +947,9 @@
 
 .context-rail-meta {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 6px;
+  line-height: 1;
   flex-wrap: nowrap;
   white-space: nowrap;
   flex-shrink: 0;
@@ -961,26 +962,31 @@
   color: #6a6a6a;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  line-height: 1;
 }
 
 .context-rail-value {
   font-size: var(--type-meta-size);
   color: #5c5c5c;
+  line-height: 1;
 }
 
 .context-rail-run {
   font-size: var(--type-meta-size);
   color: #7a7a7a;
+  line-height: 1;
 }
 
 .context-rail-progress {
-  width: 0.78rem;
-  height: 0.78rem;
+  width: 0.72rem;
+  height: 0.72rem;
+  margin-left: 2px;
   border-radius: 999px;
   border: 1.5px solid rgba(0, 0, 0, 0.22);
   border-top-color: rgba(0, 0, 0, 0.58);
   display: inline-block;
   flex: 0 0 auto;
+  align-self: center;
   animation: context-rail-spin 700ms linear infinite;
 }
 
