@@ -10,7 +10,7 @@ This is Mir, a new way to interface with LLMs.
 ## Repository layout 🧭
 
 - _apps/desktop_: Electron + React desktop app.
-- _apps/mobile_: Expo + React Native mobile app. **WIP**
+- ~~_apps/mobile_: Expo + React Native mobile app.~~ **WIP**
 - _packages/core_: Shared TypeScript package.
 
 ## Requirements 🧩
@@ -52,7 +52,7 @@ pnpm dev:desktop
 pnpm build:desktop
 ```
 
-On macOS, release artifacts are written to `apps/desktop/dist` (for example `.dmg` and `.zip` files).
+On macOS, release artifacts are written to `apps/desktop/dist` (for example `.dmg` files).
 
 ### Mobile (Expo)
 
@@ -107,7 +107,7 @@ Runs TypeScript typechecking and ESLint across the workspace.
 Pushing a version tag like `v0.1.0` triggers `.github/workflows/release-desktop-macos.yml`, which:
 
 - Builds the desktop app on a `macos-latest` runner.
-- Produces macOS binaries with `electron-builder`.
+- Produces Apple Silicon (`arm64`) macOS binaries with `electron-builder`.
 - Publishes generated artifacts to a GitHub Release for that tag.
 
 Tag and push a release:
