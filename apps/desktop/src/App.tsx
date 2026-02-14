@@ -40,11 +40,12 @@ import {
   deleteCollection,
   getActiveCollection,
   getKvValue,
+  listCollectionBlockGraph,
   listCollections,
-  listCollectionBlocks,
   setActiveCollectionId,
   setKvValue,
   updateCollectionTitle,
+  type CollectionBlockGraph,
 } from './services/db'
 import {
   applyImport,
@@ -65,12 +66,18 @@ type Block = {
   content: string
   payload?: BlockPayload
   status?: 'pending' | 'error' | 'canceled'
+  retryParentId?: string | null
 }
 
 type PendingScroll = {
   id: string
   mode: 'bottom' | 'read'
 }
+
+type CollectionGraph = Pick<
+  CollectionBlockGraph,
+  'parentIdsByBlockId' | 'childIdsByBlockId'
+>
 
 type StorageMode = 'secure' | 'session'
 
@@ -199,6 +206,17 @@ const formatQuickTimestamp = (localTimestamp?: string) => {
   }
   return `${parsed.weekdayShort} ${parsed.monthShort} ${parsed.day} · ${timeLabel}`
 }
+
+const summarizeBlockContent = (content: string) => {
+  const normalized = content.replace(/\s+/g, ' ').trim()
+  if (!normalized) {
+    return null
+  }
+  if (normalized.length <= 84) {
+    return normalized
+  }
+  return `${normalized.slice(0, 84)}...`
+}
 const hasSecureBridge = () =>
   typeof window !== 'undefined' &&
   typeof window.ipcRenderer?.invoke === 'function'
@@ -240,18 +258,48 @@ const decryptSecret = async (cipherText: string) => {
 type BlockRowProps = {
   block: Block
   isActive: boolean
+  branchChildCount: number
+  activeBranchIndex: number | null
+  isBranchAnchor: boolean
+  isDefaultContinuationTarget: boolean
+  isSending: boolean
   onMouseDown: () => void
   onClick: (id: string) => void
+  onSetBranchAnchor: (id: string) => void
+  onCycleBranch: (id: string) => void
+  onRetry: (id: string) => void
   registerRef: (id: string, node: HTMLDivElement | null) => void
 }
 
 const BlockRow = memo(function BlockRow({
   block,
   isActive,
+  branchChildCount,
+  activeBranchIndex,
+  isBranchAnchor,
+  isDefaultContinuationTarget,
+  isSending,
   onMouseDown,
   onClick,
+  onSetBranchAnchor,
+  onCycleBranch,
+  onRetry,
   registerRef,
 }: BlockRowProps) {
+  const hasBranchBadges = branchChildCount > 1 || isBranchAnchor
+  const canSetBranchAnchor =
+    isActive &&
+    block.direction === 'output' &&
+    !block.status &&
+    isPersistedBlockId(block.id) &&
+    (isBranchAnchor || !isDefaultContinuationTarget)
+  const canRetryFromInput =
+    isActive &&
+    block.direction === 'input' &&
+    isPersistedBlockId(block.id)
+  const canRetryFromOutput =
+    block.direction === 'output' &&
+    (block.status === 'error' || block.status === 'canceled')
   return (
     <div
       ref={(node) => registerRef(block.id, node)}
@@ -265,15 +313,54 @@ const BlockRow = memo(function BlockRow({
         onClick(block.id)
       }}
     >
+      {hasBranchBadges ? (
+        <div className="block-branch-badges">
+          {isBranchAnchor ? (
+            <span className="block-branch-badge is-anchor">Branch anchor</span>
+          ) : null}
+          {branchChildCount > 1 ? (
+            <button
+              className="block-branch-badge block-branch-badge-button"
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                onCycleBranch(block.id)
+              }}
+              title="Cycle through branch starts"
+            >
+              {activeBranchIndex !== null
+                ? `Branch ${activeBranchIndex + 1}/${branchChildCount}`
+                : `${branchChildCount} branches`}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {block.direction === 'input' ? (
-        <blockquote className="input-quote">
-          <ReactMarkdown
-            remarkPlugins={MARKDOWN_PLUGINS}
-            rehypePlugins={REHYPE_PLUGINS}
-          >
-            {normalizeMathDelimiters(block.content)}
-          </ReactMarkdown>
-        </blockquote>
+        <>
+          <blockquote className="input-quote">
+            <ReactMarkdown
+              remarkPlugins={MARKDOWN_PLUGINS}
+              rehypePlugins={REHYPE_PLUGINS}
+            >
+              {normalizeMathDelimiters(block.content)}
+            </ReactMarkdown>
+          </blockquote>
+          {canRetryFromInput ? (
+            <div className="block-inline-actions">
+              <button
+                className="block-inline-action"
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onRetry(block.id)
+                }}
+                disabled={isSending}
+              >
+                Retry generation
+              </button>
+            </div>
+          ) : null}
+        </>
       ) : (
         <>
           <div className="output-markdown">
@@ -284,6 +371,36 @@ const BlockRow = memo(function BlockRow({
               {normalizeMathDelimiters(block.content)}
             </ReactMarkdown>
           </div>
+          {canSetBranchAnchor || canRetryFromOutput ? (
+            <div className="block-inline-actions">
+              {canSetBranchAnchor ? (
+                <button
+                  className={`block-inline-action${isBranchAnchor ? ' is-active' : ''}`}
+                  type="button"
+                  title="Use this model block as the context anchor for the next generation."
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onSetBranchAnchor(block.id)
+                  }}
+                >
+                  {isBranchAnchor ? 'Branch anchor set' : 'New branch from here'}
+                </button>
+              ) : null}
+              {canRetryFromOutput ? (
+                <button
+                  className="block-inline-action"
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onRetry(block.id)
+                  }}
+                  disabled={isSending}
+                >
+                  Retry generation
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </>
       )}
     </div>
@@ -293,6 +410,11 @@ const BlockRow = memo(function BlockRow({
 type ChatPaneProps = {
   blocks: Block[]
   activeBlockId: string | null
+  branchAnchorId: string | null
+  branchChildCountById: Record<string, number>
+  branchActiveIndexById: Record<string, number>
+  defaultContinuationBlockId: string | null
+  isSending: boolean
   showEmptyState: boolean
   showConfigureLink: boolean
   onConfigure: () => void
@@ -300,12 +422,20 @@ type ChatPaneProps = {
   onChatClick: (event: MouseEvent<HTMLElement>) => void
   onBlockMouseDown: () => void
   onBlockClick: (id: string) => void
+  onSetBranchAnchor: (id: string) => void
+  onCycleBranch: (id: string) => void
+  onRetryBlock: (id: string) => void
   registerBlockRef: (id: string, node: HTMLDivElement | null) => void
 }
 
 const ChatPane = memo(function ChatPane({
   blocks,
   activeBlockId,
+  branchAnchorId,
+  branchChildCountById,
+  branchActiveIndexById,
+  defaultContinuationBlockId,
+  isSending,
   showEmptyState,
   showConfigureLink,
   onConfigure,
@@ -313,6 +443,9 @@ const ChatPane = memo(function ChatPane({
   onChatClick,
   onBlockMouseDown,
   onBlockClick,
+  onSetBranchAnchor,
+  onCycleBranch,
+  onRetryBlock,
   registerBlockRef,
 }: ChatPaneProps) {
   return (
@@ -341,8 +474,20 @@ const ChatPane = memo(function ChatPane({
               key={block.id}
               block={block}
               isActive={block.id === activeBlockId}
+              branchChildCount={branchChildCountById[block.id] ?? 0}
+              activeBranchIndex={
+                typeof branchActiveIndexById[block.id] === 'number'
+                  ? branchActiveIndexById[block.id]
+                  : null
+              }
+              isBranchAnchor={branchAnchorId === block.id}
+              isDefaultContinuationTarget={defaultContinuationBlockId === block.id}
+              isSending={isSending}
               onMouseDown={onBlockMouseDown}
               onClick={onBlockClick}
+              onSetBranchAnchor={onSetBranchAnchor}
+              onCycleBranch={onCycleBranch}
+              onRetry={onRetryBlock}
               registerRef={registerBlockRef}
             />
           ))}
@@ -356,6 +501,10 @@ const ChatPane = memo(function ChatPane({
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null)
   const [blocks, setBlocks] = useState<Block[]>([])
+  const [collectionGraph, setCollectionGraph] = useState<CollectionGraph>({
+    parentIdsByBlockId: {},
+    childIdsByBlockId: {},
+  })
   const [hasLoadedBlocks, setHasLoadedBlocks] = useState(false)
   const [draft, setDraft] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
@@ -396,6 +545,10 @@ function App() {
   const [activeCollection, setActiveCollection] =
     useState<CollectionRecord | null>(null)
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null)
+  const [branchAnchorId, setBranchAnchorId] = useState<string | null>(null)
+  const [branchCursorByParentId, setBranchCursorByParentId] = useState<
+    Record<string, number>
+  >({})
   const [selectedCollectionId, setSelectedCollectionId] =
     useState<string | null>(null)
   const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect'>(
@@ -457,6 +610,66 @@ function App() {
       blocks.find((block) => block.id === effectiveActiveBlockId) ?? null,
     [effectiveActiveBlockId, blocks],
   )
+  const persistedBlocksById = useMemo(() => {
+    const map = new Map<string, Block>()
+    blocks.forEach((block) => {
+      if (!isPersistedBlockId(block.id)) {
+        return
+      }
+      map.set(block.id, block)
+    })
+    return map
+  }, [blocks])
+  const branchChildCountById = useMemo(() => {
+    const counts: Record<string, number> = {}
+    Object.entries(collectionGraph.childIdsByBlockId).forEach(
+      ([parentId, childIds]) => {
+        if (!persistedBlocksById.has(parentId)) {
+          return
+        }
+        const visibleChildren = childIds.filter((childId) =>
+          persistedBlocksById.has(childId),
+        )
+        if (visibleChildren.length > 1) {
+          counts[parentId] = visibleChildren.length
+        }
+      },
+    )
+    return counts
+  }, [collectionGraph.childIdsByBlockId, persistedBlocksById])
+  const branchActiveIndexById = useMemo(() => {
+    const indices: Record<string, number> = {}
+    Object.entries(branchChildCountById).forEach(([parentId, count]) => {
+      if (count <= 1) {
+        return
+      }
+      const cursor = branchCursorByParentId[parentId]
+      if (typeof cursor !== 'number') {
+        return
+      }
+      const normalized = ((cursor % count) + count) % count
+      indices[parentId] = normalized
+    })
+    return indices
+  }, [branchChildCountById, branchCursorByParentId])
+  const activeBranchChildCount =
+    activeBlock && isPersistedBlockId(activeBlock.id)
+      ? branchChildCountById[activeBlock.id] ?? 0
+      : 0
+  const branchAnchorBlock = branchAnchorId
+    ? persistedBlocksById.get(branchAnchorId) ?? null
+    : null
+  const latestPersistedBlockId = getLatestPersistedBlockId(blocks)
+  const defaultContinuationBlock = latestPersistedBlockId
+    ? persistedBlocksById.get(latestPersistedBlockId) ?? null
+    : null
+  const effectiveContinuationBlock = branchAnchorBlock ?? defaultContinuationBlock
+  const branchAnchorSummary = branchAnchorBlock
+    ? summarizeBlockContent(branchAnchorBlock.content)
+    : null
+  const defaultContinuationSummary = defaultContinuationBlock
+    ? summarizeBlockContent(defaultContinuationBlock.content)
+    : null
   const activePayload = activeBlock?.payload
   const activeWordMatches = useMemo(
     () => (activeBlock ? activeBlock.content.match(/\S+/g) : null),
@@ -619,6 +832,112 @@ function App() {
       return [collection, ...next]
     })
   }, [])
+
+  const attachBlockToGraph = useCallback(
+    (childId: string, parentIds: string[]) => {
+      setCollectionGraph((prev) => {
+        const normalizedParents = parentIds.filter(Boolean)
+        const nextParentsByBlockId = {
+          ...prev.parentIdsByBlockId,
+        }
+        const nextChildrenByBlockId = {
+          ...prev.childIdsByBlockId,
+        }
+        const currentParents = nextParentsByBlockId[childId] ?? []
+        const mergedParents = [...currentParents]
+        let didChange = !nextParentsByBlockId[childId]
+
+        normalizedParents.forEach((parentId) => {
+          if (!mergedParents.includes(parentId)) {
+            mergedParents.push(parentId)
+            didChange = true
+          }
+          const existingChildren = nextChildrenByBlockId[parentId] ?? []
+          if (existingChildren.includes(childId)) {
+            return
+          }
+          nextChildrenByBlockId[parentId] = [...existingChildren, childId]
+          didChange = true
+        })
+
+        if (
+          mergedParents.length !== currentParents.length ||
+          !nextParentsByBlockId[childId]
+        ) {
+          nextParentsByBlockId[childId] = mergedParents
+        }
+
+        if (!didChange) {
+          return prev
+        }
+
+        return {
+          parentIdsByBlockId: nextParentsByBlockId,
+          childIdsByBlockId: nextChildrenByBlockId,
+        }
+      })
+    },
+    [],
+  )
+
+  const getContextBlocksForParent = useCallback(
+    (parentBlockId: string | null) => {
+      if (!parentBlockId) {
+        return [] as Array<Block & { payload: BlockPayload }>
+      }
+
+      const withPayload = blocks.filter(
+        (
+          block,
+        ): block is Block & { payload: BlockPayload } =>
+          !block.status && Boolean(block.payload),
+      )
+      const payloadBlockById = new Map(withPayload.map((block) => [block.id, block]))
+
+      if (!payloadBlockById.has(parentBlockId)) {
+        return [] as Array<Block & { payload: BlockPayload }>
+      }
+
+      const hasGraphData =
+        Object.keys(collectionGraph.parentIdsByBlockId).length > 0
+
+      if (!hasGraphData) {
+        const parentIndex = blocks.findIndex((block) => block.id === parentBlockId)
+        if (parentIndex === -1) {
+          return [] as Array<Block & { payload: BlockPayload }>
+        }
+        return blocks.slice(0, parentIndex + 1).filter(
+          (
+            block,
+          ): block is Block & { payload: BlockPayload } =>
+            !block.status && Boolean(block.payload),
+        )
+      }
+
+      const path: Array<Block & { payload: BlockPayload }> = []
+      const visited = new Set<string>()
+      let cursorId: string | null = parentBlockId
+
+      while (cursorId && !visited.has(cursorId)) {
+        visited.add(cursorId)
+        const current = payloadBlockById.get(cursorId)
+        if (!current) {
+          break
+        }
+        path.push(current)
+        const parents: string[] =
+          collectionGraph.parentIdsByBlockId[cursorId] ?? []
+        const nextParentId: string | null =
+          parents.find((parentId: string) => payloadBlockById.has(parentId)) ??
+          null
+        cursorId = nextParentId
+      }
+
+      path.reverse()
+      return path
+    },
+    [blocks, collectionGraph.parentIdsByBlockId],
+  )
 
   const updateSidebarOpen = useCallback(
     (next: boolean | ((prev: boolean) => boolean)) => {
@@ -848,11 +1167,17 @@ function App() {
         setActiveCollection(null)
         setPendingCollection(null)
         setSelectedCollectionId(null)
+        setBranchCursorByParentId({})
         setBlocks([])
+        setCollectionGraph({
+          parentIdsByBlockId: {},
+          childIdsByBlockId: {},
+        })
+        setBranchAnchorId(null)
         setHasLoadedBlocks(true)
         return
       }
-      const storedBlocks = await listCollectionBlocks(collection.id)
+      const storedGraph = await listCollectionBlockGraph(collection.id)
       if (!isMountedRef.current) {
         return
       }
@@ -860,14 +1185,26 @@ function App() {
       setActiveCollection(collection)
       setPendingCollection(null)
       setSelectedCollectionId(collection.id)
-      setBlocks(storedBlocks.map(recordToBlock))
+      setBranchCursorByParentId({})
+      setBlocks(storedGraph.blocks.map(recordToBlock))
+      setCollectionGraph({
+        parentIdsByBlockId: storedGraph.parentIdsByBlockId,
+        childIdsByBlockId: storedGraph.childIdsByBlockId,
+      })
+      setBranchAnchorId(null)
       setHasLoadedBlocks(true)
-      if (storedBlocks.length > 0) {
+      if (storedGraph.blocks.length > 0) {
         pendingScrollRef.current = { mode: 'bottom', id: '' }
       }
     } catch {
       // Ignore local persistence failures on cold start.
       if (isMountedRef.current) {
+        setBranchCursorByParentId({})
+        setCollectionGraph({
+          parentIdsByBlockId: {},
+          childIdsByBlockId: {},
+        })
+        setBranchAnchorId(null)
         setHasLoadedBlocks(true)
       }
     }
@@ -876,6 +1213,16 @@ function App() {
   useEffect(() => {
     void Promise.all([loadCollections(), loadBlocks()])
   }, [loadCollections, loadBlocks])
+
+  useEffect(() => {
+    if (!branchAnchorId) {
+      return
+    }
+    if (persistedBlocksById.has(branchAnchorId)) {
+      return
+    }
+    setBranchAnchorId(null)
+  }, [branchAnchorId, persistedBlocksById])
 
   const focusComposer = useCallback(() => {
     setActiveBlockId(null)
@@ -1073,6 +1420,66 @@ function App() {
       .catch(() => {})
   }, [activeCollection, blocks])
 
+  const handleSetBranchAnchor = useCallback(
+    (blockId: string) => {
+      const targetBlock = blocks.find((block) => block.id === blockId) ?? null
+      if (
+        !targetBlock ||
+        !isPersistedBlockId(blockId) ||
+        targetBlock.direction !== 'output' ||
+        Boolean(targetBlock.status)
+      ) {
+        return
+      }
+      setBranchAnchorId((prev) => (prev === blockId ? null : blockId))
+      focusComposer()
+    },
+    [blocks, focusComposer],
+  )
+
+  const handleCycleBranch = useCallback(
+    (parentBlockId: string) => {
+      const childIds = (collectionGraph.childIdsByBlockId[parentBlockId] ?? [])
+        .filter((childId) => persistedBlocksById.has(childId))
+      if (childIds.length <= 1) {
+        return
+      }
+      const currentIndex =
+        typeof branchCursorByParentId[parentBlockId] === 'number'
+          ? branchCursorByParentId[parentBlockId]
+          : -1
+      const nextIndex = (currentIndex + 1) % childIds.length
+      const nextBlockId = childIds[nextIndex]
+      setBranchCursorByParentId((prev) => ({
+        ...prev,
+        [parentBlockId]: nextIndex,
+      }))
+      scrollToBlock(nextBlockId)
+    },
+    [
+      branchCursorByParentId,
+      collectionGraph.childIdsByBlockId,
+      persistedBlocksById,
+      scrollToBlock,
+    ],
+  )
+
+  const handleBranchFromActiveBlock = useCallback(() => {
+    if (
+      !activeBlock ||
+      !isPersistedBlockId(activeBlock.id) ||
+      activeBlock.direction !== 'output' ||
+      Boolean(activeBlock.status)
+    ) {
+      return
+    }
+    handleSetBranchAnchor(activeBlock.id)
+  }, [activeBlock, handleSetBranchAnchor])
+
+  const handleResetBranchAnchor = useCallback(() => {
+    setBranchAnchorId(null)
+  }, [])
+
   const handleSelectCollection = useCallback((collection: CollectionRecord) => {
     const requestId = collectionLoadIdRef.current + 1
     collectionLoadIdRef.current = requestId
@@ -1081,11 +1488,17 @@ function App() {
     setActiveCollection(collection)
     setPendingCollection(null)
     setActiveBlockId(null)
+    setBranchAnchorId(null)
+    setBranchCursorByParentId({})
     setLastRunStats(null)
 
     if (collection.id === demoCollection.id) {
       setHasLoadedBlocks(false)
       setBlocks(demoCollectionBlocks.map(recordToBlock))
+      setCollectionGraph({
+        parentIdsByBlockId: {},
+        childIdsByBlockId: {},
+      })
       setHasLoadedBlocks(true)
       if (demoCollectionBlocks.length > 0) {
         pendingScrollRef.current = { mode: 'bottom', id: '' }
@@ -1095,15 +1508,24 @@ function App() {
 
     setHasLoadedBlocks(false)
     setBlocks([])
+    setBranchCursorByParentId({})
+    setCollectionGraph({
+      parentIdsByBlockId: {},
+      childIdsByBlockId: {},
+    })
     void setActiveCollectionId(collection.id)
-    void listCollectionBlocks(collection.id)
-      .then((records) => {
+    void listCollectionBlockGraph(collection.id)
+      .then((graph) => {
         if (collectionLoadIdRef.current !== requestId) {
           return
         }
-        setBlocks(records.map(recordToBlock))
+        setBlocks(graph.blocks.map(recordToBlock))
+        setCollectionGraph({
+          parentIdsByBlockId: graph.parentIdsByBlockId,
+          childIdsByBlockId: graph.childIdsByBlockId,
+        })
         setHasLoadedBlocks(true)
-        if (records.length > 0) {
+        if (graph.blocks.length > 0) {
           pendingScrollRef.current = { mode: 'bottom', id: '' }
         }
       })
@@ -1112,6 +1534,11 @@ function App() {
           return
         }
         setBlocks([])
+        setBranchCursorByParentId({})
+        setCollectionGraph({
+          parentIdsByBlockId: {},
+          childIdsByBlockId: {},
+        })
         setHasLoadedBlocks(true)
       })
   }, [])
@@ -1712,8 +2139,12 @@ function App() {
         summary.relations.duplicates +
         summary.relations.conflicts +
         summary.relations.missingEndpoints
+      const branchingSummary =
+        summary.branching.forkPointsAdded > 0
+          ? `Detected ${summary.branching.forkPointsAdded} new branch point${summary.branching.forkPointsAdded === 1 ? '' : 's'} (${summary.branching.forkPointsAfter} total).`
+          : `Branch points total: ${summary.branching.forkPointsAfter}.`
       setImportSummary(
-        `Imported ${summary.records.imported} records and ${summary.relations.imported} relations. Ignored ${ignoredRecords} records (${summary.records.conflicts} conflicts) and ${ignoredRelations} relations.`,
+        `Imported ${summary.records.imported} records and ${summary.relations.imported} relations. Ignored ${ignoredRecords} records (${summary.records.conflicts} conflicts) and ${ignoredRelations} relations. ${branchingSummary}`,
       )
       void Promise.all([loadCollections(), loadBlocks()])
     } catch {
@@ -1742,6 +2173,11 @@ function App() {
     setSuppressNewCollectionTooltip(true)
     setSelectedCollectionId(null)
     setBlocks([])
+    setBranchCursorByParentId({})
+    setCollectionGraph({
+      parentIdsByBlockId: {},
+      childIdsByBlockId: {},
+    })
     setDraft('')
     setCollectionId(null)
     setActiveCollection(null)
@@ -1750,6 +2186,7 @@ function App() {
       localTimestamp: formatLocalTimestamp(new Date()),
     })
     setActiveBlockId(null)
+    setBranchAnchorId(null)
     setLastRunStats(null)
 
     focusComposer()
@@ -1830,6 +2267,293 @@ function App() {
   const isAbortError = (error: unknown) =>
     error instanceof Error && error.name === 'AbortError'
 
+  const handleRetryContinuation = useCallback(
+    async (targetBlockId: string) => {
+      if (isSendingRef.current || sendMessageGuardRef.current) {
+        return
+      }
+      sendMessageGuardRef.current = true
+
+      try {
+        const runAssistantAttempt = async (
+          assistantBlockId: string,
+          parentUserBlock: Block & { payload: BlockPayload },
+          parentUserId: string,
+        ) => {
+          const parentIds = collectionGraph.parentIdsByBlockId[parentUserId] ?? []
+          const contextParentId =
+            parentIds.find((parentId) => persistedBlocksById.has(parentId)) ??
+            null
+          const endpoint = buildChatCompletionEndpoint(baseUrl)
+          const request = buildBlockRequest(baseUrl, model, temperature)
+
+          const shouldAutoScroll = isNearBottom()
+          if (shouldAutoScroll) {
+            pendingScrollRef.current = { id: assistantBlockId, mode: 'bottom' }
+          }
+
+          if (!endpoint) {
+            setBlocks((prev) =>
+              prev.map((block) =>
+                block.id === assistantBlockId
+                  ? {
+                      ...block,
+                      content:
+                        'Error: Add a base URL (OPENAI_BASE_URL style) in Connection settings first.',
+                      status: 'error',
+                      retryParentId: parentUserId,
+                    }
+                  : block,
+              ),
+            )
+            return
+          }
+
+          const contextBlocks = getContextBlocksForParent(contextParentId)
+          const contextPayloads = [...contextBlocks, parentUserBlock]
+            .map((block) => block.payload)
+            .filter((payload): payload is BlockPayload => Boolean(payload))
+
+          const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
+          abortControllerRef.current = timeoutController
+          setIsSending(true)
+          const requestStart = Date.now()
+          const shouldAdvanceAnchor = branchAnchorId === parentUserId
+
+          try {
+            const { content: nextContent, raw } = await createChatCompletion({
+              baseUrl,
+              apiKey: apiKey || undefined,
+              messages: toChatMessages(contextPayloads),
+              model: model || undefined,
+              temperature,
+              fetchFn: (input, init) =>
+                window.fetch(input, init as RequestInit | undefined),
+              signal: timeoutController.signal,
+            })
+            const latencyMs = Date.now() - requestStart
+            const response = buildBlockResponse(raw, latencyMs)
+            setLastRunStats({
+              completionTokens: response?.usage?.completionTokens,
+              latencyMs,
+            })
+            const assistantPayload = toBlockPayload('assistant', nextContent, {
+              request,
+              response,
+            })
+
+            setBlocks((prev) =>
+              prev.map((block) =>
+                block.id === assistantBlockId
+                  ? {
+                      ...block,
+                      content: nextContent,
+                      status: undefined,
+                      payload: assistantPayload,
+                      retryParentId: undefined,
+                    }
+                  : block,
+              ),
+            )
+
+            if (
+              collectionId &&
+              selectedCollectionId !== demoCollection.id &&
+              isPersistedBlockId(parentUserId)
+            ) {
+              const assistantRecordId = createId('block')
+              void appendBlock(collectionId, assistantPayload, {
+                parentIds: [parentUserId],
+                recordId: assistantRecordId,
+              })
+                .then((record) => {
+                  attachBlockToGraph(record.id, [parentUserId])
+                  setBlocks((prev) =>
+                    prev.map((block) =>
+                      block.id === assistantBlockId
+                        ? {
+                            ...block,
+                            id: record.id,
+                            content: nextContent,
+                            payload: assistantPayload,
+                            status: undefined,
+                            retryParentId: undefined,
+                          }
+                        : block,
+                    ),
+                  )
+                  if (shouldAdvanceAnchor) {
+                    setBranchAnchorId(record.id)
+                  }
+                })
+                .catch((error) => {
+                  console.error(
+                    '[blocks] failed to persist retry assistant block',
+                    error,
+                  )
+                })
+            } else if (shouldAdvanceAnchor) {
+              setBranchAnchorId(assistantBlockId)
+            }
+
+            if (shouldAutoScroll) {
+              pendingScrollRef.current = { id: assistantBlockId, mode: 'read' }
+            }
+          } catch (error) {
+            if (isAbortError(error)) {
+              setBlocks((prev) =>
+                prev.map((block) =>
+                  block.id === assistantBlockId
+                    ? {
+                        ...block,
+                        content: 'Request stopped.',
+                        status: 'canceled',
+                        retryParentId: parentUserId,
+                      }
+                    : block,
+                ),
+              )
+              if (shouldAutoScroll) {
+                pendingScrollRef.current = { id: assistantBlockId, mode: 'read' }
+              }
+              return
+            }
+            const errorMessage =
+              error instanceof Error ? error.message : 'Unknown error occurred.'
+            setBlocks((prev) =>
+              prev.map((block) =>
+                block.id === assistantBlockId
+                  ? {
+                      ...block,
+                      content: `Error: ${errorMessage}`,
+                      status: 'error',
+                      retryParentId: parentUserId,
+                    }
+                  : block,
+              ),
+            )
+            if (shouldAutoScroll) {
+              pendingScrollRef.current = { id: assistantBlockId, mode: 'read' }
+            }
+          } finally {
+            setIsSending(false)
+            timeoutController.clear()
+            abortControllerRef.current = null
+          }
+        }
+
+        const targetIndex = blocks.findIndex((block) => block.id === targetBlockId)
+        if (targetIndex === -1) {
+          return
+        }
+
+        const targetBlock = blocks[targetIndex]
+
+        if (
+          targetBlock.direction === 'input' &&
+          targetBlock.payload &&
+          isPersistedBlockId(targetBlock.id)
+        ) {
+          const parentUserBlock = targetBlock as Block & { payload: BlockPayload }
+          const parentUserId = parentUserBlock.id
+          const pendingAssistantId = `b-${Date.now()}-retry-output`
+          const pendingAssistantBlock: Block = {
+            id: pendingAssistantId,
+            direction: 'output',
+            content: '',
+            status: 'pending',
+            retryParentId: parentUserId,
+          }
+          setBlocks((prev) => {
+            const parentIndex = prev.findIndex((block) => block.id === parentUserId)
+            if (parentIndex === -1) {
+              return [...prev, pendingAssistantBlock]
+            }
+            const next = [...prev]
+            next.splice(parentIndex + 1, 0, pendingAssistantBlock)
+            return next
+          })
+          await runAssistantAttempt(
+            pendingAssistantId,
+            parentUserBlock,
+            parentUserId,
+          )
+          return
+        }
+
+        const parentCandidate =
+          (targetBlock.retryParentId
+            ? blocks.find((block) => block.id === targetBlock.retryParentId)
+            : null) ??
+          blocks
+            .slice(0, targetIndex)
+            .reverse()
+            .find(
+              (block) =>
+                block.direction === 'input' && Boolean(block.payload),
+            ) ??
+          null
+
+        const parentUserBlock: (Block & { payload: BlockPayload }) | null =
+          parentCandidate &&
+          parentCandidate.direction === 'input' &&
+          parentCandidate.payload
+            ? (parentCandidate as Block & { payload: BlockPayload })
+            : null
+
+        if (!parentUserBlock?.payload) {
+          setBlocks((prev) =>
+            prev.map((block) =>
+              block.id === targetBlockId
+                ? {
+                    ...block,
+                    status: 'error',
+                    content:
+                      'Error: Retry failed because the parent block context is unavailable.',
+                  }
+                : block,
+            ),
+          )
+          return
+        }
+
+        const parentUserId = parentUserBlock.id
+        setBlocks((prev) =>
+          prev.map((block) =>
+            block.id === targetBlockId
+              ? {
+                  ...block,
+                  content: '',
+                  status: 'pending',
+                  payload: undefined,
+                  retryParentId: parentUserId,
+                }
+              : block,
+          ),
+        )
+
+        await runAssistantAttempt(targetBlockId, parentUserBlock, parentUserId)
+      } finally {
+        sendMessageGuardRef.current = false
+      }
+    },
+    [
+      apiKey,
+      attachBlockToGraph,
+      baseUrl,
+      blocks,
+      branchAnchorId,
+      collectionGraph.parentIdsByBlockId,
+      collectionId,
+      getContextBlocksForParent,
+      isNearBottom,
+      model,
+      persistedBlocksById,
+      selectedCollectionId,
+      temperature,
+    ],
+  )
+
   const sendMessage = async () => {
     if (!trimmedDraft || isSending || sendMessageGuardRef.current) {
       return
@@ -1837,7 +2561,16 @@ function App() {
     sendMessageGuardRef.current = true
 
     try {
-      const parentBlockId = getLatestPersistedBlockId(blocks)
+      const latestParentId = getLatestPersistedBlockId(blocks)
+      const parentBlockId =
+        branchAnchorId && persistedBlocksById.has(branchAnchorId)
+          ? branchAnchorId
+          : latestParentId
+      const isUsingBranchAnchor = Boolean(
+        branchAnchorId &&
+          persistedBlocksById.has(branchAnchorId) &&
+          parentBlockId === branchAnchorId,
+      )
       const derivedTitle = deriveCollectionTitle(trimmedDraft)
       const endpoint = buildChatCompletionEndpoint(baseUrl)
       const request = buildBlockRequest(baseUrl, model, temperature)
@@ -1859,6 +2592,7 @@ function App() {
         direction: 'output',
         content: '',
         status: 'pending',
+        retryParentId: userBlock.id,
       }
 
       setBlocks((prev) => [...prev, userBlock, assistantBlock])
@@ -1927,13 +2661,20 @@ function App() {
         userRecordPromise = pendingUserRecord
         void pendingUserRecord
           .then((record) => {
+            attachBlockToGraph(record.id, parentBlockId ? [parentBlockId] : [])
             setBlocks((prev) =>
               prev.map((block) =>
                 block.id === userBlock.id
                   ? { ...block, id: record.id }
-                  : block,
+                  : block.id === assistantBlock.id &&
+                      block.retryParentId === userBlock.id
+                    ? { ...block, retryParentId: record.id }
+                    : block,
               ),
             )
+            if (isUsingBranchAnchor) {
+              setBranchAnchorId(record.id)
+            }
             setActiveBlockId((prev) =>
               prev === userBlock.id ? record.id : prev,
             )
@@ -1959,14 +2700,10 @@ function App() {
         return
       }
 
-      const contextPayloads = [...blocks, userBlock]
-        .filter(
-          (
-            block,
-          ): block is Block & { payload: BlockPayload } =>
-            !block.status && Boolean(block.payload),
-        )
+      const contextBlocks = getContextBlocksForParent(parentBlockId)
+      const contextPayloads = [...contextBlocks, userBlock]
         .map((block) => block.payload)
+        .filter((payload): payload is BlockPayload => Boolean(payload))
       const contextMessages = toChatMessages(contextPayloads)
       const token = apiKey
       const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
@@ -2007,6 +2744,7 @@ function App() {
                   content: nextContent,
                   status: undefined,
                   payload: assistantPayload,
+                  retryParentId: undefined,
                 }
               : block,
           ),
@@ -2026,13 +2764,25 @@ function App() {
             },
           )
             .then((record) => {
+              attachBlockToGraph(
+                record.id,
+                assistantParentId ? [assistantParentId] : [],
+              )
               setBlocks((prev) =>
                 prev.map((block) =>
                   block.id === assistantBlock.id
-                    ? { ...block, id: record.id, content: nextContent }
+                    ? {
+                        ...block,
+                        id: record.id,
+                        content: nextContent,
+                        retryParentId: undefined,
+                      }
                     : block,
                 ),
               )
+              if (isUsingBranchAnchor) {
+                setBranchAnchorId(record.id)
+              }
               setActiveBlockId((prev) =>
                 prev === assistantBlock.id ? record.id : prev,
               )
@@ -2308,6 +3058,11 @@ function App() {
               <ChatPane
                 blocks={blocks}
                 activeBlockId={activeBlockId}
+                branchAnchorId={branchAnchorId}
+                branchChildCountById={branchChildCountById}
+                branchActiveIndexById={branchActiveIndexById}
+                defaultContinuationBlockId={effectiveContinuationBlock?.id ?? null}
+                isSending={isSending}
                 showEmptyState={hasLoadedBlocks}
                 showConfigureLink={showConfigureLink}
                 onConfigure={() => openSettingsRef.current()}
@@ -2315,6 +3070,9 @@ function App() {
                 onChatClick={handleChatClick}
                 onBlockMouseDown={handleBlockMouseDown}
                 onBlockClick={handleBlockClick}
+                onSetBranchAnchor={handleSetBranchAnchor}
+                onCycleBranch={handleCycleBranch}
+                onRetryBlock={handleRetryContinuation}
                 registerBlockRef={registerBlockRef}
               />
             </div>
@@ -2589,6 +3347,41 @@ function App() {
             <>
               <footer className="composer" ref={composerRef}>
                 <div className="composer-box">
+                  {effectiveContinuationBlock ? (
+                    <div className="composer-branch-row">
+                      <span className="composer-branch-label">
+                        {branchAnchorBlock
+                          ? 'Branching from selected model block'
+                          : 'Continuing from latest'}
+                      </span>
+                      <span
+                        className="composer-branch-value"
+                        title={
+                          branchAnchorBlock
+                            ? branchAnchorSummary ?? undefined
+                            : defaultContinuationSummary ?? undefined
+                        }
+                      >
+                        {branchAnchorBlock
+                          ? branchAnchorSummary ?? 'Selected block'
+                          : defaultContinuationSummary ?? 'Latest block'}
+                      </span>
+                      {branchAnchorBlock ? (
+                        <button
+                          className="composer-branch-reset"
+                          type="button"
+                          onClick={handleResetBranchAnchor}
+                        >
+                          Use latest
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {branchAnchorBlock ? (
+                    <div className="composer-branch-hint">
+                      Next generation uses context up to this block only.
+                    </div>
+                  ) : null}
                   <textarea
                     ref={textareaRef}
                     className="composer-input"
@@ -2827,6 +3620,34 @@ function App() {
                       </div>
                     ))}
                     <div className="sidebar-quick-fact sidebar-quick-fact-action">
+                      {isPersistedBlockId(activeBlock.id) &&
+                      activeBlock.direction === 'output' &&
+                      !activeBlock.status ? (
+                        <span
+                          className="tooltip tooltip-hover-only tooltip-left"
+                          data-tooltip={
+                            branchAnchorId === activeBlock.id
+                              ? 'Using as branch anchor'
+                              : 'Branch from this block'
+                          }
+                        >
+                          <button
+                            className={`sidebar-icon-button${branchAnchorId === activeBlock.id ? ' sidebar-icon-button-ack' : ''}`}
+                            type="button"
+                            onClick={handleBranchFromActiveBlock}
+                            aria-label="Branch from this block"
+                          >
+                            <span
+                              className={`codicon ${
+                                branchAnchorId === activeBlock.id
+                                  ? 'codicon-check'
+                                  : 'codicon-git-branch'
+                              }`}
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </span>
+                      ) : null}
                       <span
                         className={`tooltip tooltip-hover-only tooltip-left${suppressCopyBlockTooltip ? ' tooltip-suppressed' : ''}`}
                         data-tooltip={
@@ -2874,6 +3695,14 @@ function App() {
                           <div className="sidebar-field-label">Role</div>
                           <div className="sidebar-field-value">
                             {inspectorMeta.role}
+                          </div>
+                        </div>
+                      ) : null}
+                      {activeBranchChildCount > 1 ? (
+                        <div className="sidebar-field">
+                          <div className="sidebar-field-label">Branches</div>
+                          <div className="sidebar-field-value">
+                            {activeBranchChildCount}
                           </div>
                         </div>
                       ) : null}

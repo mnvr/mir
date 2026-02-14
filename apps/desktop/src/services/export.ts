@@ -73,6 +73,40 @@ const importMirData = async (payload: MirExport): Promise<MirImportSummary> => {
   )
   const relationKeyFor = (relation: Relation) =>
     `${relation.type}::${relation.fromId}::${relation.toId}`
+  const countForkPoints = (
+    relations: Relation[],
+    availableRecordIds: Set<string>,
+    deletedRecordIds: Set<string>,
+  ) => {
+    const childrenByParentId = new Map<string, Set<string>>()
+    relations.forEach((relation) => {
+      if (relation.type !== 'parent') {
+        return
+      }
+      if (
+        !availableRecordIds.has(relation.fromId) ||
+        !availableRecordIds.has(relation.toId)
+      ) {
+        return
+      }
+      if (
+        deletedRecordIds.has(relation.fromId) ||
+        deletedRecordIds.has(relation.toId)
+      ) {
+        return
+      }
+      const children = childrenByParentId.get(relation.toId) ?? new Set<string>()
+      children.add(relation.fromId)
+      childrenByParentId.set(relation.toId, children)
+    })
+    let forkPoints = 0
+    childrenByParentId.forEach((children) => {
+      if (children.size > 1) {
+        forkPoints += 1
+      }
+    })
+    return forkPoints
+  }
   const existingRelationKeys = new Set(
     existingRelations.map((relation) => relationKeyFor(relation)),
   )
@@ -174,6 +208,16 @@ const importMirData = async (payload: MirExport): Promise<MirImportSummary> => {
 
   await writeRecordsAndRelations(newRecords, newRelations)
   await indexCollectionsAndRelations(newCollections, newRelations)
+  const branchingForkPointsBefore = countForkPoints(
+    existingRelations,
+    availableRecordIds,
+    deletedRecordIds,
+  )
+  const branchingForkPointsAfter = countForkPoints(
+    [...existingRelations, ...newRelations],
+    availableRecordIds,
+    deletedRecordIds,
+  )
 
   if (recordConflicts.length > 0) {
     console.warn('[import] record id conflicts', recordConflicts.slice(0, 20))
@@ -210,6 +254,14 @@ const importMirData = async (payload: MirExport): Promise<MirImportSummary> => {
       conflicts: relationConflicts.length,
       duplicates: relationDuplicates,
       missingEndpoints: relationMissingEndpoints,
+    },
+    branching: {
+      forkPointsBefore: branchingForkPointsBefore,
+      forkPointsAfter: branchingForkPointsAfter,
+      forkPointsAdded: Math.max(
+        0,
+        branchingForkPointsAfter - branchingForkPointsBefore,
+      ),
     },
   }
 }

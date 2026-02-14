@@ -23,6 +23,11 @@ export type MirImportSummary = {
     duplicates: number
     missingEndpoints: number
   }
+  branching: {
+    forkPointsBefore: number
+    forkPointsAfter: number
+    forkPointsAdded: number
+  }
 }
 
 export const parseExportPayload = (raw: string): MirExport => {

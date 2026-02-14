@@ -90,6 +90,20 @@ You can also use keyboard shortcuts:
 - Use `Shift + Enter` to insert a newline.
 - `Ctrl + Enter` on Linux/Windows or `Cmd + Enter` on macOS also submits as an alternate shortcut.
 
+### Branching
+
+Mir supports branching within a collection.
+
+- Select a generated/model block, open Inspect, and use **Branch from this block** to set a branch anchor.
+- You can also select a generated/model block directly in the stream and use **New branch from here**.
+- The composer shows whether you are continuing from latest or from a branch anchor.
+- Use **Use latest** in the composer to clear the anchor.
+- Blocks with multiple children show a branch badge (for example, `2 branches`). Click that badge to cycle and jump between branch starts.
+
+To roll a new generation from the same user prompt, select that user block and use **Retry generation**.
+
+If a generation fails, Mir keeps the pending generated block and shows **Retry generation** on that block so you can retry without duplicating the user block.
+
 ### Customizing generation parameters
 
 You can customize parameters passed to the model along with the context when asking it to generate a continuation. Currently, Mir exposes only temperature.
@@ -113,6 +127,7 @@ This summary is followed by any actions applicable to that item type.
 * Copy Collection: Copy all blocks in the selected collection as markdown. Blocks with a role "user" are blockquoted.
 * Delete Collection: Delete the collection and all of its blocks. This action asks for a confirmation first.
 * Copy Block: Copy the block's text.
+* Branch from this block: Set the composer to continue from the selected block instead of the latest one.
 
 This is then followed by various sections giving low-level details about the active item, whichever are applicable:
 
@@ -165,6 +180,8 @@ Mir merges the import into your existing data:
 - Records and relationships are additive.
 - If an incoming record ID already exists, Mir keeps the current version and reports a conflict.
 - If a relationship points to a missing or deleted record, Mir skips it.
+
+If the imported data contains divergent continuations from the same parent block, those divergences are preserved and shown as branches.
 
 This means import will not overwrite your current work or resurrect deleted content. If you need a clean slate, you will need to clear the local database before importing.
 

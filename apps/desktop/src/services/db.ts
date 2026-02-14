@@ -70,6 +70,12 @@ type CollectionIndexEntry = {
   collectionId: string
 }
 
+export type CollectionBlockGraph = {
+  blocks: BlockRecord[]
+  parentIdsByBlockId: Record<string, string[]>
+  childIdsByBlockId: Record<string, string[]>
+}
+
 type MirIndexSchema = DBSchema & {
   relation_index: {
     key: [string, RelationType, number, string]
@@ -434,23 +440,17 @@ export const listCollections = async (): Promise<CollectionRecord[]> => {
 
 const sortBlocksByParent = async (
   blocks: BlockRecord[],
+  options?: {
+    parentIdsByBlockId?: Map<string, string[]>
+  },
 ): Promise<BlockRecord[]> => {
   if (blocks.length <= 1) {
     return blocks
   }
 
   const blockById = new Map(blocks.map((block) => [block.id, block]))
-  const parentIdsByBlockId = new Map<string, string[]>()
-
-  await Promise.all(
-    blocks.map(async (block) => {
-      const parentIds = await listRelationTargetsByFromType(block.id, 'parent')
-      parentIdsByBlockId.set(
-        block.id,
-        parentIds.filter((parentId) => blockById.has(parentId)),
-      )
-    }),
-  )
+  const parentIdsByBlockId =
+    options?.parentIdsByBlockId ?? (await listParentIdsByBlockId(blocks))
 
   const childrenByParent = new Map<string, string[]>()
   const indegreeById = new Map<string, number>()
@@ -528,6 +528,64 @@ const sortBlocksByParent = async (
   return [...ordered, ...remaining]
 }
 
+const compareBlocksByCreatedAtThenId = (left: BlockRecord, right: BlockRecord) => {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt - right.createdAt
+  }
+  return left.id.localeCompare(right.id)
+}
+
+const listParentIdsByBlockId = async (blocks: BlockRecord[]) => {
+  const blockById = new Map(blocks.map((block) => [block.id, block]))
+  const parentIdsByBlockId = new Map<string, string[]>()
+  await Promise.all(
+    blocks.map(async (block) => {
+      const parentIds = await listRelationTargetsByFromType(block.id, 'parent')
+      const normalized = parentIds
+        .filter((parentId) => blockById.has(parentId))
+        .slice()
+        .sort((left, right) => {
+          const leftBlock = blockById.get(left)
+          const rightBlock = blockById.get(right)
+          if (!leftBlock || !rightBlock) {
+            return left.localeCompare(right)
+          }
+          return compareBlocksByCreatedAtThenId(leftBlock, rightBlock)
+        })
+      parentIdsByBlockId.set(block.id, normalized)
+    }),
+  )
+  return parentIdsByBlockId
+}
+
+const buildChildIdsByParent = (
+  parentIdsByBlockId: Map<string, string[]>,
+  blockById: Map<string, BlockRecord>,
+) => {
+  const childIdsByBlockId = new Map<string, string[]>()
+
+  parentIdsByBlockId.forEach((parentIds, childId) => {
+    parentIds.forEach((parentId) => {
+      const existing = childIdsByBlockId.get(parentId) ?? []
+      if (existing.includes(childId)) {
+        return
+      }
+      const next = [...existing, childId]
+      next.sort((left, right) => {
+        const leftBlock = blockById.get(left)
+        const rightBlock = blockById.get(right)
+        if (!leftBlock || !rightBlock) {
+          return left.localeCompare(right)
+        }
+        return compareBlocksByCreatedAtThenId(leftBlock, rightBlock)
+      })
+      childIdsByBlockId.set(parentId, next)
+    })
+  })
+
+  return childIdsByBlockId
+}
+
 export const listCollectionBlocks = async (
   collectionId: string,
 ): Promise<BlockRecord[]> => {
@@ -540,6 +598,30 @@ export const listCollectionBlocks = async (
   const blocks = records.filter(isBlockRecord)
 
   return sortBlocksByParent(blocks)
+}
+
+export const listCollectionBlockGraph = async (
+  collectionId: string,
+): Promise<CollectionBlockGraph> => {
+  const db = await getDb()
+  const toIds = await listRelationTargetsByFromType(collectionId, 'contains')
+  const records = await Promise.all(
+    toIds.map((toId) => db.get('records', toId)),
+  )
+
+  const blocks = records.filter(isBlockRecord)
+  const blockById = new Map(blocks.map((block) => [block.id, block]))
+  const parentIdsByBlockId = await listParentIdsByBlockId(blocks)
+  const orderedBlocks = await sortBlocksByParent(blocks, {
+    parentIdsByBlockId,
+  })
+  const childIdsByBlockId = buildChildIdsByParent(parentIdsByBlockId, blockById)
+
+  return {
+    blocks: orderedBlocks,
+    parentIdsByBlockId: Object.fromEntries(parentIdsByBlockId),
+    childIdsByBlockId: Object.fromEntries(childIdsByBlockId),
+  }
 }
 
 export const appendBlock = async (

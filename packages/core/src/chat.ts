@@ -196,7 +196,7 @@ export const createChatCompletion = async (
   const content = extractAssistantContent(data)
 
   if (!content) {
-    throw new Error('No assistant content returned.')
+    throw new Error('No model response content returned.')
   }
 
   return { content, raw: data }
