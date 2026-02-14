@@ -177,6 +177,12 @@
   width: 100%;
 }
 
+.settings-hint {
+  font-size: 0.76rem;
+  color: #7a7a7a;
+  line-height: 1.35;
+}
+
 .settings-input-wrap {
   position: relative;
 }
@@ -1346,6 +1352,10 @@
 
   .settings-field {
     color: var(--dm-text-muted);
+  }
+
+  .settings-hint {
+    color: var(--dm-text-subtle);
   }
 
   .settings-input {

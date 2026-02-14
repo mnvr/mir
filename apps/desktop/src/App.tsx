@@ -598,7 +598,7 @@ function App() {
     ? 'Settings'
     : collectionDateLabel ?? (hasLoadedBlocks ? 'Undated' : '')
   const showConfigureLink = settingsLoaded && baseUrl === ''
-  const modelLabel = model || 'Default'
+  const modelLabel = model || 'Provider default'
   const temperatureLabel = temperature.toFixed(1)
   const importPreviewSummary = importPreview?.summary ?? null
   const exportPreviewTime = formatExportedAt(importPreview?.payload.exportedAt)
@@ -2331,26 +2331,34 @@ function App() {
                       <input
                         className="settings-input"
                         type="url"
-                        placeholder="https://api.openai.com/v1"
+                        placeholder="Example: https://api.openai.com/v1"
                         value={baseUrl}
                         spellCheck={false}
                         onChange={(event) =>
                           setBaseUrl(event.target.value.trim())
                         }
                       />
+                      <span className="settings-hint">
+                        Enter your provider base URL (e.g.
+                        https://api.openai.com/v1).
+                      </span>
                     </label>
                     <label className="settings-field">
-                      <span>Model</span>
+                      <span>Model ID</span>
                       <input
                         className="settings-input"
                         type="text"
-                        placeholder="gpt-5.2"
+                        placeholder="Example: gpt-5.2"
                         value={model}
                         spellCheck={false}
                         onChange={(event) =>
                           setModel(event.target.value.trim())
                         }
                       />
+                      <span className="settings-hint">
+                        Placeholder text is only an example. Enter your provider
+                        model ID if required.
+                      </span>
                     </label>
                     <label className="settings-field">
                       <span>API key</span>

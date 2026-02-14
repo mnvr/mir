@@ -26,7 +26,7 @@ Mir will call the `/chat/completions` path on that base URL. This is the only AP
 
 Most inference providers, including OpenAI itself, provide support for this so called "Chat completion" endpoint (Anthropic is the notable exception).
 
-You can also optionally specify a model name in Settings (for example `gpt-5.2`). Depending on your inference provider, the model name might be required or optional (if the inference provider has a default model).
+You can also optionally specify a model name in Settings (for example `gpt-5.2`). The placeholder in the input field is only an example value, not a default that Mir sends automatically. Depending on your inference provider, the model name might be required or optional (if the inference provider has a default model).
 
 The base URL and model is saved on your device so you do not need to re-enter them. The API key is also stored, but using secure storage.
 
