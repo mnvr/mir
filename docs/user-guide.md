@@ -94,11 +94,10 @@ You can also use keyboard shortcuts:
 
 Mir supports branching within a collection.
 
-- Select a generated/model block, open Inspect, and use **Branch from this block** to set a branch anchor.
-- You can also select a generated/model block directly in the stream and use **New branch from here**.
-- The composer shows whether you are continuing from latest or from a branch anchor.
+- Select a generated/model block and use **Continue from this block** (stream control or Inspect action) to move the continuation cursor.
+- Clicking a block selects it for Inspect; selection and continuation cursor are separate.
+- The stream shows one focused branch path at a time (not interleaved sibling branches).
 - When you are on a forked path, a branch navigator appears above the composer with **Prev**, **Next**, **View branches**, and **Back to fork**.
-- Use **Use latest** in the composer to clear the anchor.
 - Blocks with multiple children show a branch badge (for example, `2 branches`). Click that badge to open branch starts, then select the one you want.
 
 To roll a new generation from the same user prompt, select that user block and use **Retry generation**.
@@ -128,7 +127,7 @@ This summary is followed by any actions applicable to that item type.
 * Copy Collection: Copy all blocks in the selected collection as markdown. Blocks with a role "user" are blockquoted.
 * Delete Collection: Delete the collection and all of its blocks. This action asks for a confirmation first.
 * Copy Block: Copy the block's text.
-* Branch from this block: Set the composer to continue from the selected block instead of the latest one.
+* Continue from this block: Move the continuation cursor to the selected generated/model block.
 
 This is then followed by various sections giving low-level details about the active item, whichever are applicable:
 
