@@ -69,6 +69,11 @@ type Block = {
   retryParentId?: string | null
 }
 
+type BranchOption = {
+  id: string
+  summary: string | null
+}
+
 type PendingScroll = {
   id: string
   mode: 'bottom' | 'read'
@@ -258,15 +263,17 @@ const decryptSecret = async (cipherText: string) => {
 type BlockRowProps = {
   block: Block
   isActive: boolean
-  branchChildCount: number
-  activeBranchIndex: number | null
+  branchOptions: BranchOption[]
+  activeBranchChildId: string | null
+  isBranchMenuOpen: boolean
   isBranchAnchor: boolean
   isDefaultContinuationTarget: boolean
   isSending: boolean
   onMouseDown: () => void
   onClick: (id: string) => void
   onSetBranchAnchor: (id: string) => void
-  onCycleBranch: (id: string) => void
+  onToggleBranchMenu: (id: string) => void
+  onSelectBranchStart: (parentId: string, childId: string) => void
   onRetry: (id: string) => void
   registerRef: (id: string, node: HTMLDivElement | null) => void
 }
@@ -274,18 +281,21 @@ type BlockRowProps = {
 const BlockRow = memo(function BlockRow({
   block,
   isActive,
-  branchChildCount,
-  activeBranchIndex,
+  branchOptions,
+  activeBranchChildId,
+  isBranchMenuOpen,
   isBranchAnchor,
   isDefaultContinuationTarget,
   isSending,
   onMouseDown,
   onClick,
   onSetBranchAnchor,
-  onCycleBranch,
+  onToggleBranchMenu,
+  onSelectBranchStart,
   onRetry,
   registerRef,
 }: BlockRowProps) {
+  const branchChildCount = branchOptions.length
   const hasBranchBadges = branchChildCount > 1 || isBranchAnchor
   const canSetBranchAnchor =
     isActive &&
@@ -324,15 +334,51 @@ const BlockRow = memo(function BlockRow({
               type="button"
               onClick={(event) => {
                 event.stopPropagation()
-                onCycleBranch(block.id)
+                onToggleBranchMenu(block.id)
               }}
-              title="Cycle through branch starts"
+              title={
+                isBranchMenuOpen
+                  ? 'Hide branch starts'
+                  : 'View branch starts'
+              }
+              aria-haspopup="menu"
+              aria-expanded={isBranchMenuOpen}
+              aria-controls={`branch-menu-${block.id}`}
             >
-              {activeBranchIndex !== null
-                ? `Branch ${activeBranchIndex + 1}/${branchChildCount}`
-                : `${branchChildCount} branches`}
+              {branchChildCount} branches
             </button>
           ) : null}
+        </div>
+      ) : null}
+      {isBranchMenuOpen && branchChildCount > 1 ? (
+        <div
+          className="block-branch-menu"
+          id={`branch-menu-${block.id}`}
+          role="menu"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {branchOptions.map((option, index) => {
+            const isCurrentBranch = activeBranchChildId === option.id
+            return (
+              <button
+                key={option.id}
+                className={`block-branch-menu-item${
+                  isCurrentBranch ? ' is-active' : ''
+                }`}
+                type="button"
+                role="menuitem"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onSelectBranchStart(block.id, option.id)
+                }}
+              >
+                <span className="block-branch-menu-label">{`Branch ${index + 1}`}</span>
+                <span className="block-branch-menu-summary">
+                  {option.summary ?? 'No preview text'}
+                </span>
+              </button>
+            )
+          })}
         </div>
       ) : null}
       {block.direction === 'input' ? (
@@ -411,8 +457,9 @@ type ChatPaneProps = {
   blocks: Block[]
   activeBlockId: string | null
   branchAnchorId: string | null
-  branchChildCountById: Record<string, number>
-  branchActiveIndexById: Record<string, number>
+  branchOptionsByParentId: Record<string, BranchOption[]>
+  activeBranchChildIdByParentId: Record<string, string>
+  openBranchMenuParentId: string | null
   defaultContinuationBlockId: string | null
   isSending: boolean
   showEmptyState: boolean
@@ -423,7 +470,8 @@ type ChatPaneProps = {
   onBlockMouseDown: () => void
   onBlockClick: (id: string) => void
   onSetBranchAnchor: (id: string) => void
-  onCycleBranch: (id: string) => void
+  onToggleBranchMenu: (id: string) => void
+  onSelectBranchStart: (parentId: string, childId: string) => void
   onRetryBlock: (id: string) => void
   registerBlockRef: (id: string, node: HTMLDivElement | null) => void
 }
@@ -432,8 +480,9 @@ const ChatPane = memo(function ChatPane({
   blocks,
   activeBlockId,
   branchAnchorId,
-  branchChildCountById,
-  branchActiveIndexById,
+  branchOptionsByParentId,
+  activeBranchChildIdByParentId,
+  openBranchMenuParentId,
   defaultContinuationBlockId,
   isSending,
   showEmptyState,
@@ -444,7 +493,8 @@ const ChatPane = memo(function ChatPane({
   onBlockMouseDown,
   onBlockClick,
   onSetBranchAnchor,
-  onCycleBranch,
+  onToggleBranchMenu,
+  onSelectBranchStart,
   onRetryBlock,
   registerBlockRef,
 }: ChatPaneProps) {
@@ -474,19 +524,19 @@ const ChatPane = memo(function ChatPane({
               key={block.id}
               block={block}
               isActive={block.id === activeBlockId}
-              branchChildCount={branchChildCountById[block.id] ?? 0}
-              activeBranchIndex={
-                typeof branchActiveIndexById[block.id] === 'number'
-                  ? branchActiveIndexById[block.id]
-                  : null
+              branchOptions={branchOptionsByParentId[block.id] ?? []}
+              activeBranchChildId={
+                activeBranchChildIdByParentId[block.id] ?? null
               }
+              isBranchMenuOpen={openBranchMenuParentId === block.id}
               isBranchAnchor={branchAnchorId === block.id}
               isDefaultContinuationTarget={defaultContinuationBlockId === block.id}
               isSending={isSending}
               onMouseDown={onBlockMouseDown}
               onClick={onBlockClick}
               onSetBranchAnchor={onSetBranchAnchor}
-              onCycleBranch={onCycleBranch}
+              onToggleBranchMenu={onToggleBranchMenu}
+              onSelectBranchStart={onSelectBranchStart}
               onRetry={onRetryBlock}
               registerRef={registerBlockRef}
             />
@@ -546,9 +596,11 @@ function App() {
     useState<CollectionRecord | null>(null)
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null)
   const [branchAnchorId, setBranchAnchorId] = useState<string | null>(null)
-  const [branchCursorByParentId, setBranchCursorByParentId] = useState<
-    Record<string, number>
-  >({})
+  const [openBranchMenuParentId, setOpenBranchMenuParentId] = useState<
+    string | null
+  >(null)
+  const [openComposerBranchMenuParentId, setOpenComposerBranchMenuParentId] =
+    useState<string | null>(null)
   const [selectedCollectionId, setSelectedCollectionId] =
     useState<string | null>(null)
   const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect'>(
@@ -620,38 +672,93 @@ function App() {
     })
     return map
   }, [blocks])
-  const branchChildCountById = useMemo(() => {
-    const counts: Record<string, number> = {}
+  const branchOptionsByParentId = useMemo(() => {
+    const optionsByParent: Record<string, BranchOption[]> = {}
     Object.entries(collectionGraph.childIdsByBlockId).forEach(
       ([parentId, childIds]) => {
         if (!persistedBlocksById.has(parentId)) {
           return
         }
-        const visibleChildren = childIds.filter((childId) =>
-          persistedBlocksById.has(childId),
-        )
-        if (visibleChildren.length > 1) {
-          counts[parentId] = visibleChildren.length
+        const options = childIds
+          .filter((childId) => persistedBlocksById.has(childId))
+          .map((childId) => {
+            const childBlock = persistedBlocksById.get(childId)
+            return {
+              id: childId,
+              summary: childBlock ? summarizeBlockContent(childBlock.content) : null,
+            }
+          })
+        if (options.length > 1) {
+          optionsByParent[parentId] = options
         }
       },
     )
-    return counts
+    return optionsByParent
   }, [collectionGraph.childIdsByBlockId, persistedBlocksById])
-  const branchActiveIndexById = useMemo(() => {
-    const indices: Record<string, number> = {}
-    Object.entries(branchChildCountById).forEach(([parentId, count]) => {
-      if (count <= 1) {
+  const branchChildCountById = useMemo(() => {
+    const counts: Record<string, number> = {}
+    Object.entries(branchOptionsByParentId).forEach(([parentId, options]) => {
+      if (options.length <= 1) {
         return
       }
-      const cursor = branchCursorByParentId[parentId]
-      if (typeof cursor !== 'number') {
-        return
-      }
-      const normalized = ((cursor % count) + count) % count
-      indices[parentId] = normalized
+      counts[parentId] = options.length
     })
-    return indices
-  }, [branchChildCountById, branchCursorByParentId])
+    return counts
+  }, [branchOptionsByParentId])
+  const activeLineagePath = useMemo(() => {
+    const path: string[] = []
+    const seen = new Set<string>()
+    let currentId = activeBlock?.id ?? null
+    while (currentId && !seen.has(currentId)) {
+      path.push(currentId)
+      seen.add(currentId)
+      const parentIds = collectionGraph.parentIdsByBlockId[currentId] ?? []
+      currentId = parentIds[0] ?? null
+    }
+    return path
+  }, [activeBlock?.id, collectionGraph.parentIdsByBlockId])
+  const activeLineageIds = useMemo(
+    () => new Set(activeLineagePath),
+    [activeLineagePath],
+  )
+  const activeBranchChildIdByParentId = useMemo(() => {
+    const activeChildren: Record<string, string> = {}
+    Object.entries(branchOptionsByParentId).forEach(([parentId, options]) => {
+      const current = options.find((option) => activeLineageIds.has(option.id))
+      if (current) {
+        activeChildren[parentId] = current.id
+      }
+    })
+    return activeChildren
+  }, [branchOptionsByParentId, activeLineageIds])
+  const activeForkParentId = useMemo(
+    () =>
+      activeLineagePath.find(
+        (blockId) => (branchOptionsByParentId[blockId]?.length ?? 0) > 1,
+      ) ?? null,
+    [activeLineagePath, branchOptionsByParentId],
+  )
+  const activeForkOptions = useMemo(
+    () =>
+      activeForkParentId ? branchOptionsByParentId[activeForkParentId] ?? [] : [],
+    [activeForkParentId, branchOptionsByParentId],
+  )
+  const activeForkChildId = activeForkParentId
+    ? activeBranchChildIdByParentId[activeForkParentId] ?? null
+    : null
+  const activeForkIndex = activeForkChildId
+    ? activeForkOptions.findIndex((option) => option.id === activeForkChildId)
+    : -1
+  const activeForkDisplayIndex = activeForkIndex >= 0 ? activeForkIndex : 0
+  const activeForkBlock = activeForkParentId
+    ? persistedBlocksById.get(activeForkParentId) ?? null
+    : null
+  const activeForkSummary = activeForkBlock
+    ? summarizeBlockContent(activeForkBlock.content)
+    : null
+  const isComposerForkMenuOpen =
+    Boolean(activeForkParentId) &&
+    openComposerBranchMenuParentId === activeForkParentId
   const activeBranchChildCount =
     activeBlock && isPersistedBlockId(activeBlock.id)
       ? branchChildCountById[activeBlock.id] ?? 0
@@ -1167,7 +1274,8 @@ function App() {
         setActiveCollection(null)
         setPendingCollection(null)
         setSelectedCollectionId(null)
-        setBranchCursorByParentId({})
+        setOpenBranchMenuParentId(null)
+        setOpenComposerBranchMenuParentId(null)
         setBlocks([])
         setCollectionGraph({
           parentIdsByBlockId: {},
@@ -1185,7 +1293,8 @@ function App() {
       setActiveCollection(collection)
       setPendingCollection(null)
       setSelectedCollectionId(collection.id)
-      setBranchCursorByParentId({})
+      setOpenBranchMenuParentId(null)
+      setOpenComposerBranchMenuParentId(null)
       setBlocks(storedGraph.blocks.map(recordToBlock))
       setCollectionGraph({
         parentIdsByBlockId: storedGraph.parentIdsByBlockId,
@@ -1199,7 +1308,8 @@ function App() {
     } catch {
       // Ignore local persistence failures on cold start.
       if (isMountedRef.current) {
-        setBranchCursorByParentId({})
+        setOpenBranchMenuParentId(null)
+        setOpenComposerBranchMenuParentId(null)
         setCollectionGraph({
           parentIdsByBlockId: {},
           childIdsByBlockId: {},
@@ -1437,32 +1547,90 @@ function App() {
     [blocks, focusComposer],
   )
 
-  const handleCycleBranch = useCallback(
-    (parentBlockId: string) => {
-      const childIds = (collectionGraph.childIdsByBlockId[parentBlockId] ?? [])
-        .filter((childId) => persistedBlocksById.has(childId))
-      if (childIds.length <= 1) {
+  const handleToggleBranchMenu = useCallback((parentBlockId: string) => {
+    setOpenComposerBranchMenuParentId(null)
+    setOpenBranchMenuParentId((prev) =>
+      prev === parentBlockId ? null : parentBlockId,
+    )
+  }, [])
+
+  const handleSelectBranchStart = useCallback(
+    (parentBlockId: string, childBlockId: string) => {
+      const options = branchOptionsByParentId[parentBlockId] ?? []
+      if (!options.some((option) => option.id === childBlockId)) {
         return
       }
-      const currentIndex =
-        typeof branchCursorByParentId[parentBlockId] === 'number'
-          ? branchCursorByParentId[parentBlockId]
-          : -1
-      const nextIndex = (currentIndex + 1) % childIds.length
-      const nextBlockId = childIds[nextIndex]
-      setBranchCursorByParentId((prev) => ({
-        ...prev,
-        [parentBlockId]: nextIndex,
-      }))
-      scrollToBlock(nextBlockId)
+      setOpenBranchMenuParentId(null)
+      setOpenComposerBranchMenuParentId(null)
+      scrollToBlock(childBlockId)
+    },
+    [branchOptionsByParentId, scrollToBlock],
+  )
+
+  const handleToggleComposerBranchMenu = useCallback(() => {
+    if (!activeForkParentId || activeForkOptions.length <= 1) {
+      return
+    }
+    setOpenBranchMenuParentId(null)
+    setOpenComposerBranchMenuParentId((prev) =>
+      prev === activeForkParentId ? null : activeForkParentId,
+    )
+  }, [activeForkOptions.length, activeForkParentId])
+
+  const handleSelectActiveForkBranch = useCallback(
+    (childBlockId: string) => {
+      if (!activeForkParentId) {
+        return
+      }
+      handleSelectBranchStart(activeForkParentId, childBlockId)
+    },
+    [activeForkParentId, handleSelectBranchStart],
+  )
+
+  const handleMoveActiveForkBranch = useCallback(
+    (direction: number) => {
+      if (!activeForkParentId || activeForkOptions.length <= 1) {
+        return
+      }
+      let nextIndex = 0
+      if (activeForkIndex >= 0) {
+        nextIndex =
+          (activeForkIndex + direction + activeForkOptions.length) %
+          activeForkOptions.length
+      } else if (direction < 0) {
+        nextIndex = activeForkOptions.length - 1
+      }
+      const nextOption = activeForkOptions[nextIndex]
+      if (!nextOption) {
+        return
+      }
+      handleSelectBranchStart(activeForkParentId, nextOption.id)
     },
     [
-      branchCursorByParentId,
-      collectionGraph.childIdsByBlockId,
-      persistedBlocksById,
-      scrollToBlock,
+      activeForkIndex,
+      activeForkOptions,
+      activeForkParentId,
+      handleSelectBranchStart,
     ],
   )
+
+  const handleBackToFork = useCallback(() => {
+    if (!activeForkParentId) {
+      return
+    }
+    setOpenBranchMenuParentId(null)
+    setOpenComposerBranchMenuParentId(null)
+    scrollToBlock(activeForkParentId)
+  }, [activeForkParentId, scrollToBlock])
+
+  useEffect(() => {
+    if (!openComposerBranchMenuParentId) {
+      return
+    }
+    if (openComposerBranchMenuParentId !== activeForkParentId) {
+      setOpenComposerBranchMenuParentId(null)
+    }
+  }, [activeForkParentId, openComposerBranchMenuParentId])
 
   const handleBranchFromActiveBlock = useCallback(() => {
     if (
@@ -1489,7 +1657,8 @@ function App() {
     setPendingCollection(null)
     setActiveBlockId(null)
     setBranchAnchorId(null)
-    setBranchCursorByParentId({})
+    setOpenBranchMenuParentId(null)
+    setOpenComposerBranchMenuParentId(null)
     setLastRunStats(null)
 
     if (collection.id === demoCollection.id) {
@@ -1508,7 +1677,8 @@ function App() {
 
     setHasLoadedBlocks(false)
     setBlocks([])
-    setBranchCursorByParentId({})
+    setOpenBranchMenuParentId(null)
+    setOpenComposerBranchMenuParentId(null)
     setCollectionGraph({
       parentIdsByBlockId: {},
       childIdsByBlockId: {},
@@ -1534,7 +1704,8 @@ function App() {
           return
         }
         setBlocks([])
-        setBranchCursorByParentId({})
+        setOpenBranchMenuParentId(null)
+        setOpenComposerBranchMenuParentId(null)
         setCollectionGraph({
           parentIdsByBlockId: {},
           childIdsByBlockId: {},
@@ -2173,7 +2344,8 @@ function App() {
     setSuppressNewCollectionTooltip(true)
     setSelectedCollectionId(null)
     setBlocks([])
-    setBranchCursorByParentId({})
+    setOpenBranchMenuParentId(null)
+    setOpenComposerBranchMenuParentId(null)
     setCollectionGraph({
       parentIdsByBlockId: {},
       childIdsByBlockId: {},
@@ -2919,6 +3091,8 @@ function App() {
     if (target.closest('.block')) {
       return
     }
+    setOpenBranchMenuParentId(null)
+    setOpenComposerBranchMenuParentId(null)
     setActiveBlockId(null)
   }, [])
 
@@ -2940,6 +3114,8 @@ function App() {
         return
       }
       suppressBlockActivationRef.current = false
+      setOpenBranchMenuParentId(null)
+      setOpenComposerBranchMenuParentId(null)
       setActiveBlockId((prev) => (prev === blockId ? null : blockId))
     },
     [hasTextSelection],
@@ -3059,8 +3235,9 @@ function App() {
                 blocks={blocks}
                 activeBlockId={activeBlockId}
                 branchAnchorId={branchAnchorId}
-                branchChildCountById={branchChildCountById}
-                branchActiveIndexById={branchActiveIndexById}
+                branchOptionsByParentId={branchOptionsByParentId}
+                activeBranchChildIdByParentId={activeBranchChildIdByParentId}
+                openBranchMenuParentId={openBranchMenuParentId}
                 defaultContinuationBlockId={effectiveContinuationBlock?.id ?? null}
                 isSending={isSending}
                 showEmptyState={hasLoadedBlocks}
@@ -3071,7 +3248,8 @@ function App() {
                 onBlockMouseDown={handleBlockMouseDown}
                 onBlockClick={handleBlockClick}
                 onSetBranchAnchor={handleSetBranchAnchor}
-                onCycleBranch={handleCycleBranch}
+                onToggleBranchMenu={handleToggleBranchMenu}
+                onSelectBranchStart={handleSelectBranchStart}
                 onRetryBlock={handleRetryContinuation}
                 registerBlockRef={registerBlockRef}
               />
@@ -3347,6 +3525,91 @@ function App() {
             <>
               <footer className="composer" ref={composerRef}>
                 <div className="composer-box">
+                  {activeForkParentId && activeForkOptions.length > 1 ? (
+                    <>
+                      <div className="composer-fork-nav">
+                        <div className="composer-fork-nav-meta">
+                          <span className="composer-fork-nav-pill">
+                            Exploring branches
+                          </span>
+                          <span
+                            className="composer-fork-nav-fork"
+                            title={activeForkSummary ?? undefined}
+                          >
+                            {`Fork: ${activeForkSummary ?? 'Selected model block'}`}
+                          </span>
+                          <span className="composer-fork-nav-position">
+                            {activeForkIndex >= 0
+                              ? `Branch ${activeForkDisplayIndex + 1}/${activeForkOptions.length}`
+                              : `${activeForkOptions.length} branches`}
+                          </span>
+                        </div>
+                        <div className="composer-fork-nav-actions">
+                          <button
+                            className="composer-fork-nav-action"
+                            type="button"
+                            onClick={() => handleMoveActiveForkBranch(-1)}
+                          >
+                            Prev
+                          </button>
+                          <button
+                            className="composer-fork-nav-action"
+                            type="button"
+                            onClick={() => handleMoveActiveForkBranch(1)}
+                          >
+                            Next
+                          </button>
+                          <button
+                            className="composer-fork-nav-action"
+                            type="button"
+                            onClick={handleToggleComposerBranchMenu}
+                            aria-expanded={isComposerForkMenuOpen}
+                            aria-controls={
+                              activeForkParentId
+                                ? `composer-branch-menu-${activeForkParentId}`
+                                : undefined
+                            }
+                          >
+                            {isComposerForkMenuOpen ? 'Hide branches' : 'View branches'}
+                          </button>
+                          <button
+                            className="composer-fork-nav-action"
+                            type="button"
+                            onClick={handleBackToFork}
+                          >
+                            Back to fork
+                          </button>
+                        </div>
+                      </div>
+                      {isComposerForkMenuOpen ? (
+                        <div
+                          className="composer-fork-list"
+                          id={`composer-branch-menu-${activeForkParentId}`}
+                          role="menu"
+                        >
+                          {activeForkOptions.map((option, index) => {
+                            const isCurrentBranch = option.id === activeForkChildId
+                            return (
+                              <button
+                                key={option.id}
+                                className={`composer-fork-list-item${
+                                  isCurrentBranch ? ' is-active' : ''
+                                }`}
+                                type="button"
+                                role="menuitem"
+                                onClick={() => handleSelectActiveForkBranch(option.id)}
+                              >
+                                <span className="composer-fork-list-label">{`Branch ${index + 1}`}</span>
+                                <span className="composer-fork-list-summary">
+                                  {option.summary ?? 'No preview text'}
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
                   {effectiveContinuationBlock ? (
                     <div className="composer-branch-row">
                       <span className="composer-branch-label">

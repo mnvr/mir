@@ -97,8 +97,9 @@ Mir supports branching within a collection.
 - Select a generated/model block, open Inspect, and use **Branch from this block** to set a branch anchor.
 - You can also select a generated/model block directly in the stream and use **New branch from here**.
 - The composer shows whether you are continuing from latest or from a branch anchor.
+- When you are on a forked path, a branch navigator appears above the composer with **Prev**, **Next**, **View branches**, and **Back to fork**.
 - Use **Use latest** in the composer to clear the anchor.
-- Blocks with multiple children show a branch badge (for example, `2 branches`). Click that badge to cycle and jump between branch starts.
+- Blocks with multiple children show a branch badge (for example, `2 branches`). Click that badge to open branch starts, then select the one you want.
 
 To roll a new generation from the same user prompt, select that user block and use **Retry generation**.
 
