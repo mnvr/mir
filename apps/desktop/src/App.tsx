@@ -199,15 +199,15 @@ const formatQuickTimestamp = (localTimestamp?: string) => {
   return `${parsed.weekdayShort} ${parsed.monthShort} ${parsed.day} · ${timeLabel}`
 }
 
-const summarizeBlockContent = (content: string) => {
+const summarizeBlockContent = (content: string, maxLength = 84) => {
   const normalized = content.replace(/\s+/g, ' ').trim()
   if (!normalized) {
     return null
   }
-  if (normalized.length <= 84) {
+  if (normalized.length <= maxLength) {
     return normalized
   }
-  return `${normalized.slice(0, 84)}...`
+  return `${normalized.slice(0, maxLength)}...`
 }
 
 const summarizeForkPointLabel = (content: string) => {
@@ -220,6 +220,9 @@ const summarizeForkPointLabel = (content: string) => {
   }
   return `${normalized.slice(0, 42)}...`
 }
+
+const summarizeBranchPreview = (content: string) =>
+  summarizeBlockContent(content, 128)
 const hasSecureBridge = () =>
   typeof window !== 'undefined' &&
   typeof window.ipcRenderer?.invoke === 'function'
@@ -262,15 +265,13 @@ type BlockRowProps = {
   block: Block
   isActive: boolean
   branchOptions: BranchOption[]
-  activeBranchChildId: string | null
-  isBranchMenuOpen: boolean
+  isForkFocused: boolean
   isContinuationCursor: boolean
   isSending: boolean
   onMouseDown: () => void
   onClick: (id: string) => void
   onSetContinuationCursor: (id: string) => void
-  onToggleBranchMenu: (id: string) => void
-  onSelectBranchStart: (parentId: string, childId: string) => void
+  onOpenPathsFork: (id: string) => void
   onRetry: (id: string) => void
   onCopy: (id: string) => void
   registerRef: (id: string, node: HTMLDivElement | null) => void
@@ -280,33 +281,29 @@ const BlockRow = memo(function BlockRow({
   block,
   isActive,
   branchOptions,
-  activeBranchChildId,
-  isBranchMenuOpen,
+  isForkFocused,
   isContinuationCursor,
   isSending,
   onMouseDown,
   onClick,
   onSetContinuationCursor,
-  onToggleBranchMenu,
-  onSelectBranchStart,
+  onOpenPathsFork,
   onRetry,
   onCopy,
   registerRef,
 }: BlockRowProps) {
   const branchChildCount = branchOptions.length
-  const hasBranchBadges = branchChildCount > 1
+  const hasBranches = branchChildCount > 1
   const canSetContinuationCursor =
     block.direction === 'output' &&
     !block.status &&
     isPersistedBlockId(block.id)
-  const canRetryFromInput =
-    isActive &&
-    block.direction === 'input' &&
-    isPersistedBlockId(block.id)
-  const canRetryFromOutput =
+  const canGenerateNewFromInput =
+    block.direction === 'input' && isPersistedBlockId(block.id)
+  const canGenerateNewFromOutput =
     block.direction === 'output' &&
     (block.status === 'error' || block.status === 'canceled')
-  const canRetry = canRetryFromInput || canRetryFromOutput
+  const canGenerateNew = canGenerateNewFromInput || canGenerateNewFromOutput
   return (
     <div
       ref={(node) => registerRef(block.id, node)}
@@ -320,60 +317,26 @@ const BlockRow = memo(function BlockRow({
         onClick(block.id)
       }}
     >
-      {hasBranchBadges ? (
-        <div className="block-branch-badges">
-          {branchChildCount > 1 ? (
+      {hasBranches && !isActive ? (
+        <span className="block-branch-marker-anchor">
+          <span
+            className="tooltip tooltip-hover-only"
+            data-tooltip={`${branchChildCount} branches`}
+          >
             <button
-              className="block-branch-badge block-branch-badge-button"
+              className={`block-branch-marker${isForkFocused ? ' is-active' : ''}`}
               type="button"
               onClick={(event) => {
                 event.stopPropagation()
-                onToggleBranchMenu(block.id)
+                onOpenPathsFork(block.id)
               }}
-              title={
-                isBranchMenuOpen
-                  ? 'Hide branch starts'
-                  : 'View branch starts'
-              }
-              aria-haspopup="menu"
-              aria-expanded={isBranchMenuOpen}
-              aria-controls={`branch-menu-${block.id}`}
+              aria-label={`${branchChildCount} branches`}
             >
-              {branchChildCount} branches
+              <span className="codicon codicon-layers" aria-hidden="true" />
+              <span className="block-branch-marker-count">{branchChildCount}</span>
             </button>
-          ) : null}
-        </div>
-      ) : null}
-      {isBranchMenuOpen && branchChildCount > 1 ? (
-        <div
-          className="block-branch-menu"
-          id={`branch-menu-${block.id}`}
-          role="menu"
-          onClick={(event) => event.stopPropagation()}
-        >
-          {branchOptions.map((option, index) => {
-            const isCurrentBranch = activeBranchChildId === option.id
-            return (
-              <button
-                key={option.id}
-                className={`block-branch-menu-item${
-                  isCurrentBranch ? ' is-active' : ''
-                }`}
-                type="button"
-                role="menuitem"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onSelectBranchStart(block.id, option.id)
-                }}
-              >
-                <span className="block-branch-menu-label">{`Branch ${index + 1}`}</span>
-                <span className="block-branch-menu-summary">
-                  {option.summary ?? 'No preview text'}
-                </span>
-              </button>
-            )
-          })}
-        </div>
+          </span>
+        </span>
       ) : null}
       {block.direction === 'input' ? (
         <blockquote className="input-quote">
@@ -398,39 +361,45 @@ const BlockRow = memo(function BlockRow({
         className={`block-edge-actions${isActive ? ' is-visible' : ''}`}
         onClick={(event) => event.stopPropagation()}
       >
-        <button
-          className="block-edge-action"
-          type="button"
-          aria-label="Copy block"
-          title="Copy block"
-          onClick={() => onCopy(block.id)}
-        >
-          <span className="codicon codicon-copy" aria-hidden="true" />
-        </button>
-        <button
-          className="block-edge-action"
-          type="button"
-          aria-label="Retry generation"
-          title="Retry generation"
-          onClick={() => onRetry(block.id)}
-          disabled={!canRetry || isSending}
-        >
-          <span className="codicon codicon-refresh" aria-hidden="true" />
-        </button>
-        <button
-          className={`block-edge-action${isContinuationCursor ? ' is-active' : ''}`}
-          type="button"
-          aria-label="Continue from this block"
-          title={
-            isContinuationCursor
-              ? 'Current continuation target'
-              : 'Continue from this block'
-          }
-          onClick={() => onSetContinuationCursor(block.id)}
-          disabled={!canSetContinuationCursor || isContinuationCursor}
-        >
-          <span className="codicon codicon-git-branch" aria-hidden="true" />
-        </button>
+        {canSetContinuationCursor ? (
+          <span
+            className="tooltip tooltip-hover-only"
+            data-tooltip={
+              isContinuationCursor ? 'Current branch source' : 'Branch from here'
+            }
+          >
+            <button
+              className={`block-edge-action${isContinuationCursor ? ' is-active' : ''}`}
+              type="button"
+              aria-label="Branch from here"
+              onClick={() => onSetContinuationCursor(block.id)}
+            >
+              <span className="codicon codicon-git-branch" aria-hidden="true" />
+            </button>
+          </span>
+        ) : null}
+        {canGenerateNew && !isSending ? (
+          <span className="tooltip tooltip-hover-only" data-tooltip="Generate new">
+            <button
+              className="block-edge-action"
+              type="button"
+              aria-label="Generate new"
+              onClick={() => onRetry(block.id)}
+            >
+              <span className="codicon codicon-refresh" aria-hidden="true" />
+            </button>
+          </span>
+        ) : null}
+        <span className="tooltip tooltip-hover-only" data-tooltip="Copy block">
+          <button
+            className="block-edge-action"
+            type="button"
+            aria-label="Copy block"
+            onClick={() => onCopy(block.id)}
+          >
+            <span className="codicon codicon-copy" aria-hidden="true" />
+          </button>
+        </span>
       </div>
     </div>
   )
@@ -440,8 +409,7 @@ type ChatPaneProps = {
   blocks: Block[]
   activeBlockId: string | null
   branchOptionsByParentId: Record<string, BranchOption[]>
-  activeBranchChildIdByParentId: Record<string, string>
-  openBranchMenuParentId: string | null
+  focusedForkParentId: string | null
   continuationCursorBlockId: string | null
   isSending: boolean
   showEmptyState: boolean
@@ -452,8 +420,7 @@ type ChatPaneProps = {
   onBlockMouseDown: () => void
   onBlockClick: (id: string) => void
   onSetContinuationCursor: (id: string) => void
-  onToggleBranchMenu: (id: string) => void
-  onSelectBranchStart: (parentId: string, childId: string) => void
+  onOpenPathsFork: (id: string) => void
   onRetryBlock: (id: string) => void
   onCopyBlock: (id: string) => void
   registerBlockRef: (id: string, node: HTMLDivElement | null) => void
@@ -463,8 +430,7 @@ const ChatPane = memo(function ChatPane({
   blocks,
   activeBlockId,
   branchOptionsByParentId,
-  activeBranchChildIdByParentId,
-  openBranchMenuParentId,
+  focusedForkParentId,
   continuationCursorBlockId,
   isSending,
   showEmptyState,
@@ -475,8 +441,7 @@ const ChatPane = memo(function ChatPane({
   onBlockMouseDown,
   onBlockClick,
   onSetContinuationCursor,
-  onToggleBranchMenu,
-  onSelectBranchStart,
+  onOpenPathsFork,
   onRetryBlock,
   onCopyBlock,
   registerBlockRef,
@@ -508,17 +473,13 @@ const ChatPane = memo(function ChatPane({
               block={block}
               isActive={block.id === activeBlockId}
               branchOptions={branchOptionsByParentId[block.id] ?? []}
-              activeBranchChildId={
-                activeBranchChildIdByParentId[block.id] ?? null
-              }
-              isBranchMenuOpen={openBranchMenuParentId === block.id}
+              isForkFocused={focusedForkParentId === block.id}
               isContinuationCursor={continuationCursorBlockId === block.id}
               isSending={isSending}
               onMouseDown={onBlockMouseDown}
               onClick={onBlockClick}
               onSetContinuationCursor={onSetContinuationCursor}
-              onToggleBranchMenu={onToggleBranchMenu}
-              onSelectBranchStart={onSelectBranchStart}
+              onOpenPathsFork={onOpenPathsFork}
               onRetry={onRetryBlock}
               onCopy={onCopyBlock}
               registerRef={registerBlockRef}
@@ -552,6 +513,7 @@ function App() {
   const [suppressKeyTooltip, setSuppressKeyTooltip] = useState(false)
   const [suppressNewCollectionTooltip, setSuppressNewCollectionTooltip] =
     useState(false)
+  const [suppressBranchesTooltip, setSuppressBranchesTooltip] = useState(false)
   const [suppressSettingsTooltip, setSuppressSettingsTooltip] = useState(false)
   const [suppressSidebarTooltip, setSuppressSidebarTooltip] = useState(false)
   const [suppressDeleteCollectionTooltip, setSuppressDeleteCollectionTooltip] =
@@ -579,12 +541,14 @@ function App() {
     useState<CollectionRecord | null>(null)
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null)
   const [pathLeafId, setPathLeafId] = useState<string | null>(null)
-  const [openBranchMenuParentId, setOpenBranchMenuParentId] = useState<
-    string | null
-  >(null)
+  const [, setOpenBranchMenuParentId] = useState<string | null>(null)
   const [isPathsPanelOpen, setIsPathsPanelOpen] = useState(false)
+  const [isPathsPanelClosing, setIsPathsPanelClosing] = useState(false)
   const [selectedPathsForkParentId, setSelectedPathsForkParentId] =
     useState<string | null>(null)
+  const [pathsForkCanScrollLeft, setPathsForkCanScrollLeft] = useState(false)
+  const [pathsForkCanScrollRight, setPathsForkCanScrollRight] =
+    useState(false)
   const [selectedCollectionId, setSelectedCollectionId] =
     useState<string | null>(null)
   const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect'>(
@@ -607,11 +571,12 @@ function App() {
   const suppressCopyCollectionTooltipRef = useRef<number | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLElement | null>(null)
-  const pathsAnchorRef = useRef<HTMLDivElement | null>(null)
   const mainColumnRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const blockRefs = useRef(new Map<string, HTMLDivElement>())
+  const pathsForkRowRef = useRef<HTMLDivElement | null>(null)
   const settingsCloseTimeoutRef = useRef<number | null>(null)
+  const pathsPanelCloseTimeoutRef = useRef<number | null>(null)
   const isMountedRef = useRef(true)
   const suppressBlockActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
@@ -777,7 +742,9 @@ function App() {
             const childBlock = persistedBlocksById.get(childId)
             return {
               id: childId,
-              summary: childBlock ? summarizeBlockContent(childBlock.content) : null,
+              summary: childBlock
+                ? summarizeBranchPreview(childBlock.content)
+                : null,
             }
           })
         if (options.length > 1) {
@@ -819,11 +786,19 @@ function App() {
     }
     return activeChildren
   }, [branchOptionsByParentId, visiblePathBlockIds])
+  const allForkParentIds = useMemo(
+    () =>
+      blocks
+        .filter((block) => isPersistedBlockId(block.id))
+        .map((block) => block.id)
+        .filter(
+          (blockId) => (branchOptionsByParentId[blockId]?.length ?? 0) > 1,
+        ),
+    [blocks, branchOptionsByParentId],
+  )
   const pathForkEntries = useMemo(
     () =>
-      visiblePathBlockIds
-        .filter((blockId) => (branchOptionsByParentId[blockId]?.length ?? 0) > 1)
-        .map((parentId, index) => {
+      allForkParentIds.map((parentId, index) => {
           const options = branchOptionsByParentId[parentId] ?? []
           const activeChildId = activeBranchChildIdByParentId[parentId] ?? null
           const activeIndex = activeChildId
@@ -841,26 +816,35 @@ function App() {
             activeIndex,
             summary: summarizeBlockContent(
               persistedBlocksById.get(parentId)?.content ?? '',
+              128,
             ),
           }
         }),
     [
       activeBranchChildIdByParentId,
+      allForkParentIds,
       branchOptionsByParentId,
       persistedBlocksById,
-      visiblePathBlockIds,
     ],
   )
-  const activeForkParentId =
-    pathForkEntries.length > 0
-      ? pathForkEntries[pathForkEntries.length - 1]?.parentId ?? null
-      : null
+  const activePathForkParentId = useMemo(() => {
+    for (let index = visiblePathBlockIds.length - 1; index >= 0; index -= 1) {
+      const blockId = visiblePathBlockIds[index]
+      if (!blockId) {
+        continue
+      }
+      if ((branchOptionsByParentId[blockId]?.length ?? 0) > 1) {
+        return blockId
+      }
+    }
+    return null
+  }, [branchOptionsByParentId, visiblePathBlockIds])
   const hasPathForks = pathForkEntries.length > 0
   const effectivePathsForkParentId =
     selectedPathsForkParentId &&
     pathForkEntries.some((entry) => entry.parentId === selectedPathsForkParentId)
       ? selectedPathsForkParentId
-      : activeForkParentId
+      : activePathForkParentId ?? pathForkEntries[0]?.parentId ?? null
   const selectedPathsForkEntry = useMemo(
     () =>
       effectivePathsForkParentId
@@ -874,6 +858,8 @@ function App() {
     () => selectedPathsForkEntry?.options ?? [],
     [selectedPathsForkEntry],
   )
+  const previewPathsForkText =
+    selectedPathsForkEntry?.summary ?? selectedPathsForkEntry?.shortLabel ?? ''
   const activeBranchChildCount =
     activeBlock && isPersistedBlockId(activeBlock.id)
       ? branchChildCountById[activeBlock.id] ?? 0
@@ -893,28 +879,6 @@ function App() {
     return null
   }, [blocksById, visiblePathBlockIds])
   const effectiveContinuationBlock = defaultContinuationBlock
-  const defaultContinuationSummary = defaultContinuationBlock
-    ? summarizeBlockContent(defaultContinuationBlock.content)
-    : null
-  const latestPersistedContinuationBlock = useMemo(() => {
-    for (let index = blocks.length - 1; index >= 0; index -= 1) {
-      const block = blocks[index]
-      if (!block || !isPersistedBlockId(block.id) || block.status || !block.payload) {
-        continue
-      }
-      return block
-    }
-    return null
-  }, [blocks])
-  const isContinuingFromEarlierBlock = Boolean(
-    effectiveContinuationBlock &&
-      latestPersistedContinuationBlock &&
-      effectiveContinuationBlock.id !== latestPersistedContinuationBlock.id,
-  )
-  const showContinuationStatus = isContinuingFromEarlierBlock
-  const continuationStatusLabel = isContinuingFromEarlierBlock
-    ? defaultContinuationSummary ?? 'Selected block'
-    : 'Latest'
   const activePayload = activeBlock?.payload
   const activeWordMatches = useMemo(
     () => (activeBlock ? activeBlock.content.match(/\S+/g) : null),
@@ -1008,6 +972,24 @@ function App() {
     }
     return null
   }, [inspectorMeta?.requestBaseUrl, inspectorMeta?.requestEngine])
+  const canBranchFromActiveBlock = Boolean(
+    activeBlock &&
+      isPersistedBlockId(activeBlock.id) &&
+      activeBlock.direction === 'output' &&
+      !activeBlock.status,
+  )
+  const canGenerateNewFromActiveInput = Boolean(
+    activeBlock &&
+      activeBlock.direction === 'input' &&
+      isPersistedBlockId(activeBlock.id),
+  )
+  const canGenerateNewFromActiveOutput = Boolean(
+    activeBlock &&
+      activeBlock.direction === 'output' &&
+      (activeBlock.status === 'error' || activeBlock.status === 'canceled'),
+  )
+  const canGenerateNewFromActiveBlock =
+    canGenerateNewFromActiveInput || canGenerateNewFromActiveOutput
   const contextTokens = useMemo(() => {
     for (let index = visibleBlocks.length - 1; index >= 0; index -= 1) {
       const usage = visibleBlocks[index]?.payload?.response?.usage
@@ -1069,6 +1051,8 @@ function App() {
   const canUseFileDialogs =
     typeof window !== 'undefined' &&
     typeof window.ipcRenderer?.invoke === 'function'
+  const isBranchesSurfaceVisible =
+    !isSettingsOpen && hasPathForks && (isPathsPanelOpen || isPathsPanelClosing)
   const isSidebarVisible = isSidebarOpen
 
   const upsertCollection = useCallback((collection: CollectionRecord) => {
@@ -1332,6 +1316,9 @@ function App() {
     return () => {
       if (settingsCloseTimeoutRef.current) {
         window.clearTimeout(settingsCloseTimeoutRef.current)
+      }
+      if (pathsPanelCloseTimeoutRef.current) {
+        window.clearTimeout(pathsPanelCloseTimeoutRef.current)
       }
     }
   }, [])
@@ -1723,13 +1710,6 @@ function App() {
     [blocks, focusComposer],
   )
 
-  const handleToggleBranchMenu = useCallback((parentBlockId: string) => {
-    setIsPathsPanelOpen(false)
-    setOpenBranchMenuParentId((prev) =>
-      prev === parentBlockId ? null : parentBlockId,
-    )
-  }, [])
-
   const resolvePathLeafFromBlock = useCallback(
     (startBlockId: string) => {
       let cursorId: string | null = startBlockId
@@ -1776,31 +1756,75 @@ function App() {
     [branchOptionsByParentId, resolvePathLeafFromBlock, scrollToBlock],
   )
 
+  const handleClosePathsPanel = useCallback(() => {
+    if (!isPathsPanelOpen) {
+      return
+    }
+    if (pathsPanelCloseTimeoutRef.current) {
+      window.clearTimeout(pathsPanelCloseTimeoutRef.current)
+      pathsPanelCloseTimeoutRef.current = null
+    }
+    setIsPathsPanelClosing(true)
+    pathsPanelCloseTimeoutRef.current = window.setTimeout(() => {
+      setIsPathsPanelOpen(false)
+      setIsPathsPanelClosing(false)
+      pathsPanelCloseTimeoutRef.current = null
+    }, 120)
+  }, [isPathsPanelOpen])
+
   const handleTogglePathsPanel = useCallback(() => {
     if (!hasPathForks) {
       return
     }
     setOpenBranchMenuParentId(null)
-    setIsPathsPanelOpen((prev) => {
-      const next = !prev
-      if (next) {
-        setSelectedPathsForkParentId((current) => {
-          if (
-            current &&
-            pathForkEntries.some((entry) => entry.parentId === current)
-          ) {
-            return current
-          }
-          return activeForkParentId
-        })
+    if (isSettingsOpen) {
+      closeSettings()
+      if (pathsPanelCloseTimeoutRef.current) {
+        window.clearTimeout(pathsPanelCloseTimeoutRef.current)
+        pathsPanelCloseTimeoutRef.current = null
       }
-      return next
+      setIsPathsPanelClosing(false)
+      setIsPathsPanelOpen(true)
+      setSelectedPathsForkParentId((current) => {
+        if (
+          current &&
+          pathForkEntries.some((entry) => entry.parentId === current)
+        ) {
+          return current
+        }
+        return activePathForkParentId ?? pathForkEntries[0]?.parentId ?? null
+      })
+      return
+    }
+    if (isPathsPanelOpen && !isPathsPanelClosing) {
+      handleClosePathsPanel()
+      return
+    }
+    if (pathsPanelCloseTimeoutRef.current) {
+      window.clearTimeout(pathsPanelCloseTimeoutRef.current)
+      pathsPanelCloseTimeoutRef.current = null
+    }
+    setIsPathsPanelClosing(false)
+    setIsPathsPanelOpen(true)
+    setSelectedPathsForkParentId((current) => {
+      if (
+        current &&
+        pathForkEntries.some((entry) => entry.parentId === current)
+      ) {
+        return current
+      }
+      return activePathForkParentId ?? pathForkEntries[0]?.parentId ?? null
     })
-  }, [activeForkParentId, hasPathForks, pathForkEntries])
-
-  const handleClosePathsPanel = useCallback(() => {
-    setIsPathsPanelOpen(false)
-  }, [])
+  }, [
+    activePathForkParentId,
+    closeSettings,
+    handleClosePathsPanel,
+    hasPathForks,
+    isSettingsOpen,
+    isPathsPanelClosing,
+    isPathsPanelOpen,
+    pathForkEntries,
+  ])
 
   const handleSelectPathsFork = useCallback(
     (parentId: string) => {
@@ -1810,6 +1834,41 @@ function App() {
       setSelectedPathsForkParentId(parentId)
     },
     [pathForkEntries],
+  )
+
+  const handleOpenPathsFork = useCallback(
+    (parentId: string) => {
+      if (!pathForkEntries.some((entry) => entry.parentId === parentId)) {
+        return
+      }
+      if (
+        isPathsPanelOpen &&
+        !isPathsPanelClosing &&
+        effectivePathsForkParentId === parentId
+      ) {
+        handleClosePathsPanel()
+        return
+      }
+      if (pathsPanelCloseTimeoutRef.current) {
+        window.clearTimeout(pathsPanelCloseTimeoutRef.current)
+        pathsPanelCloseTimeoutRef.current = null
+      }
+      if (isSettingsOpen) {
+        closeSettings()
+      }
+      setIsPathsPanelClosing(false)
+      setIsPathsPanelOpen(true)
+      setSelectedPathsForkParentId(parentId)
+    },
+    [
+      closeSettings,
+      effectivePathsForkParentId,
+      handleClosePathsPanel,
+      isSettingsOpen,
+      isPathsPanelClosing,
+      isPathsPanelOpen,
+      pathForkEntries,
+    ],
   )
 
   const handleSelectPathsBranch = useCallback(
@@ -1825,7 +1884,6 @@ function App() {
       return
     }
     setOpenBranchMenuParentId(null)
-    setIsPathsPanelOpen(false)
     setSelectedPathsForkParentId(null)
     setPathLeafId(latestLeafBlockId)
   }, [latestLeafBlockId])
@@ -1839,11 +1897,55 @@ function App() {
     }
     if (isPathsPanelOpen) {
       setIsPathsPanelOpen(false)
+      setIsPathsPanelClosing(false)
     }
     if (selectedPathsForkParentId !== null) {
       setSelectedPathsForkParentId(null)
     }
   }, [hasPathForks, isPathsPanelOpen, selectedPathsForkParentId])
+
+  const updatePathsForkScrollAffordance = useCallback(() => {
+    const rowEl = pathsForkRowRef.current
+    if (!rowEl) {
+      setPathsForkCanScrollLeft(false)
+      setPathsForkCanScrollRight(false)
+      return
+    }
+    const maxScrollLeft = rowEl.scrollWidth - rowEl.clientWidth
+    const canScrollLeft = rowEl.scrollLeft > 1
+    const canScrollRight = maxScrollLeft - rowEl.scrollLeft > 1
+    setPathsForkCanScrollLeft(canScrollLeft)
+    setPathsForkCanScrollRight(canScrollRight)
+  }, [])
+
+  const handleForkRowScroll = useCallback(() => {
+    updatePathsForkScrollAffordance()
+  }, [updatePathsForkScrollAffordance])
+
+  const handleForkRowScrollBy = useCallback((direction: 'left' | 'right') => {
+    const rowEl = pathsForkRowRef.current
+    if (!rowEl) {
+      return
+    }
+    const delta = Math.max(rowEl.clientWidth * 0.55, 140)
+    rowEl.scrollBy({
+      left: direction === 'left' ? -delta : delta,
+      behavior: 'smooth',
+    })
+  }, [])
+
+  useEffect(() => {
+    if (isPathsPanelOpen) {
+      return
+    }
+    if (pathsPanelCloseTimeoutRef.current) {
+      window.clearTimeout(pathsPanelCloseTimeoutRef.current)
+      pathsPanelCloseTimeoutRef.current = null
+    }
+    if (isPathsPanelClosing) {
+      setIsPathsPanelClosing(false)
+    }
+  }, [isPathsPanelClosing, isPathsPanelOpen])
 
   useEffect(() => {
     if (!selectedPathsForkParentId) {
@@ -1856,40 +1958,60 @@ function App() {
     ) {
       return
     }
-    setSelectedPathsForkParentId(activeForkParentId)
-  }, [activeForkParentId, pathForkEntries, selectedPathsForkParentId])
+    setSelectedPathsForkParentId(
+      activePathForkParentId ?? pathForkEntries[0]?.parentId ?? null,
+    )
+  }, [activePathForkParentId, pathForkEntries, selectedPathsForkParentId])
+
+  useEffect(() => {
+    if (!isPathsPanelOpen) {
+      setPathsForkCanScrollLeft(false)
+      setPathsForkCanScrollRight(false)
+      return
+    }
+    updatePathsForkScrollAffordance()
+  }, [
+    isPathsPanelOpen,
+    pathForkEntries.length,
+    selectedPathsForkEntry,
+    updatePathsForkScrollAffordance,
+  ])
+
+  useEffect(() => {
+    if (!isPathsPanelOpen || typeof ResizeObserver === 'undefined') {
+      return
+    }
+    const rowEl = pathsForkRowRef.current
+    if (!rowEl) {
+      return
+    }
+    const observer = new ResizeObserver(() => {
+      updatePathsForkScrollAffordance()
+    })
+    observer.observe(rowEl)
+    return () => {
+      observer.disconnect()
+    }
+  }, [isPathsPanelOpen, updatePathsForkScrollAffordance])
 
   useEffect(() => {
     if (!isPathsPanelOpen) {
       return
     }
 
-    const handlePointerDown = (event: globalThis.MouseEvent) => {
-      const target = event.target as Node | null
-      if (!target) {
-        return
-      }
-      if (pathsAnchorRef.current?.contains(target)) {
-        return
-      }
-      setIsPathsPanelOpen(false)
-    }
-
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') {
         return
       }
-      setIsPathsPanelOpen(false)
+      handleClosePathsPanel()
     }
 
-    document.addEventListener('mousedown', handlePointerDown)
     document.addEventListener('keydown', handleKeyDown)
 
     return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [isPathsPanelOpen])
+  }, [handleClosePathsPanel, isPathsPanelOpen])
 
   const handleSetContinuationFromActiveBlock = useCallback(() => {
     if (
@@ -3409,14 +3531,48 @@ function App() {
   )
 
   return (
-    <div className={`app${isSettingsOpen ? ' settings-open' : ''}`} ref={appRef}>
+    <div
+      className={`app${isSettingsOpen ? ' settings-open' : ''}${
+        isBranchesSurfaceVisible ? ' branches-open' : ''
+      }`}
+      ref={appRef}
+    >
       <div className={`layout${isSidebarVisible ? ' sidebar-open' : ''}`}>
         <div className="main-stack">
           <header className="header">
             <div className="header-left">
               <div className="header-meta">
-                <div className="header-subtitle">
-                  {headerSubtitle}
+                <div className="header-meta-row">
+                  <div className="header-subtitle">
+                    {headerSubtitle}
+                  </div>
+                  {hasPathForks && !isSettingsOpen ? (
+                    <span
+                      className={`tooltip tooltip-bottom tooltip-hover-only${suppressBranchesTooltip ? ' tooltip-suppressed' : ''}`}
+                      data-tooltip="Branches"
+                      onMouseLeave={() => setSuppressBranchesTooltip(false)}
+                    >
+                      <button
+                        className={`header-paths-toggle header-paths-toggle-inline${
+                          isPathsPanelOpen ? ' is-active' : ''
+                        }`}
+                        type="button"
+                        onClick={() => {
+                          handleTogglePathsPanel()
+                          setSuppressBranchesTooltip(true)
+                        }}
+                        aria-label="Branches"
+                        aria-expanded={isPathsPanelOpen}
+                        aria-controls="header-paths-panel"
+                        onBlur={() => setSuppressBranchesTooltip(false)}
+                      >
+                        <span
+                          className="codicon codicon-layers"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </span>
+                  ) : null}
                 </div>
               </div>
               <div className="header-actions">
@@ -3487,6 +3643,136 @@ function App() {
               </div>
             </div>
           </header>
+          {!isSettingsOpen && isPathsPanelOpen && selectedPathsForkEntry ? (
+            <section
+              className={`paths-hud${isPathsPanelClosing ? ' is-closing' : ''}`}
+              id="header-paths-panel"
+              role="region"
+              aria-label="Branches panel"
+            >
+              <div className="paths-hud-panel composer-paths-panel">
+                <div className="paths-hud-forks">
+                  <div
+                    className={`composer-paths-fork-row-wrap${
+                      pathsForkCanScrollLeft ? ' can-scroll-left' : ''
+                    }${pathsForkCanScrollRight ? ' can-scroll-right' : ''}`}
+                  >
+                    <div
+                      className="composer-paths-fork-row"
+                      ref={pathsForkRowRef}
+                      onScroll={handleForkRowScroll}
+                    >
+                      {pathForkEntries.map((entry) => (
+                        <button
+                          key={entry.parentId}
+                          className={`composer-paths-fork${
+                            entry.parentId === effectivePathsForkParentId
+                              ? ' is-active'
+                              : ''
+                          }${
+                            entry.activeIndex >= 0 ? '' : ' is-off-path'
+                          }`}
+                          type="button"
+                          onClick={() => handleSelectPathsFork(entry.parentId)}
+                        >
+                          <span className="composer-paths-fork-label">
+                            {entry.shortLabel}
+                          </span>
+                          <span
+                            className={`composer-paths-fork-value${
+                              entry.activeIndex >= 0 ? '' : ' is-off-path'
+                            }`}
+                          >
+                            {entry.activeIndex >= 0
+                              ? `${entry.activeIndex + 1}/${entry.options.length}`
+                              : `-/${entry.options.length}`}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    {pathsForkCanScrollLeft ? (
+                      <button
+                        className="composer-paths-fork-scroll composer-paths-fork-scroll-left"
+                        type="button"
+                        onClick={() => handleForkRowScrollBy('left')}
+                        aria-label="Scroll fork points left"
+                      >
+                        <span
+                          className="codicon codicon-chevron-left"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    ) : null}
+                    {pathsForkCanScrollRight ? (
+                      <button
+                        className="composer-paths-fork-scroll composer-paths-fork-scroll-right"
+                        type="button"
+                        onClick={() => handleForkRowScrollBy('right')}
+                        aria-label="Scroll fork points right"
+                      >
+                        <span
+                          className="codicon codicon-chevron-right"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="composer-paths-fork-preview-row">
+                    <div className="composer-paths-fork-preview">
+                      {previewPathsForkText}
+                    </div>
+                    <button
+                      className="header-meta-action composer-paths-latest"
+                      type="button"
+                      onClick={handleBackToLatestPath}
+                      disabled={
+                        !latestLeafBlockId ||
+                        effectivePathLeafId === latestLeafBlockId
+                      }
+                    >
+                      Latest
+                    </button>
+                  </div>
+                </div>
+                <div className="composer-paths-list" role="menu">
+                  {selectedPathsForkOptions.map((option, index) => {
+                    const isCurrentBranch =
+                      option.id === selectedPathsForkEntry.activeChildId
+                    return (
+                      <button
+                        key={option.id}
+                        className={`composer-paths-list-item${
+                          isCurrentBranch ? ' is-active' : ''
+                        }`}
+                        type="button"
+                        role="menuitem"
+                        onClick={() =>
+                          handleSelectPathsBranch(
+                            selectedPathsForkEntry.parentId,
+                            option.id,
+                          )
+                        }
+                      >
+                        <span className="composer-paths-list-main">
+                          <span className="composer-paths-list-label-row">
+                            <span className="composer-paths-list-label">{`Branch ${index + 1}`}</span>
+                            {isCurrentBranch ? (
+                              <span className="composer-paths-list-current">
+                                Current
+                              </span>
+                            ) : null}
+                          </span>
+                          <span className="composer-paths-list-summary">
+                            {option.summary ?? 'No preview text'}
+                          </span>
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            </section>
+          ) : null}
           <div className="main-pane">
             <div
               className="main-column"
@@ -3497,8 +3783,9 @@ function App() {
                 blocks={visibleBlocks}
                 activeBlockId={activeBlockId}
                 branchOptionsByParentId={branchOptionsByParentId}
-                activeBranchChildIdByParentId={activeBranchChildIdByParentId}
-                openBranchMenuParentId={openBranchMenuParentId}
+                focusedForkParentId={
+                  isPathsPanelOpen ? effectivePathsForkParentId : null
+                }
                 continuationCursorBlockId={effectiveContinuationBlock?.id ?? null}
                 isSending={isSending}
                 showEmptyState={hasLoadedBlocks}
@@ -3509,8 +3796,7 @@ function App() {
                 onBlockMouseDown={handleBlockMouseDown}
                 onBlockClick={handleBlockClick}
                 onSetContinuationCursor={handleSetContinuationCursor}
-                onToggleBranchMenu={handleToggleBranchMenu}
-                onSelectBranchStart={handleSelectBranchStart}
+                onOpenPathsFork={handleOpenPathsFork}
                 onRetryBlock={handleRetryContinuation}
                 onCopyBlock={handleCopyBlockFromStream}
                 registerBlockRef={registerBlockRef}
@@ -3787,152 +4073,6 @@ function App() {
             <>
               <footer className="composer" ref={composerRef}>
                 <div className="composer-box">
-                  {hasPathForks || showContinuationStatus ? (
-                    <div
-                      className={`composer-navigation-row${
-                        showContinuationStatus ? '' : ' is-paths-only'
-                      }`}
-                    >
-                      {showContinuationStatus && effectiveContinuationBlock ? (
-                        <div className="composer-branch-row">
-                          <span className="composer-branch-label">From</span>
-                          <span
-                            className="composer-branch-value"
-                            title={
-                              isContinuingFromEarlierBlock
-                                ? defaultContinuationSummary ?? undefined
-                                : undefined
-                            }
-                          >
-                            {continuationStatusLabel}
-                          </span>
-                        </div>
-                      ) : null}
-                      {hasPathForks ? (
-                        <div className="composer-paths-anchor" ref={pathsAnchorRef}>
-                          <div className="composer-paths-row">
-                            <button
-                              className={`composer-paths-toggle${
-                                isPathsPanelOpen ? ' is-active' : ''
-                              }`}
-                              type="button"
-                              onClick={handleTogglePathsPanel}
-                              aria-expanded={isPathsPanelOpen}
-                              aria-controls="composer-paths-panel"
-                              title={
-                                isPathsPanelOpen
-                                  ? 'Hide paths panel'
-                                  : 'Show paths panel'
-                              }
-                            >
-                              <span
-                                className="codicon codicon-git-branch"
-                                aria-hidden="true"
-                              />
-                              <span>{`Paths (${pathForkEntries.length})`}</span>
-                            </button>
-                          </div>
-                          {isPathsPanelOpen && selectedPathsForkEntry ? (
-                            <div
-                              className="composer-paths-panel"
-                              id="composer-paths-panel"
-                              role="dialog"
-                              aria-label="Paths panel"
-                            >
-                              <div className="composer-paths-header">
-                                <span className="composer-paths-title">Path map</span>
-                                <div className="composer-paths-header-actions">
-                                  <button
-                                    className="composer-paths-action"
-                                    type="button"
-                                    onClick={handleBackToLatestPath}
-                                    disabled={
-                                      !latestLeafBlockId ||
-                                      effectivePathLeafId === latestLeafBlockId
-                                    }
-                                  >
-                                    Latest
-                                  </button>
-                                  <button
-                                    className="composer-paths-close"
-                                    type="button"
-                                    onClick={handleClosePathsPanel}
-                                    aria-label="Close paths panel"
-                                  >
-                                    <span
-                                      className="codicon codicon-close"
-                                      aria-hidden="true"
-                                    />
-                                  </button>
-                                </div>
-                              </div>
-                              <div className="composer-paths-fork-row">
-                                {pathForkEntries.map((entry) => (
-                                  <button
-                                    key={entry.parentId}
-                                    className={`composer-paths-fork${
-                                      entry.parentId === effectivePathsForkParentId
-                                        ? ' is-active'
-                                        : ''
-                                    }`}
-                                    type="button"
-                                    onClick={() => handleSelectPathsFork(entry.parentId)}
-                                    title={entry.summary ?? undefined}
-                                  >
-                                    <span className="composer-paths-fork-label">
-                                      {entry.shortLabel}
-                                    </span>
-                                    <span className="composer-paths-fork-value">
-                                      {entry.activeIndex >= 0
-                                        ? `${entry.activeIndex + 1}/${entry.options.length}`
-                                        : `${entry.options.length}`}
-                                    </span>
-                                  </button>
-                                ))}
-                              </div>
-                              <div className="composer-paths-subhead">
-                                {selectedPathsForkEntry.shortLabel}
-                              </div>
-                              <div className="composer-paths-list" role="menu">
-                                {selectedPathsForkOptions.map((option, index) => {
-                                  const isCurrentBranch =
-                                    option.id === selectedPathsForkEntry.activeChildId
-                                  return (
-                                    <button
-                                      key={option.id}
-                                      className={`composer-paths-list-item${
-                                        isCurrentBranch ? ' is-active' : ''
-                                      }`}
-                                      type="button"
-                                      role="menuitem"
-                                      onClick={() =>
-                                        handleSelectPathsBranch(
-                                          selectedPathsForkEntry.parentId,
-                                          option.id,
-                                        )
-                                      }
-                                    >
-                                      <span className="composer-paths-list-head">
-                                        <span className="composer-paths-list-label">{`Branch ${index + 1}`}</span>
-                                        {isCurrentBranch ? (
-                                          <span className="composer-paths-list-current">
-                                            Current
-                                          </span>
-                                        ) : null}
-                                      </span>
-                                      <span className="composer-paths-list-summary">
-                                        {option.summary ?? 'No preview text'}
-                                      </span>
-                                    </button>
-                                  )
-                                })}
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
                   <textarea
                     ref={textareaRef}
                     className="composer-input"
@@ -4163,74 +4303,86 @@ function App() {
               </div>
             ) : activeBlock && inspectorStats ? (
               <>
-                {quickFacts.length > 0 ? (
-                  <div className="sidebar-quick-facts">
-                    {quickFacts.map((fact) => (
-                      <div className="sidebar-quick-fact" key={fact.key}>
-                        {fact.content}
-                      </div>
-                    ))}
-                    <div className="sidebar-quick-fact sidebar-quick-fact-action">
-                      {isPersistedBlockId(activeBlock.id) &&
-                      activeBlock.direction === 'output' &&
-                      !activeBlock.status ? (
-                        <span
-                          className="tooltip tooltip-hover-only tooltip-left"
-                          data-tooltip={
-                            effectiveContinuationBlock?.id === activeBlock.id
-                              ? 'Current continuation target'
-                              : 'Continue from this block'
-                          }
-                        >
-                          <button
-                            className={`sidebar-icon-button${
-                              effectiveContinuationBlock?.id === activeBlock.id
-                                ? ' sidebar-icon-button-ack'
-                                : ''
-                            }`}
-                            type="button"
-                            onClick={handleSetContinuationFromActiveBlock}
-                            aria-label="Continue from this block"
-                          >
-                            <span
-                              className={`codicon ${
-                                effectiveContinuationBlock?.id === activeBlock.id
-                                  ? 'codicon-check'
-                                  : 'codicon-git-branch'
-                              }`}
-                              aria-hidden="true"
-                            />
-                          </button>
-                        </span>
-                      ) : null}
+                <div className="sidebar-quick-facts">
+                  {quickFacts.map((fact) => (
+                    <div className="sidebar-quick-fact" key={fact.key}>
+                      {fact.content}
+                    </div>
+                  ))}
+                  <div className="sidebar-quick-fact sidebar-quick-fact-action">
+                    {canBranchFromActiveBlock ? (
                       <span
-                        className={`tooltip tooltip-hover-only tooltip-left${suppressCopyBlockTooltip ? ' tooltip-suppressed' : ''}`}
+                        className="tooltip tooltip-hover-only tooltip-left"
                         data-tooltip={
-                          copyAckId === activeBlock?.id
-                            ? 'Copied'
-                            : 'Copy block'
+                          effectiveContinuationBlock?.id === activeBlock.id
+                            ? 'Current branch source'
+                            : 'Branch from here'
                         }
-                        onMouseLeave={() => setSuppressCopyBlockTooltip(false)}
                       >
                         <button
-                          className={`sidebar-icon-button${copyAckId === activeBlock?.id ? ' sidebar-icon-button-ack' : ''}`}
+                          className={`sidebar-icon-button${
+                            effectiveContinuationBlock?.id === activeBlock.id
+                              ? ' sidebar-icon-button-ack'
+                              : ''
+                          }`}
                           type="button"
-                          onClick={handleCopyActiveBlock}
-                          aria-label="Copy block"
+                          onClick={handleSetContinuationFromActiveBlock}
+                          aria-label="Branch from here"
                         >
                           <span
                             className={`codicon ${
-                              copyAckId === activeBlock?.id
+                              effectiveContinuationBlock?.id === activeBlock.id
                                 ? 'codicon-check'
-                                : 'codicon-copy'
+                                : 'codicon-git-branch'
                             }`}
                             aria-hidden="true"
                           />
                         </button>
                       </span>
-                    </div>
+                    ) : null}
+                    {canGenerateNewFromActiveBlock && !isSending ? (
+                      <span
+                        className="tooltip tooltip-hover-only tooltip-left"
+                        data-tooltip="Generate new"
+                      >
+                        <button
+                          className="sidebar-icon-button"
+                          type="button"
+                          onClick={() => void handleRetryContinuation(activeBlock.id)}
+                          aria-label="Generate new"
+                        >
+                          <span
+                            className="codicon codicon-refresh"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </span>
+                    ) : null}
+                    <span
+                      className={`tooltip tooltip-hover-only tooltip-left${suppressCopyBlockTooltip ? ' tooltip-suppressed' : ''}`}
+                      data-tooltip={
+                        copyAckId === activeBlock?.id ? 'Copied' : 'Copy block'
+                      }
+                      onMouseLeave={() => setSuppressCopyBlockTooltip(false)}
+                    >
+                      <button
+                        className={`sidebar-icon-button${copyAckId === activeBlock?.id ? ' sidebar-icon-button-ack' : ''}`}
+                        type="button"
+                        onClick={handleCopyActiveBlock}
+                        aria-label="Copy block"
+                      >
+                        <span
+                          className={`codicon ${
+                            copyAckId === activeBlock?.id
+                              ? 'codicon-check'
+                              : 'codicon-copy'
+                          }`}
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </span>
                   </div>
-                ) : null}
+                </div>
                 <div className="sidebar-section">
                   <div className="sidebar-group">
                     <div className="sidebar-group-header">

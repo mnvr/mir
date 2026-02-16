@@ -94,15 +94,17 @@ You can also use keyboard shortcuts:
 
 Mir supports branching within a collection.
 
-- Select a generated/model block and use **Continue from this block** (stream control or Inspect action) to move the continuation cursor.
+- Select a generated/model block and use **Branch from here** (stream control or Inspect action) to move the continuation cursor.
 - Clicking a block selects it for Inspect; selection and continuation cursor are separate.
 - The stream shows one focused branch path at a time (not interleaved sibling branches).
-- When you are on a forked path, a branch navigator appears above the composer with **Prev**, **Next**, **View branches**, and **Back to fork**.
-- Blocks with multiple children show a branch badge (for example, `2 branches`). Click that badge to open branch starts, then select the one you want.
+- Use the **Branches** toggle in the top bar (layers icon) to open the branch map panel under the header.
+- The branch map shows fork-point pills and branch starts for the selected fork point; click any branch start to switch the focused path.
+- Use **Latest** in the branch map to jump back to the latest leaf path.
+- Blocks with multiple children show a compact branch marker in the block corner (layers + count). Click it to open the branches panel focused on that fork point.
 
-To roll a new generation from the same user prompt, select that user block and use **Retry generation**.
+To roll a new generation from the same user prompt, select that user block and use **Generate new**.
 
-If a generation fails, Mir keeps the pending generated block and shows **Retry generation** on that block so you can retry without duplicating the user block.
+If a generation fails, Mir keeps the pending generated block and shows **Generate new** on that block so you can retry without duplicating the user block.
 
 ### Customizing generation parameters
 
@@ -127,7 +129,8 @@ This summary is followed by any actions applicable to that item type.
 * Copy Collection: Copy all blocks in the selected collection as markdown. Blocks with a role "user" are blockquoted.
 * Delete Collection: Delete the collection and all of its blocks. This action asks for a confirmation first.
 * Copy Block: Copy the block's text.
-* Continue from this block: Move the continuation cursor to the selected generated/model block.
+* Branch from here: Move the continuation cursor to the selected generated/model block.
+* Generate new: Re-run generation from the selected user block or retry a failed generated/model block.
 
 This is then followed by various sections giving low-level details about the active item, whichever are applicable:
 
