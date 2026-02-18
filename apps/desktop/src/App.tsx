@@ -310,14 +310,14 @@ const BlockRow = memo(function BlockRow({
       data-block-id={block.id}
       className={`block ${block.direction}${
         block.status ? ` ${block.status}` : ''
-      }${isActive ? ' selected' : ''}`}
+      }${isActive ? ' selected' : ''}${hasBranches ? ' has-branches' : ''}`}
       onMouseDown={onMouseDown}
       onClick={(event) => {
         event.stopPropagation()
         onClick(block.id)
       }}
     >
-      {hasBranches && !isActive ? (
+      {hasBranches ? (
         <span className="block-branch-marker-anchor">
           <span
             className="tooltip tooltip-hover-only"
@@ -990,6 +990,15 @@ function App() {
   )
   const canGenerateNewFromActiveBlock =
     canGenerateNewFromActiveInput || canGenerateNewFromActiveOutput
+  const isOffLatestPath = Boolean(
+    latestLeafBlockId &&
+      effectivePathLeafId &&
+      effectivePathLeafId !== latestLeafBlockId,
+  )
+  const selectedBlockPreview = activeBlock
+    ? summarizeBranchPreview(activeBlock.content)
+    : previewPathsForkText || 'Branch path selected'
+  const showSelectedActionsDock = Boolean(activeBlock || isOffLatestPath)
   const contextTokens = useMemo(() => {
     for (let index = visibleBlocks.length - 1; index >= 0; index -= 1) {
       const usage = visibleBlocks[index]?.payload?.response?.usage
@@ -4071,7 +4080,140 @@ function App() {
           </div>
           {isSettingsOpen ? null : (
             <>
-              <footer className="composer" ref={composerRef}>
+              <footer
+                className={`composer${showSelectedActionsDock ? ' has-selected-actions' : ''}`}
+                ref={composerRef}
+              >
+                {showSelectedActionsDock ? (
+                  <div
+                    className="selected-actions-dock"
+                    role="region"
+                    aria-label="Selected message actions"
+                  >
+                    <div className="selected-actions-summary">
+                      <span className="selected-actions-head">
+                        <span className="selected-actions-label">
+                          {activeBlock ? 'Selected' : 'Branch path'}
+                        </span>
+                        {isOffLatestPath ? (
+                          <span className="selected-actions-state">
+                            Off latest path
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="selected-actions-preview">
+                        {selectedBlockPreview}
+                      </span>
+                    </div>
+                    <div className="selected-actions-buttons">
+                      {isOffLatestPath ? (
+                        <button
+                          className="selected-actions-text-button"
+                          type="button"
+                          onClick={handleBackToLatestPath}
+                        >
+                          Latest path
+                        </button>
+                      ) : null}
+                      {activeBlock ? (
+                        <>
+                          {canBranchFromActiveBlock ? (
+                            <span
+                              className="tooltip tooltip-hover-only"
+                              data-tooltip={
+                                effectiveContinuationBlock?.id === activeBlock.id
+                                  ? 'Current branch source'
+                                  : 'Branch from here'
+                              }
+                            >
+                              <button
+                                className={`sidebar-icon-button${
+                                  effectiveContinuationBlock?.id === activeBlock.id
+                                    ? ' sidebar-icon-button-ack'
+                                    : ''
+                                }`}
+                                type="button"
+                                onClick={handleSetContinuationFromActiveBlock}
+                                aria-label="Branch from here"
+                              >
+                                <span
+                                  className={`codicon ${
+                                    effectiveContinuationBlock?.id === activeBlock.id
+                                      ? 'codicon-check'
+                                      : 'codicon-git-branch'
+                                  }`}
+                                  aria-hidden="true"
+                                />
+                              </button>
+                            </span>
+                          ) : null}
+                          {canGenerateNewFromActiveBlock && !isSending ? (
+                            <span
+                              className="tooltip tooltip-hover-only"
+                              data-tooltip="Generate new"
+                            >
+                              <button
+                                className="sidebar-icon-button"
+                                type="button"
+                                onClick={() =>
+                                  void handleRetryContinuation(activeBlock.id)
+                                }
+                                aria-label="Generate new"
+                              >
+                                <span
+                                  className="codicon codicon-refresh"
+                                  aria-hidden="true"
+                                />
+                              </button>
+                            </span>
+                          ) : null}
+                          <span
+                            className={`tooltip tooltip-hover-only${
+                              suppressCopyBlockTooltip ? ' tooltip-suppressed' : ''
+                            }`}
+                            data-tooltip={
+                              copyAckId === activeBlock.id ? 'Copied' : 'Copy block'
+                            }
+                            onMouseLeave={() => setSuppressCopyBlockTooltip(false)}
+                          >
+                            <button
+                              className={`sidebar-icon-button${
+                                copyAckId === activeBlock.id
+                                  ? ' sidebar-icon-button-ack'
+                                  : ''
+                              }`}
+                              type="button"
+                              onClick={handleCopyActiveBlock}
+                              aria-label="Copy block"
+                            >
+                              <span
+                                className={`codicon ${
+                                  copyAckId === activeBlock.id
+                                    ? 'codicon-check'
+                                    : 'codicon-copy'
+                                }`}
+                                aria-hidden="true"
+                              />
+                            </button>
+                          </span>
+                          <span
+                            className="tooltip tooltip-hover-only"
+                            data-tooltip="Clear selection"
+                          >
+                            <button
+                              className="sidebar-icon-button selected-actions-close-button"
+                              type="button"
+                              onClick={() => setActiveBlockId(null)}
+                              aria-label="Clear selection"
+                            >
+                              <span className="codicon codicon-close" aria-hidden="true" />
+                            </button>
+                          </span>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="composer-box">
                   <textarea
                     ref={textareaRef}
