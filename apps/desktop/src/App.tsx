@@ -571,6 +571,7 @@ function App() {
   const suppressCopyCollectionTooltipRef = useRef<number | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLElement | null>(null)
+  const selectedActionsDockRef = useRef<HTMLDivElement | null>(null)
   const mainColumnRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const blockRefs = useRef(new Map<string, HTMLDivElement>())
@@ -2405,7 +2406,13 @@ function App() {
       }
       const containerRect = container.getBoundingClientRect()
       const composerRect = composerRef.current?.getBoundingClientRect()
-      const effectiveBottom = composerRect?.top ?? containerRect.bottom
+      const selectedActionsRect =
+        selectedActionsDockRef.current?.getBoundingClientRect()
+      const effectiveBottom = Math.min(
+        containerRect.bottom,
+        composerRect?.top ?? containerRect.bottom,
+        selectedActionsRect?.top ?? containerRect.bottom,
+      )
       const availableHeight = effectiveBottom - containerRect.top
       if (availableHeight <= 0) {
         queueScrollToBottom()
@@ -2431,7 +2438,13 @@ function App() {
       followRef.current = isNearBottom()
       stickToBottomRef.current = isAtBottom()
     })
-  }, [getScrollPeekPx, isAtBottom, isNearBottom, markProgrammaticScroll, queueScrollToBottom])
+  }, [
+    getScrollPeekPx,
+    isAtBottom,
+    isNearBottom,
+    markProgrammaticScroll,
+    queueScrollToBottom,
+  ])
 
   const scrollToTop = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -2566,6 +2579,13 @@ function App() {
     }
     queueScrollToBlockForReading(pending.id)
   }, [blocks, queueScrollToBottom, queueScrollToBlockForReading])
+
+  useLayoutEffect(() => {
+    if (!activeBlockId) {
+      return
+    }
+    queueScrollToBlockForReading(activeBlockId)
+  }, [activeBlockId, queueScrollToBlockForReading, showSelectedActionsDock])
 
   useLayoutEffect(() => {
     const appEl = appRef.current
@@ -3509,9 +3529,10 @@ function App() {
       suppressBlockActivationRef.current = false
       setOpenBranchMenuParentId(null)
       setIsPathsPanelOpen(false)
-      setActiveBlockId((prev) => (prev === blockId ? null : blockId))
+      const nextActiveBlockId = activeBlockId === blockId ? null : blockId
+      setActiveBlockId(nextActiveBlockId)
     },
-    [hasTextSelection],
+    [activeBlockId, hasTextSelection],
   )
 
   const registerBlockRef = useCallback(
@@ -3543,6 +3564,8 @@ function App() {
     <div
       className={`app${isSettingsOpen ? ' settings-open' : ''}${
         isBranchesSurfaceVisible ? ' branches-open' : ''
+      }${
+        showSelectedActionsDock ? ' selected-actions-open' : ''
       }`}
       ref={appRef}
     >
@@ -4080,13 +4103,11 @@ function App() {
           </div>
           {isSettingsOpen ? null : (
             <>
-              <footer
-                className={`composer${showSelectedActionsDock ? ' has-selected-actions' : ''}`}
-                ref={composerRef}
-              >
-                {showSelectedActionsDock ? (
+              {showSelectedActionsDock ? (
+                <div className="selected-actions-overlay">
                   <div
                     className="selected-actions-dock"
+                    ref={selectedActionsDockRef}
                     role="region"
                     aria-label="Selected message actions"
                   >
@@ -4213,7 +4234,9 @@ function App() {
                       ) : null}
                     </div>
                   </div>
-                ) : null}
+                </div>
+              ) : null}
+              <footer className="composer" ref={composerRef}>
                 <div className="composer-box">
                   <textarea
                     ref={textareaRef}
