@@ -579,7 +579,7 @@
 .block-branch-marker-anchor {
   position: absolute;
   top: 0;
-  right: -14px;
+  right: -4px;
   z-index: 2;
 }
 
