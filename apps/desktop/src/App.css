@@ -1177,7 +1177,7 @@
 }
 
 .composer {
-  padding: 4px 24px 8px;
+  padding: 5px 24px 8px;
   background: #ffffff;
   border-top: 1px solid rgba(0, 0, 0, 0.06);
   position: sticky;
@@ -1354,12 +1354,11 @@
   padding: 2px 24px 14px;
   border-bottom: 1px solid #ededed;
   background: var(--settings-surface);
-  transition: opacity 120ms ease-out, transform 120ms ease-out;
+  transition: none;
 }
 
 .paths-hud.is-closing {
   opacity: 0;
-  transform: translateY(4px);
 }
 
 .paths-hud-panel {
@@ -1367,8 +1366,8 @@
   width: 100%;
   height: 160px;
   margin: 0 auto;
-  animation: pane-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
-  will-change: transform, opacity;
+  animation: none;
+  will-change: auto;
 }
 
 .composer-paths-panel {
@@ -1499,18 +1498,19 @@
   display: inline-flex;
   align-items: baseline;
   gap: 7px;
-  border: 1px solid #d3d3d3;
+  border: 1px solid #d6d6d6;
   border-radius: 999px;
-  background: #ffffff;
-  color: #5f5f5f;
+  background: #f4f4f4;
+  color: #666666;
   padding: 2px 10px;
   flex: 0 0 auto;
   cursor: pointer;
 }
 
 .composer-paths-fork:hover {
-  background: #f4f4f4;
-  border-color: #cfcfcf;
+  background: #efefef;
+  border-color: #cccccc;
+  color: #4f4f4f;
 }
 
 .composer-paths-fork:focus-visible {
@@ -1519,9 +1519,10 @@
 }
 
 .composer-paths-fork.is-active {
-  border-color: #c8c8c8;
-  background: #f8f8f8;
-  color: #4f4f4f;
+  border-color: #bfc3c8;
+  background: #ffffff;
+  color: #3f3f3f;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
 }
 
 .composer-paths-fork.is-off-path {
@@ -1562,7 +1563,7 @@
 
 .composer-paths-fork-preview {
   font-size: 0.8rem;
-  color: #6c6c6c;
+  color: #5f5f5f;
   line-height: 1.35;
   padding: 0 2px;
   flex: 1 1 auto;
@@ -1576,6 +1577,11 @@
 .composer-paths-latest {
   margin-left: auto;
   flex: 0 0 auto;
+  color: #666666;
+}
+
+.composer-paths-latest:hover {
+  color: #4f4f4f;
 }
 
 .composer-paths-latest:focus-visible {
@@ -1603,7 +1609,7 @@
   width: 100%;
   border: none;
   border-top: 1px solid #ededed;
-  background: #ffffff;
+  background: #fafafa;
   text-align: left;
   padding: 7px 10px;
   cursor: pointer;
@@ -1616,11 +1622,11 @@
 }
 
 .composer-paths-list-item.is-active {
-  background: #f8f8f8;
+  background: #ffffff;
 }
 
 .composer-paths-list-item:hover {
-  background: #f5f5f5;
+  background: #f3f3f3;
 }
 
 .composer-paths-list-item:focus-visible {
@@ -1654,10 +1660,10 @@
   font-size: 0.56rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #666666;
-  border: 1px solid #c9c9c9;
+  color: #555555;
+  border: 1px solid #c8c8c8;
   border-radius: 999px;
-  background: #ffffff;
+  background: #efefef;
   padding: 1px 6px;
   line-height: 1.2;
 }
@@ -1680,7 +1686,7 @@
 .composer-input {
   width: 100%;
   display: block;
-  padding: 7px 0 10px;
+  padding: 9px 0 10px;
   margin-bottom: 8px;
   font-size: var(--type-reading-size);
   line-height: var(--type-reading-leading);
@@ -1959,6 +1965,7 @@
   }
 
   .paths-hud {
+    animation: none;
     transition: none;
   }
 }
@@ -2332,6 +2339,7 @@
     border-color: var(--dm-border-soft);
     background: var(--dm-bg-hover);
     color: var(--dm-text);
+    box-shadow: none;
   }
 
   .composer-paths-fork.is-off-path {
@@ -2394,6 +2402,7 @@
 
   .composer-paths-list-item.is-active {
     background: var(--dm-bg-elev);
+    box-shadow: none;
   }
 
   .composer-paths-list-label {

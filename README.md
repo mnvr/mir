@@ -2,6 +2,8 @@
 
 This is Mir, a new way to interface with LLMs.
 
+![Mir desktop screenshot](docs/mir-screenshot.png)
+
 ## Docs 📚
 
 - [docs/user-guide.md](docs/user-guide.md): User-facing documentation.

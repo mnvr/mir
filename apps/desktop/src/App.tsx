@@ -110,6 +110,7 @@ const SCROLL_NEAR_BOTTOM_RATIO = 0.5
 const SCROLL_STICK_BOTTOM_PX = 8
 const COPY_ACK_DURATION_MS = 1200
 const COPY_TOOLTIP_SUPPRESS_MS = 1100
+const PATHS_PANEL_CLOSE_MS = 0
 
 const MARKDOWN_PLUGINS = [remarkGfm, remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex]
@@ -597,6 +598,7 @@ function App() {
   const collectionLoadIdRef = useRef(0)
   const openSettingsRef = useRef<() => void>(() => {})
   const toggleSidebarRef = useRef<() => void>(() => {})
+  const togglePathsPanelRef = useRef<() => void>(() => {})
   const sidebarTabRef = useRef<(tab: unknown) => void>(() => {})
   const startNewCollectionRef = useRef<() => void>(() => {})
   const submitContinuationRef = useRef<() => void>(() => {})
@@ -1786,7 +1788,7 @@ function App() {
       setIsPathsPanelOpen(false)
       setIsPathsPanelClosing(false)
       pathsPanelCloseTimeoutRef.current = null
-    }, 120)
+    }, PATHS_PANEL_CLOSE_MS)
   }, [isPathsPanelOpen])
 
   const handleTogglePathsPanel = useCallback(() => {
@@ -1842,6 +1844,26 @@ function App() {
     isPathsPanelOpen,
     pathForkEntries,
   ])
+
+  useEffect(() => {
+    togglePathsPanelRef.current = handleTogglePathsPanel
+  }, [handleTogglePathsPanel])
+
+  useEffect(() => {
+    if (!window.ipcRenderer?.on) {
+      return
+    }
+
+    const handleToggleBranchesPanel = () => {
+      togglePathsPanelRef.current()
+    }
+
+    window.ipcRenderer.on('branches:toggle', handleToggleBranchesPanel)
+
+    return () => {
+      window.ipcRenderer.off('branches:toggle', handleToggleBranchesPanel)
+    }
+  }, [])
 
   const handleSelectPathsFork = useCallback(
     (parentId: string) => {
@@ -2623,6 +2645,10 @@ function App() {
       const key = event.key.toLowerCase()
       if (key === 'b') {
         event.preventDefault()
+        if (event.shiftKey) {
+          handleTogglePathsPanel()
+          return
+        }
         updateSidebarOpen((prev) => !prev)
         return
       }
@@ -2652,6 +2678,7 @@ function App() {
   }, [
     blurComposer,
     focusComposer,
+    handleTogglePathsPanel,
     scrollToEnd,
     scrollToTop,
     toggleSidebarTab,

@@ -239,6 +239,13 @@ function setAppMenu() {
       sendToWindow('sidebar:tab', 'inspect')
     },
   }
+  const branchesPanelItem: MenuItemConstructorOptions = {
+    label: 'Toggle Branches Panel',
+    accelerator: 'CmdOrCtrl+Shift+B',
+    click: () => {
+      sendToWindow('branches:toggle')
+    },
+  }
   const selectionPrevItem: MenuItemConstructorOptions = {
     label: 'Select Previous Block',
     accelerator: 'Up',
@@ -376,10 +383,11 @@ function setAppMenu() {
     viewSubmenu.insert(1, new MenuItem({ type: 'separator' }))
     viewSubmenu.insert(2, new MenuItem(interactionsItem))
     viewSubmenu.insert(3, new MenuItem(inspectItem))
-    viewSubmenu.insert(4, new MenuItem({ type: 'separator' }))
-    viewSubmenu.insert(5, new MenuItem(scrollTopItem))
-    viewSubmenu.insert(6, new MenuItem(scrollEndItem))
-    viewSubmenu.insert(7, new MenuItem({ type: 'separator' }))
+    viewSubmenu.insert(4, new MenuItem(branchesPanelItem))
+    viewSubmenu.insert(5, new MenuItem({ type: 'separator' }))
+    viewSubmenu.insert(6, new MenuItem(scrollTopItem))
+    viewSubmenu.insert(7, new MenuItem(scrollEndItem))
+    viewSubmenu.insert(8, new MenuItem({ type: 'separator' }))
   }
 
   const windowMenuItem = menu.items.find(

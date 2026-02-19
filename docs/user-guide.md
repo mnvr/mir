@@ -82,7 +82,7 @@ Tokens you add form a new block, are folded into the current context as a messag
 
 ### Composing blocks
 
-Compose a block in the composer area. Use the Generate button to add it into the context and trigger the generation of a continuation.
+Compose a block in the composer area. Use the Generate Continuation action to add it into the context and trigger the generation of a continuation.
 
 You can also use keyboard shortcuts:
 
@@ -94,17 +94,28 @@ You can also use keyboard shortcuts:
 
 Mir supports branching within a collection.
 
-- Select a generated/model block and use **Branch from here** (stream control or Inspect action) to move the continuation cursor.
-- Clicking a block selects it for Inspect; selection and continuation cursor are separate.
-- The stream shows one focused branch path at a time (not interleaved sibling branches).
-- Use the **Branches** toggle in the top bar (layers icon) to open the branch map panel under the header.
-- The branch map shows fork-point pills and branch starts for the selected fork point; click any branch start to switch the focused path.
-- Use **Latest** in the branch map to jump back to the latest leaf path.
-- Blocks with multiple children show a compact branch marker in the block corner (layers + count). Click it to open the branches panel focused on that fork point.
+Branching means a single parent block can have multiple continuations. Mir shows one active branch path in the stream at a time.
 
-To roll a new generation from the same user prompt, select that user block and use **Generate new**.
+The two primary branch actions are:
 
-If a generation fails, Mir keeps the pending generated block and shows **Generate new** on that block so you can retry without duplicating the user block.
+- Generate new: Create another continuation from the same selected parent block.
+- Branch from here: Use the selected generated block as the source for future continuations.
+
+How to use branching in the UI:
+
+- Click any block to select it. The selection bar above the composer appears with the label Selected.
+- The selection bar can show Branch from here, Generate new, Copy block, and Clear selection depending on the selected block state.
+- If the selected block is already the branch source, Branch from here is disabled.
+- Blocks with multiple children show a layers marker with a count (for example 3 branches). Click it to open Branches panel focused on that branch point.
+- Use Branches in the header (layers icon) to open or close Branches panel.
+- You can also toggle Branches panel with `Ctrl + Shift + B` on Linux/Windows or `Cmd + Shift + B` on macOS.
+- In Branches panel, select a branch point in the top row, then select a branch (Branch 1, Branch 2, and so on) in the list.
+- Use Latest in Branches panel to jump back to the latest branch path.
+- When you are on a non-latest path, the selection bar label changes to Branch path, shows Off latest path, and offers Latest path to return.
+
+To roll a new generation from the same user prompt, select that user block and use Generate new.
+
+If a generation fails, Mir keeps the pending generated block and shows Generate new on that block so you can retry without duplicating the user block.
 
 ### Customizing generation parameters
 
@@ -129,7 +140,7 @@ This summary is followed by any actions applicable to that item type.
 * Copy Collection: Copy all blocks in the selected collection as markdown. Blocks with a role "user" are blockquoted.
 * Delete Collection: Delete the collection and all of its blocks. This action asks for a confirmation first.
 * Copy Block: Copy the block's text.
-* Branch from here: Move the continuation cursor to the selected generated/model block.
+* Branch from here: Move the branch source to the selected generated/model block.
 * Generate new: Re-run generation from the selected user block or retry a failed generated/model block.
 
 This is then followed by various sections giving low-level details about the active item, whichever are applicable:
@@ -210,6 +221,7 @@ To summarize, the import is
 | Toggle Side Bar | Ctrl + B | Cmd + B |
 | Toggle Collections | Ctrl + E | Cmd + E |
 | Toggle Inspect | Ctrl + I | Cmd + I |
+| Toggle Branches Panel | Ctrl + Shift + B | Cmd + Shift + B |
 | Focus composer | Ctrl + L | Cmd + L |
 | Select previous block | Up | Up |
 | Select next block / Focus composer | Down | Down |
@@ -217,6 +229,6 @@ To summarize, the import is
 | Clear selection / Blur composer | Esc | Esc |
 | Scroll to top | Ctrl + Up | Cmd + Up |
 | Scroll to end | Ctrl + Down | Cmd + Down |
-| Generate continuation | Enter | Enter |
+| Generate Continuation | Enter | Enter |
 | New line | Shift + Enter | Shift + Enter |
-| Generate continuation (alternate shortcut) | Ctrl + Enter | Cmd + Enter |
+| Generate Continuation (alternate shortcut) | Ctrl + Enter | Cmd + Enter |
