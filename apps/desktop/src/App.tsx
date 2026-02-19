@@ -27,6 +27,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
 } from 'react'
 import ReactMarkdown from 'react-markdown'
@@ -42,10 +43,12 @@ import {
   getKvValue,
   listCollectionBlockGraph,
   listCollections,
+  searchBlocks,
   setActiveCollectionId,
   setKvValue,
   updateCollectionTitle,
   type CollectionBlockGraph,
+  type BlockSearchResult,
 } from './services/db'
 import {
   applyImport,
@@ -111,6 +114,12 @@ const SCROLL_STICK_BOTTOM_PX = 8
 const COPY_ACK_DURATION_MS = 1200
 const COPY_TOOLTIP_SUPPRESS_MS = 1100
 const PATHS_PANEL_CLOSE_MS = 0
+const SEARCH_DEBOUNCE_MS = 120
+const SEARCH_MIN_QUERY_CHARS = 2
+const SEARCH_RESULT_LIMIT = 80
+const SEARCH_TERM_MAX_COUNT = 8
+const SEARCH_SNIPPET_LENGTH = 220
+const SEARCH_SNIPPET_CONTEXT = 80
 
 const MARKDOWN_PLUGINS = [remarkGfm, remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex]
@@ -200,6 +209,26 @@ const formatQuickTimestamp = (localTimestamp?: string) => {
   return `${parsed.weekdayShort} ${parsed.monthShort} ${parsed.day} · ${timeLabel}`
 }
 
+const formatRelativeAge = (timestampMs: number) => {
+  if (!Number.isFinite(timestampMs)) {
+    return null
+  }
+  const diffMs = Math.max(0, Date.now() - timestampMs)
+  const diffMinutes = Math.floor(diffMs / (1000 * 60))
+  if (diffMinutes < 1) {
+    return 'just now'
+  }
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`
+  }
+  const diffHours = Math.floor(diffMinutes / 60)
+  if (diffHours < 48) {
+    return `${diffHours}h ago`
+  }
+  const diffDays = Math.floor(diffHours / 24)
+  return `${diffDays}d ago`
+}
+
 const summarizeBlockContent = (content: string, maxLength = 84) => {
   const normalized = content.replace(/\s+/g, ' ').trim()
   if (!normalized) {
@@ -209,6 +238,167 @@ const summarizeBlockContent = (content: string, maxLength = 84) => {
     return normalized
   }
   return `${normalized.slice(0, maxLength)}...`
+}
+
+const normalizeSearchQueryText = (value: string) =>
+  value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const tokenizeNormalizedSearchTerms = (value: string) =>
+  Array.from(
+    new Set(
+      normalizeSearchQueryText(value)
+        .split(/[^a-z0-9_]+/g)
+        .map((token) => token.trim())
+        .filter(Boolean),
+    ),
+  )
+
+const tokenizeCaseSensitiveSearchTerms = (value: string) =>
+  Array.from(
+    new Set(
+      value
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .split(/[^A-Za-z0-9_]+/g)
+        .map((token) => token.trim())
+        .filter(Boolean),
+    ),
+  )
+
+const buildSearchSnippetForQuery = (
+  content: string,
+  queryTerms: string[],
+  caseSensitive = false,
+) => {
+  const foldedContent = caseSensitive ? content : content.toLowerCase()
+  const foldedTerms = caseSensitive
+    ? queryTerms
+    : queryTerms.map((term) => term.toLowerCase())
+  let firstMatch = -1
+
+  foldedTerms.forEach((term) => {
+    const matchIndex = foldedContent.indexOf(term)
+    if (matchIndex === -1) {
+      return
+    }
+    if (firstMatch === -1 || matchIndex < firstMatch) {
+      firstMatch = matchIndex
+    }
+  })
+
+  if (firstMatch === -1) {
+    return summarizeBlockContent(content, SEARCH_SNIPPET_LENGTH) ?? content
+  }
+
+  const searchStart = Math.max(0, firstMatch - SEARCH_SNIPPET_CONTEXT)
+  const searchEnd = Math.min(
+    foldedContent.length,
+    searchStart + SEARCH_SNIPPET_LENGTH,
+  )
+  const snippet = content.slice(searchStart, searchEnd).replace(/\s+/g, ' ').trim()
+  const hasPrefix = searchStart > 0
+  const hasSuffix = searchEnd < content.length
+  return `${hasPrefix ? '...' : ''}${snippet}${hasSuffix ? '...' : ''}`
+}
+
+const compareSearchResults = (
+  left: BlockSearchResult,
+  right: BlockSearchResult,
+) => {
+  if (left.score !== right.score) {
+    return right.score - left.score
+  }
+  if (left.blockCreatedAt !== right.blockCreatedAt) {
+    return right.blockCreatedAt - left.blockCreatedAt
+  }
+  if (left.collectionId !== right.collectionId) {
+    return left.collectionId.localeCompare(right.collectionId)
+  }
+  return left.blockId.localeCompare(right.blockId)
+}
+
+const searchDemoBlocks = (
+  query: string,
+  limit = SEARCH_RESULT_LIMIT,
+): BlockSearchResult[] => {
+  const rawQuery = query.trim()
+  const normalizedQuery = normalizeSearchQueryText(rawQuery)
+  if (!normalizedQuery) {
+    return []
+  }
+  const isSmartCaseSensitive = /[A-Z]/.test(rawQuery)
+  const normalizedTerms = tokenizeNormalizedSearchTerms(normalizedQuery)
+    .filter((term) => term.length >= SEARCH_MIN_QUERY_CHARS)
+    .slice(0, SEARCH_TERM_MAX_COUNT)
+  if (normalizedTerms.length === 0) {
+    return []
+  }
+  const caseSensitiveTerms = isSmartCaseSensitive
+    ? tokenizeCaseSensitiveSearchTerms(rawQuery)
+      .filter((term) => term.length >= SEARCH_MIN_QUERY_CHARS)
+      .slice(0, SEARCH_TERM_MAX_COUNT)
+    : []
+
+  const results: BlockSearchResult[] = []
+  demoCollectionBlocks.forEach((block) => {
+    const content = block.payload.content
+    const normalizedContent = normalizeSearchQueryText(content)
+    if (!normalizedContent) {
+      return
+    }
+    const contentTerms = tokenizeNormalizedSearchTerms(normalizedContent)
+    const hasAllNormalizedPrefixes = normalizedTerms.every((term) =>
+      contentTerms.some((contentTerm) => contentTerm.startsWith(term)),
+    )
+    if (!hasAllNormalizedPrefixes) {
+      return
+    }
+    if (
+      isSmartCaseSensitive &&
+      !caseSensitiveTerms.every((term) => content.includes(term))
+    ) {
+      return
+    }
+
+    const phraseMatched = isSmartCaseSensitive
+      ? content.includes(rawQuery)
+      : normalizedContent.includes(normalizedQuery)
+    const matchedTermCount = isSmartCaseSensitive
+      ? caseSensitiveTerms.length
+      : normalizedTerms.length
+    const recencyDays = Math.max(
+      0,
+      (Date.now() - block.createdAt) / (1000 * 60 * 60 * 24),
+    )
+    const recencyBoost = Math.max(0, 8 - Math.log10(recencyDays + 1) * 4)
+    const score =
+      matchedTermCount * 24 + (phraseMatched ? 30 : 0) + Math.round(recencyBoost)
+    const snippet = buildSearchSnippetForQuery(
+      content,
+      isSmartCaseSensitive ? caseSensitiveTerms : normalizedTerms,
+      isSmartCaseSensitive,
+    )
+    results.push({
+      collectionId: demoCollection.id,
+      blockId: block.id,
+      blockCreatedAt: block.createdAt,
+      snippet,
+      score,
+      ...(block.payload.role ? { role: block.payload.role } : {}),
+      ...(block.payload.localTimestamp
+        ? { localTimestamp: block.payload.localTimestamp }
+        : {}),
+    })
+  })
+
+  return results.sort(compareSearchResults).slice(0, limit)
 }
 
 const summarizeForkPointLabel = (content: string) => {
@@ -555,10 +745,14 @@ function App() {
     useState(false)
   const [selectedCollectionId, setSelectedCollectionId] =
     useState<string | null>(null)
-  const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect'>(
+  const [sidebarTab, setSidebarTab] = useState<'chats' | 'inspect' | 'search'>(
     'chats',
   )
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<BlockSearchResult[]>([])
+  const [isSearching, setIsSearching] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
   const [lastRunStats, setLastRunStats] = useState<{
     completionTokens?: number
     latencyMs?: number
@@ -578,6 +772,8 @@ function App() {
   const selectedActionsDockRef = useRef<HTMLDivElement | null>(null)
   const mainColumnRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const searchResultButtonRefs = useRef<Array<HTMLButtonElement | null>>([])
   const blockRefs = useRef(new Map<string, HTMLDivElement>())
   const pathsForkRowRef = useRef<HTMLDivElement | null>(null)
   const settingsCloseTimeoutRef = useRef<number | null>(null)
@@ -596,6 +792,11 @@ function App() {
   const nearBottomBreakRef = useRef(0)
   const submitFollowBreakRef = useRef<number | null>(null)
   const collectionLoadIdRef = useRef(0)
+  const searchRequestIdRef = useRef(0)
+  const pendingSearchJumpRef = useRef<{
+    collectionId: string
+    blockId: string
+  } | null>(null)
   const openSettingsRef = useRef<() => void>(() => {})
   const toggleSidebarRef = useRef<() => void>(() => {})
   const togglePathsPanelRef = useRef<() => void>(() => {})
@@ -898,6 +1099,10 @@ function App() {
     () => groupCollectionsByDay(collections),
     [collections],
   )
+  const collectionsById = useMemo(
+    () => new Map(collections.map((collection) => [collection.id, collection])),
+    [collections],
+  )
   const inspectorStats = useMemo(
     () =>
       activeBlock
@@ -1064,6 +1269,33 @@ function App() {
   const exportPreviewFile = importPreview?.filePath
     ? getFileBasename(importPreview.filePath)
     : null
+  const trimmedSearchQuery = searchQuery.trim()
+  const isSearchQueryTooShort =
+    trimmedSearchQuery.length > 0 &&
+    trimmedSearchQuery.length < SEARCH_MIN_QUERY_CHARS
+  const dedupedSearchResults = useMemo(() => {
+    const seen = new Set<string>()
+    return searchResults.filter((result) => {
+      const key = result.blockId
+      if (seen.has(key)) {
+        return false
+      }
+      seen.add(key)
+      return true
+    })
+  }, [searchResults])
+  const searchResultRows = useMemo(
+    () =>
+      dedupedSearchResults.map((result) => ({
+        ...result,
+        collection:
+          collectionsById.get(result.collectionId) ??
+          (result.collectionId === demoCollection.id ? demoCollection : null),
+        ageLabel: formatRelativeAge(result.blockCreatedAt),
+      })),
+    [collectionsById, dedupedSearchResults],
+  )
+  const isSearchResultsCapped = searchResults.length >= SEARCH_RESULT_LIMIT
   const hasDataPanel = Boolean(importPreview || importSummary || exportSummary)
   const isImportLocked =
     Boolean(importPreview) || isReadingImport || isImportingData
@@ -1197,14 +1429,70 @@ function App() {
     },
     [],
   )
-  const toggleSidebarTab = useCallback(
-    (tab: 'chats' | 'inspect') => {
-      updateSidebarOpen((prev) => !(prev && sidebarTab === tab))
+  const focusSearchInput = useCallback((selectText = false) => {
+    window.requestAnimationFrame(() => {
+      const input = searchInputRef.current
+      if (!input) {
+        return
+      }
+      input.focus()
+      if (selectText) {
+        input.select()
+      }
+    })
+  }, [])
+  const showSidebarTab = useCallback(
+    (
+      tab: 'chats' | 'inspect' | 'search',
+      options?: {
+        focusSearch?: boolean
+      },
+    ) => {
+      updateSidebarOpen(true)
       setSidebarTab(tab)
+      if (tab === 'search' && options?.focusSearch) {
+        focusSearchInput(true)
+      }
     },
-    [sidebarTab, updateSidebarOpen],
+    [focusSearchInput, updateSidebarOpen],
   )
-
+  const handleSearchInputKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== 'ArrowDown') {
+        return
+      }
+      if (searchResultRows.length === 0) {
+        return
+      }
+      event.preventDefault()
+      searchResultButtonRefs.current[0]?.focus()
+    },
+    [searchResultRows.length],
+  )
+  const handleSearchResultKeyDown = useCallback(
+    (index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        event.stopPropagation()
+        const next = searchResultButtonRefs.current[index + 1]
+        if (!next) {
+          return
+        }
+        next.focus()
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        event.stopPropagation()
+        if (index === 0) {
+          searchInputRef.current?.focus()
+          return
+        }
+        searchResultButtonRefs.current[index - 1]?.focus()
+      }
+    },
+    [],
+  )
   const openSettings = useCallback(() => {
     if (settingsCloseTimeoutRef.current) {
       window.clearTimeout(settingsCloseTimeoutRef.current)
@@ -1244,12 +1532,12 @@ function App() {
 
   useEffect(() => {
     sidebarTabRef.current = (tab: unknown) => {
-      if (tab !== 'chats' && tab !== 'inspect') {
+      if (tab !== 'chats' && tab !== 'inspect' && tab !== 'search') {
         return
       }
-      toggleSidebarTab(tab)
+      showSidebarTab(tab, tab === 'search' ? { focusSearch: true } : undefined)
     }
-  }, [toggleSidebarTab])
+  }, [showSidebarTab])
 
   useEffect(() => {
     isMountedRef.current = true
@@ -1496,6 +1784,75 @@ function App() {
     setActiveBlockId(null)
   }, [activeBlockId, visibleBlockIdSet])
 
+  useEffect(() => {
+    const trimmedQuery = searchQuery.trim()
+    const requestId = searchRequestIdRef.current + 1
+    searchRequestIdRef.current = requestId
+
+    if (!trimmedQuery) {
+      setSearchResults([])
+      setSearchError(null)
+      setIsSearching(false)
+      return
+    }
+    if (trimmedQuery.length < SEARCH_MIN_QUERY_CHARS) {
+      setSearchResults([])
+      setSearchError(null)
+      setIsSearching(false)
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setIsSearching(true)
+      setSearchError(null)
+      void searchBlocks(trimmedQuery, { limit: SEARCH_RESULT_LIMIT })
+        .then((results) => {
+          if (
+            !isMountedRef.current ||
+            searchRequestIdRef.current !== requestId
+          ) {
+            return
+          }
+          const combined = [...results, ...searchDemoBlocks(trimmedQuery)]
+            .sort(compareSearchResults)
+            .slice(0, SEARCH_RESULT_LIMIT)
+          setSearchResults(combined)
+        })
+        .catch(() => {
+          if (
+            !isMountedRef.current ||
+            searchRequestIdRef.current !== requestId
+          ) {
+            return
+          }
+          setSearchError('Search failed. Please try again.')
+          setSearchResults([])
+        })
+        .finally(() => {
+          if (
+            !isMountedRef.current ||
+            searchRequestIdRef.current !== requestId
+          ) {
+            return
+          }
+          setIsSearching(false)
+        })
+    }, SEARCH_DEBOUNCE_MS)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [searchQuery])
+
+  useEffect(() => {
+    if (!isSidebarOpen || sidebarTab !== 'search') {
+      return
+    }
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus()
+    })
+  }, [isSidebarOpen, sidebarTab])
+
   const focusComposer = useCallback(() => {
     setActiveBlockId(null)
     const textarea = textareaRef.current
@@ -1525,6 +1882,18 @@ function App() {
         ?.scrollIntoView({ block: 'nearest' })
     })
   }, [])
+
+  const scrollToBlockWithoutSelecting = useCallback(
+    (blockId: string) => {
+      window.requestAnimationFrame(() => {
+        markProgrammaticScroll()
+        blockRefs.current
+          .get(blockId)
+          ?.scrollIntoView({ block: 'nearest' })
+      })
+    },
+    [markProgrammaticScroll],
+  )
 
   const selectPreviousBlock = useCallback(() => {
     if (!visibleBlocks.length) {
@@ -1564,7 +1933,7 @@ function App() {
 
 
   useEffect(() => {
-    const handleArrowNavigation = (event: KeyboardEvent) => {
+    const handleArrowNavigation = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented) {
         return
       }
@@ -2054,7 +2423,7 @@ function App() {
       return
     }
 
-    const handleKeyDown = (event: KeyboardEvent) => {
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape') {
         return
       }
@@ -2151,6 +2520,72 @@ function App() {
       })
   }, [])
 
+  const handleSelectSearchResult = useCallback(
+    (result: BlockSearchResult) => {
+      const targetCollection =
+        collectionsById.get(result.collectionId) ??
+        (activeCollection?.id === result.collectionId ? activeCollection : null)
+      if (!targetCollection) {
+        return
+      }
+
+      pendingSearchJumpRef.current = {
+        collectionId: result.collectionId,
+        blockId: result.blockId,
+      }
+      setActiveBlockId(null)
+
+      if (
+        collectionId === result.collectionId &&
+        hasLoadedBlocks &&
+        blocksById.has(result.blockId)
+      ) {
+        const nextLeafId = resolvePathLeafFromBlock(result.blockId)
+        setPathLeafId(nextLeafId)
+        scrollToBlockWithoutSelecting(result.blockId)
+        pendingSearchJumpRef.current = null
+        return
+      }
+
+      handleSelectCollection(targetCollection)
+    },
+    [
+      activeCollection,
+      blocksById,
+      collectionId,
+      collectionsById,
+      handleSelectCollection,
+      hasLoadedBlocks,
+      resolvePathLeafFromBlock,
+      scrollToBlockWithoutSelecting,
+    ],
+  )
+
+  useEffect(() => {
+    const pendingTarget = pendingSearchJumpRef.current
+    if (!pendingTarget) {
+      return
+    }
+    if (!hasLoadedBlocks || collectionId !== pendingTarget.collectionId) {
+      return
+    }
+    if (!blocksById.has(pendingTarget.blockId)) {
+      pendingSearchJumpRef.current = null
+      return
+    }
+    const nextLeafId = resolvePathLeafFromBlock(pendingTarget.blockId)
+    setPathLeafId(nextLeafId)
+    setActiveBlockId(null)
+    scrollToBlockWithoutSelecting(pendingTarget.blockId)
+    pendingSearchJumpRef.current = null
+  }, [
+    blocksById,
+    collectionId,
+    hasLoadedBlocks,
+    resolvePathLeafFromBlock,
+    scrollToBlockWithoutSelecting,
+  ])
+
   useEffect(() => {
     if (copyAckId && activeBlock?.id !== copyAckId) {
       setCopyAckId(null)
@@ -2194,7 +2629,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const handleCopyShortcut = (event: KeyboardEvent) => {
+    const handleCopyShortcut = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented) {
         return
       }
@@ -2619,7 +3054,7 @@ function App() {
   ])
 
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       const hasPrimaryModifier = IS_MAC ? event.metaKey : event.ctrlKey
       if (!hasPrimaryModifier) {
         if (event.key === 'Escape') {
@@ -2659,15 +3094,21 @@ function App() {
         return
       }
 
+      if (key === 'f') {
+        event.preventDefault()
+        showSidebarTab('search', { focusSearch: true })
+        return
+      }
+
       if (key === 'i') {
         event.preventDefault()
-        toggleSidebarTab('inspect')
+        showSidebarTab('inspect')
         return
       }
 
       if (key === 'e') {
         event.preventDefault()
-        toggleSidebarTab('chats')
+        showSidebarTab('chats')
       }
     }
 
@@ -2681,7 +3122,7 @@ function App() {
     handleTogglePathsPanel,
     scrollToEnd,
     scrollToTop,
-    toggleSidebarTab,
+    showSidebarTab,
     updateSidebarOpen,
   ])
 
@@ -3727,9 +4168,12 @@ function App() {
     [],
   )
 
-  const handleSidebarTabClick = (tab: 'chats' | 'inspect') => {
-    setSidebarTab(tab)
-    updateSidebarOpen(true)
+  const handleSidebarTabClick = (tab: 'chats' | 'inspect' | 'search') => {
+    if (tab === 'search') {
+      showSidebarTab('search', { focusSearch: true })
+      return
+    }
+    showSidebarTab(tab)
   }
 
   const handleSidebarSelectCollection = useCallback(
@@ -4541,8 +4985,14 @@ function App() {
           )}
         </div>
 
-        <aside className="sidebar" id="sidebar" aria-hidden={!isSidebarOpen}>
-          <div className="sidebar-header">
+        <aside
+          className={`sidebar${sidebarTab === 'search' ? ' search-active' : ''}`}
+          id="sidebar"
+          aria-hidden={!isSidebarOpen}
+        >
+          <div
+            className={`sidebar-header${sidebarTab === 'search' ? ' has-search' : ''}`}
+          >
             <div
               className="sidebar-tabs"
               role="tablist"
@@ -4569,6 +5019,22 @@ function App() {
               </span>
               <span
                 className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
+                data-tooltip="Search"
+              >
+                <button
+                  className={`sidebar-tab${sidebarTab === 'search' ? ' active' : ''}`}
+                  type="button"
+                  onClick={() => handleSidebarTabClick('search')}
+                  role="tab"
+                  aria-selected={sidebarTab === 'search'}
+                  aria-controls="sidebar-panel"
+                  aria-label="Search panel"
+                >
+                  <span className="codicon codicon-search" aria-hidden="true" />
+                </button>
+              </span>
+              <span
+                className="tooltip tooltip-bottom tooltip-left tooltip-hover-only"
                 data-tooltip="Inspect"
               >
                 <button
@@ -4587,14 +5053,91 @@ function App() {
                 </button>
               </span>
             </div>
+            {sidebarTab === 'search' ? (
+              <div className="sidebar-header-search">
+                <input
+                  ref={searchInputRef}
+                  className="sidebar-search-input"
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  onKeyDown={handleSearchInputKeyDown}
+                  placeholder="Search blocks across collections"
+                  spellCheck={false}
+                  aria-label="Search blocks"
+                />
+              </div>
+            ) : null}
           </div>
           <div
-            className="sidebar-body"
+            className={`sidebar-body${
+              sidebarTab === 'search' ? ' has-search-header' : ''
+            }`}
             role="tabpanel"
             id="sidebar-panel"
             aria-live="polite"
           >
-            {sidebarTab === 'chats' ? (
+            {sidebarTab === 'search' ? (
+              <div className="search-panel">
+                {!trimmedSearchQuery ? null : isSearchQueryTooShort ? (
+                  <div className="sidebar-empty">
+                    Type at least {SEARCH_MIN_QUERY_CHARS} characters.
+                  </div>
+                ) : isSearching ? (
+                  <div className="sidebar-empty">Searching...</div>
+                ) : searchError ? (
+                  <div className="sidebar-empty">{searchError}</div>
+                ) : searchResultRows.length === 0 ? (
+                  <div className="sidebar-empty">No matches found.</div>
+                ) : (
+                  <div
+                    className="search-results"
+                    role="listbox"
+                    aria-label="Search results"
+                  >
+                    {searchResultRows.map((result, resultIndex) => {
+                      const collectionTitle = result.collection
+                        ? getCollectionTitle(result.collection)
+                        : 'Unknown collection'
+                      const snippet = result.snippet || 'No preview text'
+                      const title = summarizeBlockContent(snippet, 100)
+                      return (
+                        <button
+                          key={`${result.collectionId}:${result.blockId}`}
+                          ref={(node) => {
+                            searchResultButtonRefs.current[resultIndex] = node
+                          }}
+                          type="button"
+                          className="search-result-item"
+                          onClick={() => handleSelectSearchResult(result)}
+                          onKeyDown={(event) =>
+                            handleSearchResultKeyDown(resultIndex, event)
+                          }
+                          role="option"
+                          aria-selected={false}
+                        >
+                          <div className="search-result-title">{title}</div>
+                          <div className="search-result-meta">
+                            <span>{collectionTitle}</span>
+                            {result.ageLabel ? <span>{result.ageLabel}</span> : null}
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+                {trimmedSearchQuery &&
+                !isSearchQueryTooShort &&
+                !isSearching &&
+                !searchError &&
+                isSearchResultsCapped ? (
+                  <div className="search-results-note">
+                    More matches exist. Showing top {SEARCH_RESULT_LIMIT}.
+                  </div>
+                ) : null}
+                <div className="search-results-spacer" aria-hidden="true" />
+              </div>
+            ) : sidebarTab === 'chats' ? (
                   <div className="chat-list" role="listbox" aria-label="Chats">
                     {groupedCollections.map((group) => (
                       <div key={group.key} className="chat-group">

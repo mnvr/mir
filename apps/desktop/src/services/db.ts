@@ -20,9 +20,16 @@ const DB_VERSION = 1
 
 // Local-only derived indexes; safe to drop and rebuild.
 const INDEX_DB_NAME = 'mir-index'
-const INDEX_DB_VERSION = 2
+const INDEX_DB_VERSION = 3
 const RELATION_INDEX_READY_KEY = 'relation_index_ready'
 const COLLECTION_INDEX_READY_KEY = 'collection_index_ready'
+const SEARCH_INDEX_READY_KEY = 'search_index_ready'
+
+const SEARCH_RESULT_DEFAULT_LIMIT = 40
+const SEARCH_TERM_MAX_COUNT = 8
+const SEARCH_TERM_MIN_LENGTH = 2
+const SEARCH_SNIPPET_LENGTH = 220
+const SEARCH_SNIPPET_CONTEXT = 80
 
 const isCollectionRecord = (
   record: MirRecord | undefined | null,
@@ -70,6 +77,32 @@ type CollectionIndexEntry = {
   collectionId: string
 }
 
+type BlockTextIndexEntry = {
+  collectionId: string
+  blockId: string
+  blockCreatedAt: number
+  role?: string
+  localTimestamp?: string
+  content: string
+  normalizedContent: string
+}
+
+type BlockTermIndexEntry = {
+  term: string
+  collectionId: string
+  blockId: string
+}
+
+export type BlockSearchResult = {
+  collectionId: string
+  blockId: string
+  blockCreatedAt: number
+  role?: string
+  localTimestamp?: string
+  snippet: string
+  score: number
+}
+
 export type CollectionBlockGraph = {
   blocks: BlockRecord[]
   parentIdsByBlockId: Record<string, string[]>
@@ -84,6 +117,14 @@ type MirIndexSchema = DBSchema & {
   collection_index: {
     key: [number, string]
     value: CollectionIndexEntry
+  }
+  block_text_index: {
+    key: [string, string]
+    value: BlockTextIndexEntry
+  }
+  block_term_index: {
+    key: [string, string, string]
+    value: BlockTermIndexEntry
   }
   meta: {
     key: string
@@ -122,6 +163,16 @@ const getIndexDb = () => {
         if (!db.objectStoreNames.contains('collection_index')) {
           db.createObjectStore('collection_index', {
             keyPath: ['createdAt', 'collectionId'],
+          })
+        }
+        if (!db.objectStoreNames.contains('block_text_index')) {
+          db.createObjectStore('block_text_index', {
+            keyPath: ['collectionId', 'blockId'],
+          })
+        }
+        if (!db.objectStoreNames.contains('block_term_index')) {
+          db.createObjectStore('block_term_index', {
+            keyPath: ['term', 'collectionId', 'blockId'],
           })
         }
         if (!db.objectStoreNames.contains('meta')) {
@@ -184,6 +235,169 @@ const buildCollectionIndexEntry = (
   collectionId: collection.id,
 })
 
+const normalizeSearchText = (value: string) =>
+  value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const tokenizeSearchTerms = (value: string) =>
+  Array.from(
+    new Set(
+      normalizeSearchText(value)
+        .split(/[^a-z0-9_]+/g)
+        .map((token) => token.trim())
+        .filter(Boolean),
+    ),
+  )
+
+const tokenizeCaseSensitiveSearchTerms = (value: string) =>
+  Array.from(
+    new Set(
+      value
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .split(/[^A-Za-z0-9_]+/g)
+        .map((token) => token.trim())
+        .filter(Boolean),
+    ),
+  )
+
+const buildSearchSnippet = (
+  content: string,
+  queryTerms: string[],
+  fallbackLength = SEARCH_SNIPPET_LENGTH,
+  caseSensitive = false,
+) => {
+  const foldedContent = caseSensitive ? content : content.toLowerCase()
+  const foldedTerms = caseSensitive
+    ? queryTerms
+    : queryTerms.map((term) => term.toLowerCase())
+  let firstMatch = -1
+
+  foldedTerms.forEach((term) => {
+    const matchIndex = foldedContent.indexOf(term)
+    if (matchIndex === -1) {
+      return
+    }
+    if (firstMatch === -1 || matchIndex < firstMatch) {
+      firstMatch = matchIndex
+    }
+  })
+
+  if (firstMatch === -1) {
+    const compact = content.replace(/\s+/g, ' ').trim()
+    if (compact.length <= fallbackLength) {
+      return compact
+    }
+    return `${compact.slice(0, fallbackLength)}...`
+  }
+
+  const searchStart = Math.max(0, firstMatch - SEARCH_SNIPPET_CONTEXT)
+  const searchEnd = Math.min(
+    foldedContent.length,
+    searchStart + SEARCH_SNIPPET_LENGTH,
+  )
+  const snippet = content.slice(searchStart, searchEnd).replace(/\s+/g, ' ').trim()
+  const hasPrefix = searchStart > 0
+  const hasSuffix = searchEnd < content.length
+  return `${hasPrefix ? '...' : ''}${snippet}${hasSuffix ? '...' : ''}`
+}
+
+const buildBlockTextIndexEntry = (
+  block: BlockRecord,
+  collectionId: string,
+): BlockTextIndexEntry => ({
+  collectionId,
+  blockId: block.id,
+  blockCreatedAt: block.createdAt,
+  role: block.payload.role,
+  localTimestamp: block.payload.localTimestamp,
+  content: block.payload.content,
+  normalizedContent: normalizeSearchText(block.payload.content),
+})
+
+const buildBlockTermIndexEntries = (
+  textEntry: BlockTextIndexEntry,
+): BlockTermIndexEntry[] =>
+  tokenizeSearchTerms(textEntry.normalizedContent).map((term) => ({
+    term,
+    collectionId: textEntry.collectionId,
+    blockId: textEntry.blockId,
+  }))
+
+const invalidateSearchIndex = async () => {
+  try {
+    const indexDb = await getIndexDb()
+    await indexDb.delete('meta', SEARCH_INDEX_READY_KEY)
+  } catch {
+    // Ignore index invalidation failures; a future rebuild can recover.
+  }
+}
+
+const rebuildSearchIndex = async (
+  db: IDBPDatabase<MirDbSchema>,
+  indexDb: IDBPDatabase<MirIndexSchema>,
+) => {
+  const [records, relations] = await Promise.all([
+    db.getAll('records'),
+    db.getAll('relations'),
+  ])
+  const collectionsById = new Set(
+    records
+      .filter(isCollectionRecord)
+      .map((collection) => collection.id),
+  )
+  const collectionIdsByBlockId = new Map<string, Set<string>>()
+  relations.forEach((relation) => {
+    if (relation.type !== 'contains') {
+      return
+    }
+    if (!collectionsById.has(relation.fromId)) {
+      return
+    }
+    const existing = collectionIdsByBlockId.get(relation.toId) ?? new Set<string>()
+    existing.add(relation.fromId)
+    collectionIdsByBlockId.set(relation.toId, existing)
+  })
+
+  const blocks = records.filter(isBlockRecord)
+  const textEntries: BlockTextIndexEntry[] = []
+  const termEntries: BlockTermIndexEntry[] = []
+
+  blocks.forEach((block) => {
+    const collectionIds = collectionIdsByBlockId.get(block.id)
+    if (!collectionIds || collectionIds.size === 0) {
+      return
+    }
+    collectionIds.forEach((collectionId) => {
+      const textEntry = buildBlockTextIndexEntry(block, collectionId)
+      textEntries.push(textEntry)
+      termEntries.push(...buildBlockTermIndexEntries(textEntry))
+    })
+  })
+
+  const tx = indexDb.transaction(
+    ['block_text_index', 'block_term_index', 'meta'],
+    'readwrite',
+  )
+  const textStore = tx.objectStore('block_text_index')
+  const termStore = tx.objectStore('block_term_index')
+  await Promise.all([textStore.clear(), termStore.clear()])
+  textEntries.forEach((entry) => {
+    textStore.put(entry)
+  })
+  termEntries.forEach((entry) => {
+    termStore.put(entry)
+  })
+  await tx.objectStore('meta').put(Date.now(), SEARCH_INDEX_READY_KEY)
+  await tx.done
+}
+
 const rebuildRelationIndex = async (
   db: IDBPDatabase<MirDbSchema>,
   indexDb: IDBPDatabase<MirIndexSchema>,
@@ -233,10 +447,25 @@ const ensureCollectionIndexReady = async () => {
   await rebuildCollectionIndex(db, indexDb)
 }
 
+const ensureSearchIndexReady = async () => {
+  const [db, indexDb] = await Promise.all([getDb(), getIndexDb()])
+  const ready = await indexDb.get('meta', SEARCH_INDEX_READY_KEY)
+  if (ready) {
+    return
+  }
+  await rebuildSearchIndex(db, indexDb)
+}
+
 const getRelationIndexRange = (fromId: string, type: RelationType) =>
   IDBKeyRange.bound(
     [fromId, type, 0, ''],
     [fromId, type, Number.MAX_SAFE_INTEGER, '\uffff'],
+  )
+
+const getSearchTermPrefixIndexRange = (termPrefix: string) =>
+  IDBKeyRange.bound(
+    [termPrefix, '', ''],
+    [`${termPrefix}\uffff`, '\uffff', '\uffff'],
   )
 
 const listRelationTargetsByFromType = async (
@@ -277,6 +506,30 @@ const indexCollection = async (collection: CollectionRecord) => {
     } catch {
       // Ignore index failures; it can be rebuilt on demand.
     }
+  }
+}
+
+const indexBlockSearchEntry = async (block: BlockRecord, collectionId: string) => {
+  try {
+    const indexDb = await getIndexDb()
+    const searchReady = await indexDb.get('meta', SEARCH_INDEX_READY_KEY)
+    if (!searchReady) {
+      return
+    }
+
+    const textEntry = buildBlockTextIndexEntry(block, collectionId)
+    const termEntries = buildBlockTermIndexEntries(textEntry)
+    const tx = indexDb.transaction(
+      ['block_text_index', 'block_term_index'],
+      'readwrite',
+    )
+    tx.objectStore('block_text_index').put(textEntry)
+    termEntries.forEach((entry) => {
+      tx.objectStore('block_term_index').put(entry)
+    })
+    await tx.done
+  } catch {
+    await invalidateSearchIndex()
   }
 }
 
@@ -428,6 +681,7 @@ export const deleteCollection = async (collectionId: string) => {
 
   await rebuildRelationIndex(db, indexDb)
   await rebuildCollectionIndex(db, indexDb)
+  await invalidateSearchIndex()
 }
 
 export const listCollections = async (): Promise<CollectionRecord[]> => {
@@ -681,8 +935,150 @@ export const appendBlock = async (
   uniqueRelations.forEach((relation) => {
     void indexRelation(relation)
   })
+  void indexBlockSearchEntry(record as BlockRecord, collectionId)
 
   return record as BlockRecord
+}
+
+export const searchBlocks = async (
+  query: string,
+  options?: {
+    collectionId?: string
+    limit?: number
+  },
+): Promise<BlockSearchResult[]> => {
+  const rawQuery = query.trim()
+  const normalizedQuery = normalizeSearchText(rawQuery)
+  if (!normalizedQuery) {
+    return []
+  }
+  const isSmartCaseSensitive = /[A-Z]/.test(rawQuery)
+
+  const terms = tokenizeSearchTerms(normalizedQuery)
+    .filter((term) => term.length >= SEARCH_TERM_MIN_LENGTH)
+    .slice(0, SEARCH_TERM_MAX_COUNT)
+  if (terms.length === 0) {
+    return []
+  }
+  const caseSensitiveTerms = isSmartCaseSensitive
+    ? tokenizeCaseSensitiveSearchTerms(rawQuery)
+      .filter((term) => term.length >= SEARCH_TERM_MIN_LENGTH)
+      .slice(0, SEARCH_TERM_MAX_COUNT)
+    : []
+
+  await ensureSearchIndexReady()
+  const indexDb = await getIndexDb()
+  const matchesByKey = new Map<
+    string,
+    {
+      collectionId: string
+      blockId: string
+      matchedTerms: Set<string>
+    }
+  >()
+
+  await Promise.all(
+    terms.map(async (term) => {
+      const entries = await indexDb.getAll(
+        'block_term_index',
+        getSearchTermPrefixIndexRange(term),
+      )
+      entries.forEach((entry) => {
+        if (
+          options?.collectionId &&
+          entry.collectionId !== options.collectionId
+        ) {
+          return
+        }
+        const key = `${entry.collectionId}:${entry.blockId}`
+        const existing = matchesByKey.get(key)
+        if (existing) {
+          existing.matchedTerms.add(term)
+          return
+        }
+        matchesByKey.set(key, {
+          collectionId: entry.collectionId,
+          blockId: entry.blockId,
+          matchedTerms: new Set([term]),
+        })
+      })
+    }),
+  )
+
+  const candidates = Array.from(matchesByKey.values()).filter(
+    (candidate) => candidate.matchedTerms.size === terms.length,
+  )
+  if (candidates.length === 0) {
+    return []
+  }
+
+  const indexEntries = await Promise.all(
+    candidates.map((candidate) =>
+      indexDb.get('block_text_index', [candidate.collectionId, candidate.blockId]),
+    ),
+  )
+
+  const results: BlockSearchResult[] = []
+  indexEntries.forEach((entry, index) => {
+    if (!entry) {
+      return
+    }
+    const candidate = candidates[index]
+    if (!candidate) {
+      return
+    }
+    if (
+      isSmartCaseSensitive &&
+      !caseSensitiveTerms.every((term) => entry.content.includes(term))
+    ) {
+      return
+    }
+    const phraseMatched = isSmartCaseSensitive
+      ? entry.content.includes(rawQuery)
+      : entry.normalizedContent.includes(normalizedQuery)
+    const matchedTermCount = isSmartCaseSensitive
+      ? caseSensitiveTerms.length
+      : candidate.matchedTerms.size
+    const recencyDays = Math.max(
+      0,
+      (Date.now() - entry.blockCreatedAt) / (1000 * 60 * 60 * 24),
+    )
+    const recencyBoost = Math.max(0, 8 - Math.log10(recencyDays + 1) * 4)
+    const score =
+      matchedTermCount * 24 + (phraseMatched ? 30 : 0) + Math.round(recencyBoost)
+    const snippet = buildSearchSnippet(
+      entry.content,
+      isSmartCaseSensitive ? caseSensitiveTerms : Array.from(candidate.matchedTerms),
+      SEARCH_SNIPPET_LENGTH,
+      isSmartCaseSensitive,
+    )
+
+    results.push({
+      collectionId: entry.collectionId,
+      blockId: entry.blockId,
+      blockCreatedAt: entry.blockCreatedAt,
+      role: entry.role,
+      localTimestamp: entry.localTimestamp,
+      snippet,
+      score,
+    })
+  })
+
+  const limit = Math.max(1, options?.limit ?? SEARCH_RESULT_DEFAULT_LIMIT)
+  return results
+    .sort((left, right) => {
+      if (left.score !== right.score) {
+        return right.score - left.score
+      }
+      if (left.blockCreatedAt !== right.blockCreatedAt) {
+        return right.blockCreatedAt - left.blockCreatedAt
+      }
+      if (left.collectionId !== right.collectionId) {
+        return left.collectionId.localeCompare(right.collectionId)
+      }
+      return left.blockId.localeCompare(right.blockId)
+    })
+    .slice(0, limit)
 }
 
 export const listAllRecords = async () => {
@@ -710,6 +1106,7 @@ export const writeRecordsAndRelations = async (
     relationStore.put(relation)
   })
   await tx.done
+  await invalidateSearchIndex()
 }
 
 export const indexCollectionsAndRelations = async (

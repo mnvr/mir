@@ -226,17 +226,24 @@ function setAppMenu() {
     },
   }
   const interactionsItem: MenuItemConstructorOptions = {
-    label: 'Toggle Collections',
+    label: 'Show Collections',
     accelerator: 'CmdOrCtrl+E',
     click: () => {
       sendToWindow('sidebar:tab', 'chats')
     },
   }
   const inspectItem: MenuItemConstructorOptions = {
-    label: 'Toggle Inspect',
+    label: 'Show Inspect',
     accelerator: 'CmdOrCtrl+I',
     click: () => {
       sendToWindow('sidebar:tab', 'inspect')
+    },
+  }
+  const searchItem: MenuItemConstructorOptions = {
+    label: 'Show Search',
+    accelerator: 'CmdOrCtrl+F',
+    click: () => {
+      sendToWindow('sidebar:tab', 'search')
     },
   }
   const branchesPanelItem: MenuItemConstructorOptions = {
@@ -343,6 +350,7 @@ function setAppMenu() {
         focusComposerItem,
       ],
     },
+    { role: 'viewMenu' },
     {
       label: 'Generate',
       submenu: [
@@ -352,7 +360,6 @@ function setAppMenu() {
         addNewlineItem,
       ],
     },
-    { role: 'viewMenu' },
     { role: 'windowMenu' },
     { role: 'help' },
   ]
@@ -382,12 +389,14 @@ function setAppMenu() {
     viewSubmenu.insert(0, new MenuItem(sidebarItem))
     viewSubmenu.insert(1, new MenuItem({ type: 'separator' }))
     viewSubmenu.insert(2, new MenuItem(interactionsItem))
-    viewSubmenu.insert(3, new MenuItem(inspectItem))
-    viewSubmenu.insert(4, new MenuItem(branchesPanelItem))
+    viewSubmenu.insert(3, new MenuItem(searchItem))
+    viewSubmenu.insert(4, new MenuItem(inspectItem))
     viewSubmenu.insert(5, new MenuItem({ type: 'separator' }))
-    viewSubmenu.insert(6, new MenuItem(scrollTopItem))
-    viewSubmenu.insert(7, new MenuItem(scrollEndItem))
-    viewSubmenu.insert(8, new MenuItem({ type: 'separator' }))
+    viewSubmenu.insert(6, new MenuItem(branchesPanelItem))
+    viewSubmenu.insert(7, new MenuItem({ type: 'separator' }))
+    viewSubmenu.insert(8, new MenuItem(scrollTopItem))
+    viewSubmenu.insert(9, new MenuItem(scrollEndItem))
+    viewSubmenu.insert(10, new MenuItem({ type: 'separator' }))
   }
 
   const windowMenuItem = menu.items.find(

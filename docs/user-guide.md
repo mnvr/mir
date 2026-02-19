@@ -72,7 +72,23 @@ So the underlying primitives that Mir deals with are _messages_ and _context_. T
 
 A new collection can be started using the New Collection button in the top bar, or via File -> New Collection (`Ctrl + N` on Linux/Windows, `Cmd + N` on macOS).
 
-The list of collections can be seen in the Collections tab of the sidebar (Use `Ctrl + E` on Linux/Windows, `Cmd + E` on macOS to quickly toggle it on and off).
+The list of collections can be seen in the Collections tab of the sidebar (Use `Ctrl + E` on Linux/Windows, `Cmd + E` on macOS to jump to this tab. If the sidebar is closed, this opens it).
+
+## Search
+
+Mir supports full-text search across blocks in all collections.
+
+- Open the Search tab in the sidebar, or press `Ctrl + F` on Linux/Windows or `Cmd + F` on macOS.
+- If Search is already open, the same shortcut focuses the search input and selects the current query.
+- Type a query to search block content. Queries must be at least 2 characters.
+- Search uses smart case matching: case-insensitive by default, but case-sensitive if the query contains uppercase letters.
+- Matches are prefix-based by term, so partial words can match.
+- Results include persisted collections and the built-in demo collection.
+- Select a result to jump to that block and its collection. This clears the current block selection and scrolls to the target block without selecting it.
+- Keyboard navigation: from the search input, `Arrow Down` moves focus into results; inside results, `Arrow Up`/`Arrow Down` moves between results.
+- Results are capped to the top 80 matches; Mir shows a note when more matches exist.
+
+Search indexing is local-only. The index is built on first search, updated incrementally as new blocks are added, and rebuilt on demand when needed (for example after imports or destructive data changes).
 
 ## Blocks
 
@@ -219,8 +235,9 @@ To summarize, the import is
 | New Collection | Ctrl + N | Cmd + N |
 | Open Settings | Ctrl + , | Cmd + , |
 | Toggle Side Bar | Ctrl + B | Cmd + B |
-| Toggle Collections | Ctrl + E | Cmd + E |
-| Toggle Inspect | Ctrl + I | Cmd + I |
+| Show Collections | Ctrl + E | Cmd + E |
+| Show Inspect | Ctrl + I | Cmd + I |
+| Show Search (focus query) | Ctrl + F | Cmd + F |
 | Toggle Branches Panel | Ctrl + Shift + B | Cmd + Shift + B |
 | Focus composer | Ctrl + L | Cmd + L |
 | Select previous block | Up | Up |

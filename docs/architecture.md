@@ -90,3 +90,5 @@ Local indexes and caches are derived from canonical data. These are not synced.
 Examples:
 - `relation_index`: a local index for traversal of relations by
   `(fromId, type, createdAt)`.
+- `block_text_index` / `block_term_index`: local full-text search indexes for
+  block retrieval.
