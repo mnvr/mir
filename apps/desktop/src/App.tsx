@@ -369,10 +369,13 @@ const BlockRow = memo(function BlockRow({
             }
           >
             <button
-              className={`block-edge-action${isContinuationCursor ? ' is-active' : ''}`}
+              className="block-edge-action"
               type="button"
-              aria-label="Branch from here"
+              aria-label={
+                isContinuationCursor ? 'Current branch source' : 'Branch from here'
+              }
               onClick={() => onSetContinuationCursor(block.id)}
+              disabled={isContinuationCursor}
             >
               <span className="codicon codicon-git-branch" aria-hidden="true" />
             </button>
@@ -578,6 +581,10 @@ function App() {
   const pathsForkRowRef = useRef<HTMLDivElement | null>(null)
   const settingsCloseTimeoutRef = useRef<number | null>(null)
   const pathsPanelCloseTimeoutRef = useRef<number | null>(null)
+  const pendingPathsPanelAnchorRef = useRef<{
+    blockId: string
+    offsetTop: number
+  } | null>(null)
   const isMountedRef = useRef(true)
   const suppressBlockActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
@@ -1856,6 +1863,7 @@ function App() {
         !isPathsPanelClosing &&
         effectivePathsForkParentId === parentId
       ) {
+        pendingPathsPanelAnchorRef.current = null
         handleClosePathsPanel()
         return
       }
@@ -1865,6 +1873,21 @@ function App() {
       }
       if (isSettingsOpen) {
         closeSettings()
+      }
+      const container = mainColumnRef.current
+      const node = blockRefs.current.get(parentId)
+      if (container && node) {
+        const containerRect = container.getBoundingClientRect()
+        const nodeRect = node.getBoundingClientRect()
+        pendingPathsPanelAnchorRef.current = {
+          blockId: parentId,
+          offsetTop: nodeRect.top - containerRect.top,
+        }
+      } else {
+        pendingPathsPanelAnchorRef.current = {
+          blockId: parentId,
+          offsetTop: 0,
+        }
       }
       setIsPathsPanelClosing(false)
       setIsPathsPanelOpen(true)
@@ -2446,6 +2469,101 @@ function App() {
     queueScrollToBottom,
   ])
 
+  const queueEnsureBlockVisible = useCallback((blockId: string) => {
+    window.requestAnimationFrame(() => {
+      const container = mainColumnRef.current
+      const node = blockRefs.current.get(blockId)
+      if (!container || !node) {
+        return
+      }
+      const containerRect = container.getBoundingClientRect()
+      const composerRect = composerRef.current?.getBoundingClientRect()
+      const selectedActionsRect =
+        selectedActionsDockRef.current?.getBoundingClientRect()
+      const effectiveBottom = Math.min(
+        containerRect.bottom,
+        composerRect?.top ?? containerRect.bottom,
+        selectedActionsRect?.top ?? containerRect.bottom,
+      )
+      const topInset = 4
+      const bottomInset = 8
+      const minTop = containerRect.top + topInset
+      const maxBottom = effectiveBottom - bottomInset
+      if (maxBottom <= minTop) {
+        return
+      }
+      const nodeRect = node.getBoundingClientRect()
+      if (nodeRect.top >= minTop && nodeRect.bottom <= maxBottom) {
+        followRef.current = isNearBottom()
+        stickToBottomRef.current = isAtBottom()
+        return
+      }
+
+      let delta = 0
+      if (nodeRect.top < minTop) {
+        delta = nodeRect.top - minTop
+      } else if (nodeRect.bottom > maxBottom) {
+        delta = nodeRect.bottom - maxBottom
+      }
+      if (Math.abs(delta) < 1) {
+        followRef.current = isNearBottom()
+        stickToBottomRef.current = isAtBottom()
+        return
+      }
+
+      const nextScrollTop = container.scrollTop + delta
+      const maxScrollTop = container.scrollHeight - container.clientHeight
+      markProgrammaticScroll()
+      container.scrollTop = Math.min(Math.max(nextScrollTop, 0), maxScrollTop)
+      followRef.current = isNearBottom()
+      stickToBottomRef.current = isAtBottom()
+    })
+  }, [isAtBottom, isNearBottom, markProgrammaticScroll])
+
+  const queueEnsureBlockTopVisible = useCallback((blockId: string) => {
+    window.requestAnimationFrame(() => {
+      const container = mainColumnRef.current
+      const node = blockRefs.current.get(blockId)
+      if (!container || !node) {
+        return
+      }
+      const containerRect = container.getBoundingClientRect()
+      const composerRect = composerRef.current?.getBoundingClientRect()
+      const selectedActionsRect =
+        selectedActionsDockRef.current?.getBoundingClientRect()
+      const effectiveBottom = Math.min(
+        containerRect.bottom,
+        composerRect?.top ?? containerRect.bottom,
+        selectedActionsRect?.top ?? containerRect.bottom,
+      )
+      const topInset = 4
+      const bottomInset = 8
+      const minTop = containerRect.top + topInset
+      const maxTop = effectiveBottom - bottomInset
+      if (maxTop <= minTop) {
+        return
+      }
+      const nodeRect = node.getBoundingClientRect()
+      let delta = 0
+      if (nodeRect.top < minTop) {
+        delta = nodeRect.top - minTop
+      } else if (nodeRect.top > maxTop) {
+        delta = nodeRect.top - maxTop
+      }
+      if (Math.abs(delta) < 1) {
+        followRef.current = isNearBottom()
+        stickToBottomRef.current = isAtBottom()
+        return
+      }
+      const nextScrollTop = container.scrollTop + delta
+      const maxScrollTop = container.scrollHeight - container.clientHeight
+      markProgrammaticScroll()
+      container.scrollTop = Math.min(Math.max(nextScrollTop, 0), maxScrollTop)
+      followRef.current = isNearBottom()
+      stickToBottomRef.current = isAtBottom()
+    })
+  }, [isAtBottom, isNearBottom, markProgrammaticScroll])
+
   const scrollToTop = useCallback(() => {
     window.requestAnimationFrame(() => {
       markProgrammaticScroll()
@@ -2584,8 +2702,43 @@ function App() {
     if (!activeBlockId) {
       return
     }
-    queueScrollToBlockForReading(activeBlockId)
-  }, [activeBlockId, queueScrollToBlockForReading, showSelectedActionsDock])
+    queueEnsureBlockVisible(activeBlockId)
+  }, [activeBlockId, queueEnsureBlockVisible])
+
+  useLayoutEffect(() => {
+    if (!isPathsPanelOpen) {
+      pendingPathsPanelAnchorRef.current = null
+      return
+    }
+    const anchor = pendingPathsPanelAnchorRef.current
+    if (!anchor) {
+      return
+    }
+    pendingPathsPanelAnchorRef.current = null
+
+    window.requestAnimationFrame(() => {
+      const container = mainColumnRef.current
+      const node = blockRefs.current.get(anchor.blockId)
+      if (!container || !node) {
+        return
+      }
+
+      const containerRect = container.getBoundingClientRect()
+      const nodeRect = node.getBoundingClientRect()
+      const nextOffsetTop = nodeRect.top - containerRect.top
+      const delta = nextOffsetTop - anchor.offsetTop
+      if (Math.abs(delta) >= 1) {
+        const maxScrollTop = container.scrollHeight - container.clientHeight
+        markProgrammaticScroll()
+        container.scrollTop = Math.min(
+          Math.max(container.scrollTop + delta, 0),
+          maxScrollTop,
+        )
+      }
+
+      queueEnsureBlockTopVisible(anchor.blockId)
+    })
+  }, [isPathsPanelOpen, markProgrammaticScroll, queueEnsureBlockTopVisible])
 
   useLayoutEffect(() => {
     const appEl = appRef.current
@@ -4148,21 +4301,20 @@ function App() {
                               }
                             >
                               <button
-                                className={`sidebar-icon-button${
-                                  effectiveContinuationBlock?.id === activeBlock.id
-                                    ? ' sidebar-icon-button-ack'
-                                    : ''
-                                }`}
+                                className="sidebar-icon-button"
                                 type="button"
                                 onClick={handleSetContinuationFromActiveBlock}
-                                aria-label="Branch from here"
+                                aria-label={
+                                  effectiveContinuationBlock?.id === activeBlock.id
+                                    ? 'Current branch source'
+                                    : 'Branch from here'
+                                }
+                                disabled={
+                                  effectiveContinuationBlock?.id === activeBlock.id
+                                }
                               >
                                 <span
-                                  className={`codicon ${
-                                    effectiveContinuationBlock?.id === activeBlock.id
-                                      ? 'codicon-check'
-                                      : 'codicon-git-branch'
-                                  }`}
+                                  className="codicon codicon-git-branch"
                                   aria-hidden="true"
                                 />
                               </button>
@@ -4485,21 +4637,18 @@ function App() {
                         }
                       >
                         <button
-                          className={`sidebar-icon-button${
-                            effectiveContinuationBlock?.id === activeBlock.id
-                              ? ' sidebar-icon-button-ack'
-                              : ''
-                          }`}
+                          className="sidebar-icon-button"
                           type="button"
                           onClick={handleSetContinuationFromActiveBlock}
-                          aria-label="Branch from here"
+                          aria-label={
+                            effectiveContinuationBlock?.id === activeBlock.id
+                              ? 'Current branch source'
+                              : 'Branch from here'
+                          }
+                          disabled={effectiveContinuationBlock?.id === activeBlock.id}
                         >
                           <span
-                            className={`codicon ${
-                              effectiveContinuationBlock?.id === activeBlock.id
-                                ? 'codicon-check'
-                                : 'codicon-git-branch'
-                            }`}
+                            className="codicon codicon-git-branch"
                             aria-hidden="true"
                           />
                         </button>

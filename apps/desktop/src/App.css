@@ -590,9 +590,9 @@
   width: 16px;
   height: 16px;
   min-width: 16px;
-  border: 1px solid #d5d5d5;
-  border-radius: 999px;
-  background: #ffffff;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   color: #6a6a6a;
   display: inline-flex;
   align-items: center;
@@ -605,6 +605,8 @@
 
 .block-branch-marker .codicon {
   font-size: 10px;
+  opacity: 0.9;
+  transition: opacity 120ms ease;
 }
 
 .block-branch-marker-count {
@@ -627,15 +629,18 @@
 }
 
 .block-branch-marker:hover {
-  background: #f4f4f4;
-  border-color: #cfcfcf;
+  background: transparent;
   color: #4f4f4f;
 }
 
 .block-branch-marker.is-active {
-  border-color: #c8c8c8;
-  background: #f8f8f8;
+  background: transparent;
   color: #4f4f4f;
+}
+
+.block-branch-marker:hover .codicon,
+.block-branch-marker.is-active .codicon {
+  opacity: 1;
 }
 
 .block-branch-marker:focus-visible {
@@ -708,6 +713,16 @@
 
 .block-edge-action:hover .codicon {
   opacity: 1;
+}
+
+.block-edge-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.block-edge-action:disabled:hover {
+  background: transparent;
+  color: inherit;
 }
 
 .block-edge-action.is-active {
@@ -1078,6 +1093,11 @@
 .sidebar-icon-button:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.sidebar-icon-button:disabled:hover {
+  background: transparent;
+  color: inherit;
 }
 
 .sidebar-icon-button .codicon {
@@ -2162,8 +2182,8 @@
   }
 
   .block-branch-marker {
-    border-color: var(--dm-border);
-    background: var(--dm-bg);
+    border: none;
+    background: transparent;
     color: var(--dm-text-subtle);
   }
 
@@ -2174,14 +2194,12 @@
   }
 
   .block-branch-marker:hover {
-    border-color: var(--dm-border-soft);
-    background: var(--dm-bg-hover);
+    background: transparent;
     color: var(--dm-text);
   }
 
   .block-branch-marker.is-active {
-    border-color: var(--dm-border-soft);
-    background: var(--dm-bg-hover);
+    background: transparent;
     color: var(--dm-text);
   }
 
