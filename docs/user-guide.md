@@ -74,6 +74,10 @@ A new collection can be started using the New Collection button in the top bar, 
 
 The list of collections can be seen in the Collections tab of the sidebar (Use `Ctrl + E` on Linux/Windows, `Cmd + E` on macOS to jump to this tab. If the sidebar is closed, this opens it).
 
+Collection titles are automatically derived from your first message. Mir cleans markdown/bullet syntax and keeps titles concise so they stay readable in the sidebar.
+
+Collection rows show relative age (`m/h/d/M/y ago`) for fast scanning. Exact timestamps remain available in Inspect.
+
 ## Search
 
 Mir supports full-text search across blocks in all collections.
@@ -84,8 +88,10 @@ Mir supports full-text search across blocks in all collections.
 - Search uses smart case matching: case-insensitive by default, but case-sensitive if the query contains uppercase letters.
 - Matches are prefix-based by term, so partial words can match.
 - Results include persisted collections and the built-in demo collection.
+- Results are grouped by collection, with per-collection match counts.
+- If a collection title matches but no block content in that collection matches, Mir shows an `Open collection` row for that section.
 - Select a result to jump to that block and its collection. This clears the current block selection and scrolls to the target block without selecting it.
-- Keyboard navigation: from the search input, `Arrow Down` moves focus into results; inside results, `Arrow Up`/`Arrow Down` moves between results.
+- Keyboard navigation: from the search input, `Arrow Down` moves focus into results; inside results, `Arrow Up`/`Arrow Down` moves between results (including `Open collection` rows).
 - Results are capped to the top 80 matches; Mir shows a note when more matches exist.
 
 Search indexing is local-only. The index is built on first search, updated incrementally as new blocks are added, and rebuilt on demand when needed (for example after imports or destructive data changes).
