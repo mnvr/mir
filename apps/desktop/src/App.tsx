@@ -27,6 +27,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
 } from 'react'
@@ -269,6 +270,103 @@ const tokenizeCaseSensitiveSearchTerms = (value: string) =>
         .split(/[^A-Za-z0-9_]+/g)
         .map((token) => token.trim())
         .filter(Boolean),
+    ),
+  )
+
+type SearchHighlightConfig = {
+  caseSensitive: boolean
+  terms: string[]
+}
+
+type SearchHighlightSegment = {
+  text: string
+  matched: boolean
+}
+
+const escapeSearchRegexTerm = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const buildSearchHighlightConfig = (query: string): SearchHighlightConfig => {
+  const rawQuery = query.trim()
+  if (!rawQuery) {
+    return {
+      caseSensitive: false,
+      terms: [],
+    }
+  }
+  const caseSensitive = /[A-Z]/.test(rawQuery)
+  const terms = (
+    caseSensitive
+      ? tokenizeCaseSensitiveSearchTerms(rawQuery)
+      : tokenizeNormalizedSearchTerms(rawQuery)
+  )
+    .filter((term) => term.length >= SEARCH_MIN_QUERY_CHARS)
+    .slice(0, SEARCH_TERM_MAX_COUNT)
+    .sort((left, right) => right.length - left.length)
+  return {
+    caseSensitive,
+    terms,
+  }
+}
+
+const buildSearchHighlightSegments = (
+  text: string,
+  config: SearchHighlightConfig,
+): SearchHighlightSegment[] => {
+  if (!text || config.terms.length === 0) {
+    return [{ text, matched: false }]
+  }
+
+  const matcher = new RegExp(
+    config.terms.map((term) => escapeSearchRegexTerm(term)).join('|'),
+    config.caseSensitive ? 'g' : 'gi',
+  )
+  const segments: SearchHighlightSegment[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null = matcher.exec(text)
+
+  while (match) {
+    const matchedText = match[0] ?? ''
+    const matchStart = match.index
+    if (matchStart > lastIndex) {
+      segments.push({
+        text: text.slice(lastIndex, matchStart),
+        matched: false,
+      })
+    }
+    if (matchedText.length > 0) {
+      segments.push({
+        text: matchedText,
+        matched: true,
+      })
+      lastIndex = matchStart + matchedText.length
+    }
+    if (matcher.lastIndex <= matchStart) {
+      matcher.lastIndex = matchStart + 1
+    }
+    match = matcher.exec(text)
+  }
+
+  if (lastIndex < text.length) {
+    segments.push({
+      text: text.slice(lastIndex),
+      matched: false,
+    })
+  }
+
+  return segments.length > 0 ? segments : [{ text, matched: false }]
+}
+
+const renderSearchHighlightSegments = (
+  segments: SearchHighlightSegment[],
+): ReactNode[] =>
+  segments.map((segment, index) =>
+    segment.matched ? (
+      <mark className="search-result-highlight" key={`m-${index}`}>
+        {segment.text}
+      </mark>
+    ) : (
+      <span key={`t-${index}`}>{segment.text}</span>
     ),
   )
 
@@ -1273,6 +1371,10 @@ function App() {
   const isSearchQueryTooShort =
     trimmedSearchQuery.length > 0 &&
     trimmedSearchQuery.length < SEARCH_MIN_QUERY_CHARS
+  const searchHighlightConfig = useMemo(
+    () => buildSearchHighlightConfig(trimmedSearchQuery),
+    [trimmedSearchQuery],
+  )
   const dedupedSearchResults = useMemo(() => {
     const seen = new Set<string>()
     return searchResults.filter((result) => {
@@ -1286,16 +1388,39 @@ function App() {
   }, [searchResults])
   const searchResultRows = useMemo(
     () =>
-      dedupedSearchResults.map((result) => ({
-        ...result,
-        collection:
-          collectionsById.get(result.collectionId) ??
-          (result.collectionId === demoCollection.id ? demoCollection : null),
-        ageLabel: formatRelativeAge(result.blockCreatedAt),
-      })),
-    [collectionsById, dedupedSearchResults],
+      dedupedSearchResults.map((result) => {
+        const previewText =
+          summarizeBlockContent(
+            result.snippet || 'No preview text',
+            SEARCH_SNIPPET_LENGTH,
+          ) ?? (result.snippet || 'No preview text')
+        return {
+          ...result,
+          collection:
+            collectionsById.get(result.collectionId) ??
+            (result.collectionId === demoCollection.id ? demoCollection : null),
+          ageLabel: formatRelativeAge(result.blockCreatedAt),
+          previewSegments: buildSearchHighlightSegments(
+            previewText,
+            searchHighlightConfig,
+          ),
+        }
+      }),
+    [collectionsById, dedupedSearchResults, searchHighlightConfig],
   )
   const isSearchResultsCapped = searchResults.length >= SEARCH_RESULT_LIMIT
+  const hasSearchQuery = trimmedSearchQuery.length > 0
+  const showSearchResults =
+    hasSearchQuery &&
+    !isSearchQueryTooShort &&
+    !searchError &&
+    searchResultRows.length > 0
+  const showSearchNoMatches =
+    hasSearchQuery &&
+    !isSearchQueryTooShort &&
+    !searchError &&
+    !isSearching &&
+    searchResultRows.length === 0
   const hasDataPanel = Boolean(importPreview || importSummary || exportSummary)
   const isImportLocked =
     Boolean(importPreview) || isReadingImport || isImportingData
@@ -5057,17 +5182,34 @@ function App() {
             </div>
             {sidebarTab === 'search' ? (
               <div className="sidebar-header-search">
-                <input
-                  ref={searchInputRef}
-                  className="sidebar-search-input"
-                  type="text"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  onKeyDown={handleSearchInputKeyDown}
-                  placeholder="Search blocks across collections"
-                  spellCheck={false}
-                  aria-label="Search blocks"
-                />
+                <div
+                  className={`sidebar-search-input-wrap${
+                    isSearching && !isSearchQueryTooShort ? ' is-searching' : ''
+                  }`}
+                >
+                  <input
+                    ref={searchInputRef}
+                    className="sidebar-search-input"
+                    type="text"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    onKeyDown={handleSearchInputKeyDown}
+                    placeholder="Search blocks across collections"
+                    spellCheck={false}
+                    aria-label="Search blocks"
+                  />
+                  {isSearching && !isSearchQueryTooShort ? (
+                    <span
+                      className="sidebar-search-spinner codicon codicon-loading"
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                </div>
+                {isSearchQueryTooShort ? (
+                  <div className="sidebar-search-helper">
+                    Type at least {SEARCH_MIN_QUERY_CHARS} characters.
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -5081,28 +5223,21 @@ function App() {
           >
             {sidebarTab === 'search' ? (
               <div className="search-panel">
-                {!trimmedSearchQuery ? null : isSearchQueryTooShort ? (
-                  <div className="sidebar-empty">
-                    Type at least {SEARCH_MIN_QUERY_CHARS} characters.
-                  </div>
-                ) : isSearching ? (
-                  <div className="sidebar-empty">Searching...</div>
-                ) : searchError ? (
+                {searchError && hasSearchQuery && !isSearchQueryTooShort ? (
                   <div className="sidebar-empty">{searchError}</div>
-                ) : searchResultRows.length === 0 ? (
+                ) : showSearchNoMatches ? (
                   <div className="sidebar-empty">No matches found.</div>
-                ) : (
+                ) : showSearchResults ? (
                   <div
                     className="search-results"
                     role="listbox"
                     aria-label="Search results"
+                    aria-busy={isSearching}
                   >
                     {searchResultRows.map((result, resultIndex) => {
                       const collectionTitle = result.collection
                         ? getCollectionTitle(result.collection)
                         : 'Unknown collection'
-                      const snippet = result.snippet || 'No preview text'
-                      const title = summarizeBlockContent(snippet, 100)
                       return (
                         <button
                           key={`${result.collectionId}:${result.blockId}`}
@@ -5118,7 +5253,9 @@ function App() {
                           role="option"
                           aria-selected={false}
                         >
-                          <div className="search-result-title">{title}</div>
+                          <div className="search-result-title">
+                            {renderSearchHighlightSegments(result.previewSegments)}
+                          </div>
                           <div className="search-result-meta">
                             <span>{collectionTitle}</span>
                             {result.ageLabel ? <span>{result.ageLabel}</span> : null}
@@ -5127,7 +5264,7 @@ function App() {
                       )
                     })}
                   </div>
-                )}
+                ) : null}
                 {trimmedSearchQuery &&
                 !isSearchQueryTooShort &&
                 !isSearching &&
