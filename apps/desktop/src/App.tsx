@@ -127,6 +127,8 @@ const SEARCH_SNIPPET_LENGTH = 220
 const SEARCH_SNIPPET_CONTEXT = 80
 const SEARCH_RESULT_PREVIEW_LENGTH = 148
 const SEARCH_RESULT_PREVIEW_CONTEXT = 30
+const COLLECTION_TITLE_MIN_LENGTH = 14
+const COLLECTION_TITLE_MAX_LENGTH = 72
 
 const MARKDOWN_PLUGINS = [remarkGfm, remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex]
@@ -170,13 +172,63 @@ const recordToBlock = (record: BlockRecord): Block => ({
 const getCollectionTitle = (collection: CollectionRecord) =>
   collection.payload.title ?? 'Untitled'
 
-const getCollectionTimestamp = (collection: CollectionRecord) =>
-  collection.payload.localTimestamp
+const normalizeCollectionTitleLine = (line: string) =>
+  line
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
+    .replace(/(\*\*|__|\*|_|~~)/g, '')
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^>\s?/, '')
+    .replace(/^\s*[-*+]\s+/, '')
+    .replace(/^\s*\d+[.)]\s+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const truncateCollectionTitle = (title: string) => {
+  const compact = title.replace(/\s+/g, ' ').trim()
+  if (!compact) {
+    return NEW_COLLECTION_TITLE
+  }
+  if (compact.length <= COLLECTION_TITLE_MAX_LENGTH) {
+    return compact
+  }
+
+  const maxWindow = COLLECTION_TITLE_MAX_LENGTH + 18
+  const preview = compact.slice(0, maxWindow)
+  const boundaryPattern = /[.!?;:]\s+/g
+  let boundaryIndex = -1
+  let match: RegExpExecArray | null = boundaryPattern.exec(preview)
+  while (match) {
+    if (match.index >= Math.floor(COLLECTION_TITLE_MAX_LENGTH * 0.55)) {
+      boundaryIndex = match.index + 1
+    }
+    match = boundaryPattern.exec(preview)
+  }
+  if (boundaryIndex >= 0) {
+    return preview.slice(0, boundaryIndex).trim()
+  }
+
+  const lastSpace = preview.lastIndexOf(' ')
+  const cutAt =
+    lastSpace >= Math.floor(COLLECTION_TITLE_MAX_LENGTH * 0.7)
+      ? lastSpace
+      : COLLECTION_TITLE_MAX_LENGTH
+  return `${preview.slice(0, cutAt).trim()}…`
+}
 
 const deriveCollectionTitle = (content: string) => {
-  const lines = content.split('\n').map((line) => line.trim())
-  const firstLine = lines.find((line) => line.length > 0) ?? content.trim()
-  return firstLine.slice(0, 120)
+  const normalizedLines = content
+    .split('\n')
+    .map((line) => normalizeCollectionTitleLine(line))
+    .filter(Boolean)
+  const candidate =
+    normalizedLines.find(
+      (line) =>
+        line.length >= COLLECTION_TITLE_MIN_LENGTH && /[A-Za-z0-9]/.test(line),
+    ) ??
+    normalizedLines.find((line) => /[A-Za-z0-9]/.test(line)) ??
+    normalizeCollectionTitleLine(content)
+  return truncateCollectionTitle(candidate)
 }
 
 const formatTokenCount = (count?: number) =>
@@ -233,8 +285,22 @@ const formatRelativeAge = (timestampMs: number) => {
     return `${diffHours}h ago`
   }
   const diffDays = Math.floor(diffHours / 24)
-  return `${diffDays}d ago`
+  if (diffDays < 30) {
+    return `${diffDays}d ago`
+  }
+  const diffMonths = Math.floor(diffDays / 30)
+  if (diffMonths < 12) {
+    return `${diffMonths}M ago`
+  }
+  const diffYears = Math.floor(diffDays / 365)
+  return `${diffYears}y ago`
 }
+
+const formatCollectionListMetaTimestamp = (collection: CollectionRecord) =>
+  formatRelativeAge(collection.createdAt) ??
+  formatQuickTimestamp(collection.payload.localTimestamp) ??
+  collection.payload.localTimestamp ??
+  '—'
 
 const summarizeBlockContent = (content: string, maxLength = 84) => {
   const normalized = content.replace(/\s+/g, ' ').trim()
@@ -5706,7 +5772,9 @@ function App() {
                             {getCollectionTitle(collection)}
                           </div>
                           <div className="chat-list-meta">
-                            <span>{getCollectionTimestamp(collection)}</span>
+                            <span>
+                              {formatCollectionListMetaTimestamp(collection)}
+                            </span>
                           </div>
                         </button>
                       ))}
@@ -5730,7 +5798,9 @@ function App() {
                             {getCollectionTitle(collection)}
                           </div>
                           <div className="chat-list-meta">
-                            <span>{getCollectionTimestamp(collection)}</span>
+                            <span>
+                              {formatCollectionListMetaTimestamp(collection)}
+                            </span>
                           </div>
                         </button>
                       ))}
