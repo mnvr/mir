@@ -10,7 +10,7 @@
   --header-height: 56px;
   --composer-height: 96px;
   --selected-actions-height: 44px;
-  --selected-actions-gap: 10px;
+  --selected-actions-gap: 0px;
   --settings-surface: #fafafa;
   --type-reading-size: 1.02rem;
   --type-reading-leading: 1.5;
@@ -1386,25 +1386,33 @@
 
 .selected-actions-overlay {
   position: absolute;
-  left: 16px;
-  right: 16px;
+  left: 0;
+  right: 0;
   bottom: calc(var(--composer-height) + var(--selected-actions-gap));
   z-index: 8;
   pointer-events: none;
 }
 
 .selected-actions-dock {
+  width: 100%;
+  padding-inline: 24px;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 0;
+  background: #ffffff;
+  pointer-events: auto;
+}
+
+.selected-actions-dock-inner {
   max-width: 784px;
   margin: 0 auto;
-  padding: 6px 8px 6px 12px;
-  border: 1px solid #d9d9d9;
-  border-radius: 8px;
-  background: #ffffff;
+  padding: 6px 1px 6px 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  pointer-events: auto;
 }
 
 .selected-actions-summary {
@@ -1414,7 +1422,7 @@
   align-items: flex-start;
   gap: 2px;
   flex: 1 1 auto;
-  padding-left: 4px;
+  padding-left: 0;
   padding-right: 8px;
 }
 
@@ -1475,7 +1483,7 @@
 
 .selected-actions-close-button .codicon-close {
   position: relative;
-  left: -0.8px;
+  left: 0;
 }
 
 .selected-actions-text-button {
@@ -2048,20 +2056,18 @@
   }
 
   .chat,
-  .composer-box,
-  .selected-actions-dock {
+  .composer-box {
     max-width: 100%;
   }
 
-  .selected-actions-overlay {
-    left: 12px;
-    right: 12px;
+  .selected-actions-dock {
+    padding-inline: 24px;
   }
 
-  .selected-actions-dock {
+  .selected-actions-dock-inner {
     flex-wrap: wrap;
     gap: 6px;
-    padding: 6px 8px;
+    padding: 6px 1px 6px 0;
   }
 
   .selected-actions-summary {
@@ -2414,7 +2420,7 @@
   }
 
   .selected-actions-dock {
-    border-color: var(--dm-border);
+    border-top-color: var(--dm-border-soft);
     background: var(--dm-bg-panel);
   }
 
