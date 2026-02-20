@@ -21,12 +21,14 @@ import {
 } from 'mir-core'
 import {
   memo,
+  startTransition,
   useEffect,
   useLayoutEffect,
   useCallback,
   useMemo,
   useRef,
   useState,
+  type ChangeEvent as ReactChangeEvent,
   type ReactNode,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
@@ -115,12 +117,16 @@ const SCROLL_STICK_BOTTOM_PX = 8
 const COPY_ACK_DURATION_MS = 1200
 const COPY_TOOLTIP_SUPPRESS_MS = 1100
 const PATHS_PANEL_CLOSE_MS = 0
-const SEARCH_DEBOUNCE_MS = 120
+const SEARCH_INPUT_DEBOUNCE_MS = 120
+const SEARCH_SPINNER_DELAY_MS = 180
+const SEARCH_GROUP_BUILD_IDLE_TIMEOUT_MS = 90
 const SEARCH_MIN_QUERY_CHARS = 2
 const SEARCH_RESULT_LIMIT = 80
 const SEARCH_TERM_MAX_COUNT = 8
 const SEARCH_SNIPPET_LENGTH = 220
 const SEARCH_SNIPPET_CONTEXT = 80
+const SEARCH_RESULT_PREVIEW_LENGTH = 148
+const SEARCH_RESULT_PREVIEW_CONTEXT = 30
 
 const MARKDOWN_PLUGINS = [remarkGfm, remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex]
@@ -283,6 +289,26 @@ type SearchHighlightSegment = {
   matched: boolean
 }
 
+type SearchResultRow = BlockSearchResult & {
+  collection: CollectionRecord | null
+  ageLabel: string | null
+  previewText: string
+}
+
+type SearchResultGroupedRow = SearchResultRow & {
+  rowIndex: number
+  previewSegments: SearchHighlightSegment[]
+}
+
+type SearchResultGroup = {
+  collectionId: string
+  collection: CollectionRecord | null
+  collectionTitle: string
+  collectionTitleSegments: SearchHighlightSegment[]
+  collectionActionRowIndex: number | null
+  rows: SearchResultGroupedRow[]
+}
+
 const escapeSearchRegexTerm = (value: string) =>
   value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -369,6 +395,139 @@ const renderSearchHighlightSegments = (
       <span key={`t-${index}`}>{segment.text}</span>
     ),
   )
+
+const buildSearchResultPreviewText = (
+  source: string,
+  config: SearchHighlightConfig,
+) => {
+  const compact = source.replace(/\s+/g, ' ').trim()
+  if (!compact) {
+    return 'No preview text'
+  }
+  if (config.terms.length === 0) {
+    return summarizeBlockContent(compact, SEARCH_RESULT_PREVIEW_LENGTH) ?? compact
+  }
+
+  const foldedSource = config.caseSensitive ? compact : compact.toLowerCase()
+  const foldedTerms = config.caseSensitive
+    ? config.terms
+    : config.terms.map((term) => term.toLowerCase())
+  let firstMatch = -1
+
+  foldedTerms.forEach((term) => {
+    const matchIndex = foldedSource.indexOf(term)
+    if (matchIndex === -1) {
+      return
+    }
+    if (firstMatch === -1 || matchIndex < firstMatch) {
+      firstMatch = matchIndex
+    }
+  })
+
+  if (firstMatch === -1) {
+    return summarizeBlockContent(compact, SEARCH_RESULT_PREVIEW_LENGTH) ?? compact
+  }
+
+  const previewStart = Math.max(0, firstMatch - SEARCH_RESULT_PREVIEW_CONTEXT)
+  const previewEnd = Math.min(
+    compact.length,
+    previewStart + SEARCH_RESULT_PREVIEW_LENGTH,
+  )
+  const preview = compact.slice(previewStart, previewEnd).trim()
+  const hasPrefix = previewStart > 0
+  const hasSuffix = previewEnd < compact.length
+  return `${hasPrefix ? '...' : ''}${preview}${hasSuffix ? '...' : ''}`
+}
+
+const buildGroupedSearchResults = (
+  searchResultRows: SearchResultRow[],
+  searchableCollections: CollectionRecord[],
+  query: string,
+): SearchResultGroup[] => {
+  const config = buildSearchHighlightConfig(query)
+  const shouldFilterRowsByQuery = query.length >= SEARCH_MIN_QUERY_CHARS
+  const groups: SearchResultGroup[] = []
+  const groupByCollectionId = new Map<string, SearchResultGroup>()
+
+  searchResultRows.forEach((result) => {
+    const previewText = buildSearchResultPreviewText(result.previewText, config)
+    const previewSegments = buildSearchHighlightSegments(previewText, config)
+    const hasPreviewHighlight = previewSegments.some((segment) => segment.matched)
+    if (shouldFilterRowsByQuery && !hasPreviewHighlight) {
+      return
+    }
+    const collectionTitle = result.collection
+      ? getCollectionTitle(result.collection)
+      : 'Unknown collection'
+    const groupedRow: SearchResultGroupedRow = {
+      ...result,
+      previewText,
+      rowIndex: -1,
+      previewSegments,
+    }
+    const existingGroup = groupByCollectionId.get(result.collectionId)
+    if (existingGroup) {
+      existingGroup.rows.push(groupedRow)
+      return
+    }
+    const collectionTitleSegments = buildSearchHighlightSegments(collectionTitle, config)
+    const nextGroup: SearchResultGroup = {
+      collectionId: result.collectionId,
+      collection: result.collection,
+      collectionTitle,
+      collectionTitleSegments,
+      collectionActionRowIndex: null,
+      rows: [groupedRow],
+    }
+    groupByCollectionId.set(result.collectionId, nextGroup)
+    groups.push(nextGroup)
+  })
+
+  if (shouldFilterRowsByQuery) {
+    searchableCollections.forEach((collection) => {
+      const collectionTitle = getCollectionTitle(collection)
+      const collectionTitleSegments = buildSearchHighlightSegments(
+        collectionTitle,
+        config,
+      )
+      const hasCollectionTitleHighlight = collectionTitleSegments.some(
+        (segment) => segment.matched,
+      )
+      if (!hasCollectionTitleHighlight) {
+        return
+      }
+      if (groupByCollectionId.has(collection.id)) {
+        return
+      }
+      const nextGroup: SearchResultGroup = {
+        collectionId: collection.id,
+        collection,
+        collectionTitle,
+        collectionTitleSegments,
+        collectionActionRowIndex: null,
+        rows: [],
+      }
+      groupByCollectionId.set(collection.id, nextGroup)
+      groups.push(nextGroup)
+    })
+  }
+
+  let renderedRowIndex = 0
+  groups.forEach((group) => {
+    if (group.rows.length === 0 && group.collection) {
+      group.collectionActionRowIndex = renderedRowIndex
+      renderedRowIndex += 1
+    } else {
+      group.collectionActionRowIndex = null
+    }
+    group.rows.forEach((row) => {
+      row.rowIndex = renderedRowIndex
+      renderedRowIndex += 1
+    })
+  })
+
+  return groups
+}
 
 const buildSearchSnippetForQuery = (
   content: string,
@@ -848,8 +1007,15 @@ function App() {
   )
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [isSearchQueryDirty, setIsSearchQueryDirty] = useState(false)
+  const [searchResultQuery, setSearchResultQuery] = useState('')
   const [searchResults, setSearchResults] = useState<BlockSearchResult[]>([])
+  const [groupedSearchResultRows, setGroupedSearchResultRows] = useState<
+    SearchResultGroup[]
+  >([])
+  const [groupedSearchQuery, setGroupedSearchQuery] = useState('')
   const [isSearching, setIsSearching] = useState(false)
+  const [showSearchSpinner, setShowSearchSpinner] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
   const [lastRunStats, setLastRunStats] = useState<{
     completionTokens?: number
@@ -869,8 +1035,11 @@ function App() {
   const composerRef = useRef<HTMLElement | null>(null)
   const selectedActionsDockRef = useRef<HTMLDivElement | null>(null)
   const mainColumnRef = useRef<HTMLDivElement | null>(null)
+  const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const searchInputValueRef = useRef('')
+  const searchInputDebounceRef = useRef<number | null>(null)
   const searchResultButtonRefs = useRef<Array<HTMLButtonElement | null>>([])
   const blockRefs = useRef(new Map<string, HTMLDivElement>())
   const pathsForkRowRef = useRef<HTMLDivElement | null>(null)
@@ -891,6 +1060,7 @@ function App() {
   const submitFollowBreakRef = useRef<number | null>(null)
   const collectionLoadIdRef = useRef(0)
   const searchRequestIdRef = useRef(0)
+  const groupedSearchRequestIdRef = useRef(0)
   const pendingSearchJumpRef = useRef<{
     collectionId: string
     blockId: string
@@ -1371,10 +1541,9 @@ function App() {
   const isSearchQueryTooShort =
     trimmedSearchQuery.length > 0 &&
     trimmedSearchQuery.length < SEARCH_MIN_QUERY_CHARS
-  const searchHighlightConfig = useMemo(
-    () => buildSearchHighlightConfig(trimmedSearchQuery),
-    [trimmedSearchQuery],
-  )
+  const searchDisplayQuery = trimmedSearchQuery
+  const hasSettledSearchForDisplayQuery =
+    searchResultQuery === searchDisplayQuery
   const dedupedSearchResults = useMemo(() => {
     const seen = new Set<string>()
     return searchResults.filter((result) => {
@@ -1386,41 +1555,64 @@ function App() {
       return true
     })
   }, [searchResults])
-  const searchResultRows = useMemo(
+  const searchResultRows = useMemo<SearchResultRow[]>(
     () =>
       dedupedSearchResults.map((result) => {
         const previewText =
-          summarizeBlockContent(
-            result.snippet || 'No preview text',
-            SEARCH_SNIPPET_LENGTH,
-          ) ?? (result.snippet || 'No preview text')
+          result.snippet?.replace(/\s+/g, ' ').trim() || 'No preview text'
         return {
           ...result,
           collection:
             collectionsById.get(result.collectionId) ??
             (result.collectionId === demoCollection.id ? demoCollection : null),
           ageLabel: formatRelativeAge(result.blockCreatedAt),
-          previewSegments: buildSearchHighlightSegments(
-            previewText,
-            searchHighlightConfig,
-          ),
+          previewText,
         }
       }),
-    [collectionsById, dedupedSearchResults, searchHighlightConfig],
+    [collectionsById, dedupedSearchResults],
   )
+  const searchableCollections = useMemo(() => {
+    const byId = new Map<string, CollectionRecord>()
+    orderedCollections.forEach((collection) => {
+      byId.set(collection.id, collection)
+    })
+    demoCollections.forEach((collection) => {
+      byId.set(collection.id, collection)
+    })
+    return Array.from(byId.values())
+  }, [orderedCollections])
   const isSearchResultsCapped = searchResults.length >= SEARCH_RESULT_LIMIT
   const hasSearchQuery = trimmedSearchQuery.length > 0
+  const isGroupedSearchReady = groupedSearchQuery === searchDisplayQuery
+  const searchNavigableResultCount = useMemo(
+    () =>
+      groupedSearchResultRows.reduce(
+        (count, group) =>
+          count +
+          group.rows.length +
+          (group.collectionActionRowIndex === null ? 0 : 1),
+        0,
+      ),
+    [groupedSearchResultRows],
+  )
+  const hasSearchGroups = groupedSearchResultRows.length > 0
   const showSearchResults =
     hasSearchQuery &&
     !isSearchQueryTooShort &&
     !searchError &&
-    searchResultRows.length > 0
+    !isSearchQueryDirty &&
+    hasSettledSearchForDisplayQuery &&
+    isGroupedSearchReady &&
+    hasSearchGroups
   const showSearchNoMatches =
     hasSearchQuery &&
     !isSearchQueryTooShort &&
     !searchError &&
+    !isSearchQueryDirty &&
+    hasSettledSearchForDisplayQuery &&
+    isGroupedSearchReady &&
     !isSearching &&
-    searchResultRows.length === 0
+    !hasSearchGroups
   const hasDataPanel = Boolean(importPreview || importSummary || exportSummary)
   const isImportLocked =
     Boolean(importPreview) || isReadingImport || isImportingData
@@ -1560,6 +1752,9 @@ function App() {
       if (!input) {
         return
       }
+      if (input.value !== searchInputValueRef.current) {
+        input.value = searchInputValueRef.current
+      }
       input.focus()
       if (selectText) {
         input.select()
@@ -1586,13 +1781,31 @@ function App() {
       if (event.key !== 'ArrowDown') {
         return
       }
-      if (searchResultRows.length === 0) {
+      if (!showSearchResults || searchNavigableResultCount === 0) {
         return
       }
       event.preventDefault()
       searchResultButtonRefs.current[0]?.focus()
     },
-    [searchResultRows.length],
+    [searchNavigableResultCount, showSearchResults],
+  )
+  const handleSearchInputChange = useCallback(
+    (event: ReactChangeEvent<HTMLInputElement>) => {
+      const nextQuery = event.target.value
+      searchInputValueRef.current = nextQuery
+      setIsSearchQueryDirty((prev) => (prev ? prev : true))
+      if (searchInputDebounceRef.current) {
+        window.clearTimeout(searchInputDebounceRef.current)
+      }
+      searchInputDebounceRef.current = window.setTimeout(() => {
+        if (!isMountedRef.current) {
+          return
+        }
+        setSearchQuery(nextQuery)
+        setIsSearchQueryDirty(false)
+      }, SEARCH_INPUT_DEBOUNCE_MS)
+    },
+    [],
   )
   const handleSearchResultKeyDown = useCallback(
     (index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => {
@@ -1611,6 +1824,10 @@ function App() {
         event.stopPropagation()
         if (index === 0) {
           searchInputRef.current?.focus()
+          const sidebarBody = sidebarBodyRef.current
+          if (sidebarBody) {
+            sidebarBody.scrollTop = 0
+          }
           return
         }
         searchResultButtonRefs.current[index - 1]?.focus()
@@ -1668,6 +1885,14 @@ function App() {
     isMountedRef.current = true
     return () => {
       isMountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (searchInputDebounceRef.current) {
+        window.clearTimeout(searchInputDebounceRef.current)
+      }
     }
   }, [])
 
@@ -1916,65 +2141,187 @@ function App() {
 
     if (!trimmedQuery) {
       setSearchResults([])
+      setSearchResultQuery('')
       setSearchError(null)
       setIsSearching(false)
       return
     }
     if (trimmedQuery.length < SEARCH_MIN_QUERY_CHARS) {
       setSearchResults([])
+      setSearchResultQuery('')
       setSearchError(null)
       setIsSearching(false)
       return
     }
 
+    setIsSearching(true)
+    setSearchError(null)
+    void searchBlocks(trimmedQuery, { limit: SEARCH_RESULT_LIMIT })
+      .then((results) => {
+        if (
+          !isMountedRef.current ||
+          searchRequestIdRef.current !== requestId
+        ) {
+          return
+        }
+        const combined = [...results, ...searchDemoBlocks(trimmedQuery)]
+          .sort(compareSearchResults)
+          .slice(0, SEARCH_RESULT_LIMIT)
+        setSearchResults(combined)
+        setSearchResultQuery(trimmedQuery)
+      })
+      .catch(() => {
+        if (
+          !isMountedRef.current ||
+          searchRequestIdRef.current !== requestId
+        ) {
+          return
+        }
+        setSearchError('Search failed. Please try again.')
+        setSearchResults([])
+        setSearchResultQuery(trimmedQuery)
+      })
+      .finally(() => {
+        if (
+          !isMountedRef.current ||
+          searchRequestIdRef.current !== requestId
+        ) {
+          return
+        }
+        setIsSearching(false)
+      })
+  }, [searchQuery])
+
+  useEffect(() => {
+    const query = searchDisplayQuery
+    const requestId = groupedSearchRequestIdRef.current + 1
+    groupedSearchRequestIdRef.current = requestId
+    searchResultButtonRefs.current = []
+
+    if (!query || query.length < SEARCH_MIN_QUERY_CHARS) {
+      setGroupedSearchResultRows([])
+      setGroupedSearchQuery(query)
+      return
+    }
+
+    if (isSearchQueryDirty) {
+      setGroupedSearchResultRows([])
+      setGroupedSearchQuery('')
+      return
+    }
+
+    if (!hasSettledSearchForDisplayQuery) {
+      setGroupedSearchResultRows([])
+      setGroupedSearchQuery('')
+      return
+    }
+
+    const schedulerWindow = window as Window & {
+      requestIdleCallback?: (
+        callback: () => void,
+        options?: {
+          timeout?: number
+        },
+      ) => number
+      cancelIdleCallback?: (handle: number) => void
+    }
+
+    let timeoutId: number | null = null
+    let idleCallbackId: number | null = null
+    const runBuild = () => {
+      if (
+        !isMountedRef.current ||
+        groupedSearchRequestIdRef.current !== requestId
+      ) {
+        return
+      }
+      const groups = buildGroupedSearchResults(
+        searchResultRows,
+        searchableCollections,
+        query,
+      )
+      if (
+        !isMountedRef.current ||
+        groupedSearchRequestIdRef.current !== requestId
+      ) {
+        return
+      }
+      startTransition(() => {
+        setGroupedSearchResultRows(groups)
+        setGroupedSearchQuery(query)
+      })
+    }
+
+    if (typeof schedulerWindow.requestIdleCallback === 'function') {
+      idleCallbackId = schedulerWindow.requestIdleCallback(runBuild, {
+        timeout: SEARCH_GROUP_BUILD_IDLE_TIMEOUT_MS,
+      })
+    } else {
+      timeoutId = window.setTimeout(runBuild, 0)
+    }
+
+    return () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId)
+      }
+      if (
+        idleCallbackId !== null &&
+        typeof schedulerWindow.cancelIdleCallback === 'function'
+      ) {
+        schedulerWindow.cancelIdleCallback(idleCallbackId)
+      }
+    }
+  }, [
+    hasSettledSearchForDisplayQuery,
+    isSearchQueryDirty,
+    searchDisplayQuery,
+    searchResultRows,
+    searchableCollections,
+  ])
+
+  useEffect(() => {
+    if (
+      isSearchQueryDirty ||
+      !isSearching ||
+      !trimmedSearchQuery ||
+      isSearchQueryTooShort ||
+      hasSettledSearchForDisplayQuery
+    ) {
+      setShowSearchSpinner(false)
+      return
+    }
+
     const timeoutId = window.setTimeout(() => {
-      setIsSearching(true)
-      setSearchError(null)
-      void searchBlocks(trimmedQuery, { limit: SEARCH_RESULT_LIMIT })
-        .then((results) => {
-          if (
-            !isMountedRef.current ||
-            searchRequestIdRef.current !== requestId
-          ) {
-            return
-          }
-          const combined = [...results, ...searchDemoBlocks(trimmedQuery)]
-            .sort(compareSearchResults)
-            .slice(0, SEARCH_RESULT_LIMIT)
-          setSearchResults(combined)
-        })
-        .catch(() => {
-          if (
-            !isMountedRef.current ||
-            searchRequestIdRef.current !== requestId
-          ) {
-            return
-          }
-          setSearchError('Search failed. Please try again.')
-          setSearchResults([])
-        })
-        .finally(() => {
-          if (
-            !isMountedRef.current ||
-            searchRequestIdRef.current !== requestId
-          ) {
-            return
-          }
-          setIsSearching(false)
-        })
-    }, SEARCH_DEBOUNCE_MS)
+      if (!isMountedRef.current) {
+        return
+      }
+      setShowSearchSpinner(true)
+    }, SEARCH_SPINNER_DELAY_MS)
 
     return () => {
       window.clearTimeout(timeoutId)
     }
-  }, [searchQuery])
+  }, [
+    hasSettledSearchForDisplayQuery,
+    isSearchQueryDirty,
+    isSearchQueryTooShort,
+    isSearching,
+    trimmedSearchQuery,
+  ])
 
   useEffect(() => {
     if (!isSidebarOpen || sidebarTab !== 'search') {
       return
     }
     window.requestAnimationFrame(() => {
-      searchInputRef.current?.focus()
+      const input = searchInputRef.current
+      if (!input) {
+        return
+      }
+      if (input.value !== searchInputValueRef.current) {
+        input.value = searchInputValueRef.current
+      }
+      input.focus()
     })
   }, [isSidebarOpen, sidebarTab])
 
@@ -2072,6 +2419,12 @@ function App() {
       }
 
       const target = event.target as HTMLElement | null
+      const isSearchPanelTarget =
+        target instanceof HTMLElement &&
+        target.closest('.search-panel') !== null
+      if (isSearchPanelTarget) {
+        return
+      }
       const isTextarea = target === textareaRef.current
       const isEditable =
         target instanceof HTMLElement &&
@@ -5184,23 +5537,23 @@ function App() {
               <div className="sidebar-header-search">
                 <div
                   className={`sidebar-search-input-wrap${
-                    isSearching && !isSearchQueryTooShort ? ' is-searching' : ''
+                    showSearchSpinner ? ' is-searching' : ''
                   }`}
                 >
                   <input
                     ref={searchInputRef}
                     className="sidebar-search-input"
                     type="text"
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
+                    defaultValue={searchQuery}
+                    onChange={handleSearchInputChange}
                     onKeyDown={handleSearchInputKeyDown}
                     placeholder="Search blocks across collections"
                     spellCheck={false}
                     aria-label="Search blocks"
                   />
-                  {isSearching && !isSearchQueryTooShort ? (
+                  {showSearchSpinner ? (
                     <span
-                      className="sidebar-search-spinner codicon codicon-loading"
+                      className="sidebar-search-spinner"
                       aria-hidden="true"
                     />
                   ) : null}
@@ -5214,6 +5567,7 @@ function App() {
             ) : null}
           </div>
           <div
+            ref={sidebarBodyRef}
             className={`sidebar-body${
               sidebarTab === 'search' ? ' has-search-header' : ''
             }`}
@@ -5234,41 +5588,98 @@ function App() {
                     aria-label="Search results"
                     aria-busy={isSearching}
                   >
-                    {searchResultRows.map((result, resultIndex) => {
-                      const collectionTitle = result.collection
-                        ? getCollectionTitle(result.collection)
-                        : 'Unknown collection'
-                      return (
-                        <button
-                          key={`${result.collectionId}:${result.blockId}`}
-                          ref={(node) => {
-                            searchResultButtonRefs.current[resultIndex] = node
-                          }}
-                          type="button"
-                          className="search-result-item"
-                          onClick={() => handleSelectSearchResult(result)}
-                          onKeyDown={(event) =>
-                            handleSearchResultKeyDown(resultIndex, event)
-                          }
-                          role="option"
-                          aria-selected={false}
-                        >
-                          <div className="search-result-title">
-                            {renderSearchHighlightSegments(result.previewSegments)}
+                    {groupedSearchResultRows.map((group) => (
+                      <div className="search-results-group" key={group.collectionId}>
+                        <div className="search-results-group-header">
+                          <div className="search-results-group-title">
+                            {renderSearchHighlightSegments(
+                              group.collectionTitleSegments,
+                            )}
                           </div>
-                          <div className="search-result-meta">
-                            <span>{collectionTitle}</span>
-                            {result.ageLabel ? <span>{result.ageLabel}</span> : null}
+                          <div className="search-results-group-count">
+                            {group.rows.length}
                           </div>
-                        </button>
-                      )
-                    })}
+                        </div>
+                        <div className="search-results-group-items">
+                          {group.rows.length === 0 ? (
+                            group.collection ? (
+                              <button
+                                type="button"
+                                className="search-result-item search-result-item-collection"
+                                ref={(node) => {
+                                  if (group.collectionActionRowIndex === null) {
+                                    return
+                                  }
+                                  searchResultButtonRefs.current[
+                                    group.collectionActionRowIndex
+                                  ] = node
+                                }}
+                                onClick={() => {
+                                  if (group.collection) {
+                                    handleSidebarSelectCollection(group.collection)
+                                  }
+                                }}
+                                onKeyDown={(event) => {
+                                  if (group.collectionActionRowIndex === null) {
+                                    return
+                                  }
+                                  handleSearchResultKeyDown(
+                                    group.collectionActionRowIndex,
+                                    event,
+                                  )
+                                }}
+                                role="option"
+                                aria-selected={false}
+                              >
+                                <div className="search-result-title">
+                                  Open collection
+                                </div>
+                                <div className="search-result-meta">
+                                  <span>No block content match</span>
+                                </div>
+                              </button>
+                            ) : null
+                          ) : (
+                            group.rows.map((result) => (
+                              <button
+                                key={`${result.collectionId}:${result.blockId}`}
+                                ref={(node) => {
+                                  searchResultButtonRefs.current[result.rowIndex] = node
+                                }}
+                                type="button"
+                                className="search-result-item"
+                                onClick={() => handleSelectSearchResult(result)}
+                                onKeyDown={(event) =>
+                                  handleSearchResultKeyDown(result.rowIndex, event)
+                                }
+                                role="option"
+                                aria-selected={false}
+                              >
+                                <div className="search-result-title">
+                                  {renderSearchHighlightSegments(result.previewSegments)}
+                                </div>
+                                <div className="search-result-meta">
+                                  {result.ageLabel ? (
+                                    <span>{result.ageLabel}</span>
+                                  ) : (
+                                    <span>—</span>
+                                  )}
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 ) : null}
                 {trimmedSearchQuery &&
                 !isSearchQueryTooShort &&
+                !isSearchQueryDirty &&
                 !isSearching &&
                 !searchError &&
+                hasSettledSearchForDisplayQuery &&
+                isGroupedSearchReady &&
                 isSearchResultsCapped ? (
                   <div className="search-results-note">
                     More matches exist. Showing top {SEARCH_RESULT_LIMIT}.
