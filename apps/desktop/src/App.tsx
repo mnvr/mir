@@ -2,6 +2,7 @@ import {
   buildChatCompletionEndpoint,
   createChatCompletion,
   createTimeoutController,
+  createDerivedId,
   createId,
   demoCollection,
   demoCollectionBlocks,
@@ -39,17 +40,23 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import {
   appendBlock,
+  deleteSavedSystemPromptBlock,
   createCollection,
   deleteKvValue,
   deleteCollection,
+  ensureBlockHasSourceRelation,
+  ensureCollectionContainsBlock,
   getActiveCollection,
   getKvValue,
+  listCollectionIdsContainingBlock,
+  listSavedSystemPromptBlocks,
   listCollectionBlockGraph,
   listCollections,
   searchBlocks,
   setActiveCollectionId,
   setKvValue,
   updateCollectionTitle,
+  upsertStandaloneBlock,
   type CollectionBlockGraph,
   type BlockSearchResult,
 } from './services/db'
@@ -81,6 +88,22 @@ type BranchOption = {
   summary: string | null
 }
 
+type SystemPromptPreset = {
+  id: string
+  title: string
+  content: string
+  createdAt: number
+  sourceBlockId: string
+}
+
+type SystemPromptSelectOption = {
+  id: string
+  title: string
+  preview: string
+  sourceBlockId: string
+  charCount: number
+}
+
 type PendingScroll = {
   id: string
   mode: 'bottom' | 'read'
@@ -101,6 +124,13 @@ const KV_KEYS = {
   baseUrl: 'settings.baseUrl',
   model: 'settings.model',
   apiKeyEncrypted: 'settings.apiKey.encrypted',
+  systemPromptLastSelectedId: 'settings.systemPromptLastSelectedId',
+  // Legacy key from initial KV-based system prompt library.
+  systemPromptLibrary: 'settings.systemPromptLibrary',
+  // Legacy key from runtime active prompt toggles.
+  systemPromptActiveIds: 'settings.systemPromptActiveIds',
+  // Legacy key from initial prompt-by-collection prototype.
+  systemPromptIdsByCollection: 'settings.systemPromptIdsByCollection',
 }
 
 const NEW_COLLECTION_TITLE = 'New Collection'
@@ -311,6 +341,65 @@ const summarizeBlockContent = (content: string, maxLength = 84) => {
     return normalized
   }
   return `${normalized.slice(0, maxLength)}...`
+}
+
+const toSystemPromptPreset = ({
+  promptBlock,
+  sourceBlockId,
+}: {
+  promptBlock: BlockRecord
+  sourceBlockId: string
+}): SystemPromptPreset | null => {
+  const normalizedSourceBlockId = sourceBlockId.trim()
+  if (!normalizedSourceBlockId) {
+    return null
+  }
+  const record = promptBlock
+  if (record.payload.role !== 'system') {
+    return null
+  }
+  return {
+    id: record.id,
+    title:
+      summarizeBlockContent(record.payload.content, 56) ??
+      `System prompt ${record.id}`,
+    content: record.payload.content,
+    createdAt: record.createdAt,
+    sourceBlockId: normalizedSourceBlockId,
+  }
+}
+
+const normalizeLegacySystemPromptLibrary = (value: unknown) => {
+  if (!Array.isArray(value)) {
+    return [] as Array<{
+      sourceBlockId: string
+      content: string
+    }>
+  }
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return null
+      }
+      const sourceBlockId =
+        typeof entry.sourceBlockId === 'string' ? entry.sourceBlockId.trim() : ''
+      const content = typeof entry.content === 'string' ? entry.content : ''
+      if (!sourceBlockId || !content) {
+        return null
+      }
+      return {
+        sourceBlockId,
+        content,
+      }
+    })
+    .filter(
+      (
+        prompt,
+      ): prompt is {
+        sourceBlockId: string
+        content: string
+      } => Boolean(prompt),
+    )
 }
 
 const normalizeSearchQueryText = (value: string) =>
@@ -931,7 +1020,12 @@ type ChatPaneProps = {
   isSending: boolean
   showEmptyState: boolean
   showConfigureLink: boolean
+  showSystemPromptSelector: boolean
+  systemPromptOptions: SystemPromptSelectOption[]
+  selectedSystemPromptId: string | null
   onConfigure: () => void
+  onSelectSystemPrompt: (id: string | null) => void
+  onOpenSystemPromptSource: (sourceBlockId: string) => void
   endRef: React.RefObject<HTMLDivElement | null>
   onChatClick: (event: MouseEvent<HTMLElement>) => void
   onBlockMouseDown: () => void
@@ -952,7 +1046,12 @@ const ChatPane = memo(function ChatPane({
   isSending,
   showEmptyState,
   showConfigureLink,
+  showSystemPromptSelector,
+  systemPromptOptions,
+  selectedSystemPromptId,
   onConfigure,
+  onSelectSystemPrompt,
+  onOpenSystemPromptSource,
   endRef,
   onChatClick,
   onBlockMouseDown,
@@ -963,9 +1062,44 @@ const ChatPane = memo(function ChatPane({
   onCopyBlock,
   registerBlockRef,
 }: ChatPaneProps) {
+  const [isSystemPromptPickerOpen, setIsSystemPromptPickerOpen] = useState(false)
+  const systemPromptPickerRef = useRef<HTMLDivElement | null>(null)
+  const isEmptyState = blocks.length === 0 && showEmptyState
+  const selectedSystemPromptOption =
+    selectedSystemPromptId
+      ? systemPromptOptions.find((option) => option.id === selectedSystemPromptId) ??
+        null
+      : null
+  const selectedSystemPromptTriggerValue = selectedSystemPromptOption
+    ? `${selectedSystemPromptOption.charCount.toLocaleString()} ch`
+    : '—'
+  const isSystemPromptPanelOpen =
+    showSystemPromptSelector && isSystemPromptPickerOpen
+
+  useEffect(() => {
+    if (!isSystemPromptPanelOpen) {
+      return
+    }
+    const handleWindowPointerDown = (event: globalThis.MouseEvent) => {
+      const picker = systemPromptPickerRef.current
+      if (!picker) {
+        return
+      }
+      const targetNode = event.target as Node | null
+      if (!targetNode || picker.contains(targetNode)) {
+        return
+      }
+      setIsSystemPromptPickerOpen(false)
+    }
+    window.addEventListener('mousedown', handleWindowPointerDown)
+    return () => {
+      window.removeEventListener('mousedown', handleWindowPointerDown)
+    }
+  }, [isSystemPromptPanelOpen])
+
   return (
-    <main className="chat chat-pane" onClick={onChatClick}>
-      {blocks.length === 0 && showEmptyState ? (
+    <main className={`chat chat-pane${isEmptyState ? ' is-empty' : ''}`} onClick={onChatClick}>
+      {isEmptyState ? (
         <div className="chat-empty">
           <div className="chat-empty-title">No context yet</div>
           <div className="chat-empty-body">
@@ -981,6 +1115,115 @@ const ChatPane = memo(function ChatPane({
               <>Add a block to start building context</>
             )}
           </div>
+          {showSystemPromptSelector ? (
+            <div className="chat-empty-system-list-shell" ref={systemPromptPickerRef}>
+              <button
+                className={`composer-chip chat-empty-system-trigger${isSystemPromptPanelOpen ? ' is-open' : ''}`}
+                type="button"
+                aria-expanded={isSystemPromptPanelOpen}
+                aria-controls="chat-empty-system-panel"
+                title={
+                  selectedSystemPromptOption
+                    ? selectedSystemPromptOption.title
+                    : 'No system prompt selected'
+                }
+                onClick={() =>
+                  setIsSystemPromptPickerOpen((prevIsOpen) => !prevIsOpen)
+                }
+              >
+                <span className="composer-chip-label chat-empty-system-trigger-label">
+                  Sys
+                </span>
+                <span
+                  className={`composer-chip-value chat-empty-system-trigger-value${selectedSystemPromptOption ? '' : ' is-empty'}`}
+                >
+                  {selectedSystemPromptTriggerValue}
+                </span>
+              </button>
+              {isSystemPromptPanelOpen ? (
+                <div className="chat-empty-system-panel" id="chat-empty-system-panel">
+                  <div className="chat-empty-system-toolbar">
+                    <span className="chat-empty-system-toolbar-label">
+                      System prompt
+                    </span>
+                    <span className="chat-empty-system-toolbar-actions">
+                      {selectedSystemPromptOption ? (
+                        <button
+                          className="chat-empty-system-toolbar-action"
+                          type="button"
+                          onClick={() => onSelectSystemPrompt(null)}
+                        >
+                          Clear
+                        </button>
+                      ) : (
+                        <span className="chat-empty-system-toolbar-state">
+                          None
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  {systemPromptOptions.length > 0 ? (
+                    <div
+                      className="chat-empty-system-listbox"
+                      role="radiogroup"
+                      aria-label="System prompt"
+                    >
+                      {systemPromptOptions.map((option) => {
+                        const isActive = selectedSystemPromptId === option.id
+                        return (
+                          <div
+                            key={option.id}
+                            className={`chat-empty-system-option${isActive ? ' is-active' : ''}`}
+                          >
+                            <button
+                              className="chat-empty-system-option-select"
+                              type="button"
+                              role="radio"
+                              aria-checked={isActive}
+                              onClick={() => {
+                                onSelectSystemPrompt(option.id)
+                                setIsSystemPromptPickerOpen(false)
+                              }}
+                            >
+                              <span className="chat-empty-system-option-text">
+                                {option.preview}
+                              </span>
+                            </button>
+                            <div className="chat-empty-system-option-action-slot">
+                              <span
+                                className="tooltip tooltip-hover-only"
+                                data-tooltip="Go to source block"
+                              >
+                                <button
+                                  className="chat-empty-system-option-source-icon"
+                                  type="button"
+                                  aria-label={`Go to source block for ${option.title}`}
+                                  onClick={() => {
+                                    setIsSystemPromptPickerOpen(false)
+                                    onOpenSystemPromptSource(option.sourceBlockId)
+                                  }}
+                                >
+                                  <span
+                                    className="codicon codicon-go-to-file"
+                                    aria-hidden="true"
+                                  />
+                                </button>
+                              </span>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <div className="chat-empty-system-panel-empty">
+                      No saved system prompts yet. Save a block in Inspect to use
+                      it here.
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : (
         <div className="chat-stream">
@@ -1026,6 +1269,17 @@ function App() {
   const [storageMode, setStorageMode] = useState<StorageMode>('session')
   const [keyError, setKeyError] = useState<string | null>(null)
   const [temperature, setTemperature] = useState(1)
+  const [systemPromptLibrary, setSystemPromptLibrary] = useState<
+    SystemPromptPreset[]
+  >([])
+  const [hasLoadedSystemPromptLibrary, setHasLoadedSystemPromptLibrary] =
+    useState(false)
+  const [lastSelectedSystemPromptId, setLastSelectedSystemPromptId] = useState<
+    string | null
+  >(null)
+  const [pendingSystemPromptId, setPendingSystemPromptId] = useState<
+    string | null
+  >(null)
   const [showKey, setShowKey] = useState(false)
   const [suppressKeyTooltip, setSuppressKeyTooltip] = useState(false)
   const [suppressNewCollectionTooltip, setSuppressNewCollectionTooltip] =
@@ -1128,6 +1382,10 @@ function App() {
   const searchRequestIdRef = useRef(0)
   const groupedSearchRequestIdRef = useRef(0)
   const pendingSearchJumpRef = useRef<{
+    collectionId: string
+    blockId: string
+  } | null>(null)
+  const pendingSystemPromptSourceJumpRef = useRef<{
     collectionId: string
     blockId: string
   } | null>(null)
@@ -1588,6 +1846,42 @@ function App() {
     Boolean(activeCollection) &&
     activeCollection?.id !== demoCollection.id &&
     !isSettingsOpen
+  const systemPromptLibraryById = useMemo(() => {
+    const byId = new Map<string, SystemPromptPreset>()
+    systemPromptLibrary.forEach((prompt) => {
+      byId.set(prompt.id, prompt)
+    })
+    return byId
+  }, [systemPromptLibrary])
+  const systemPromptIdBySourceBlockId = useMemo(() => {
+    const bySource = new Map<string, string>()
+    systemPromptLibrary.forEach((prompt) => {
+      if (!bySource.has(prompt.sourceBlockId)) {
+        bySource.set(prompt.sourceBlockId, prompt.id)
+      }
+    })
+    return bySource
+  }, [systemPromptLibrary])
+  const canSaveActiveBlockAsSystemPrompt = Boolean(
+    activeBlock &&
+      activeBlock.payload &&
+      !activeBlock.status &&
+      isPersistedBlockId(activeBlock.id),
+  )
+  const activeBlockSavedSystemPromptId = useMemo(
+    () =>
+      activeBlock?.id
+        ? systemPromptIdBySourceBlockId.get(activeBlock.id) ?? null
+        : null,
+    [activeBlock?.id, systemPromptIdBySourceBlockId],
+  )
+  const activeBlockSavedSystemPrompt = useMemo(
+    () =>
+      activeBlockSavedSystemPromptId
+        ? systemPromptLibraryById.get(activeBlockSavedSystemPromptId) ?? null
+        : null,
+    [activeBlockSavedSystemPromptId, systemPromptLibraryById],
+  )
   const orderedCollections = useMemo(
     () => groupedCollections.flatMap((group) => group.collections),
     [groupedCollections],
@@ -1596,6 +1890,34 @@ function App() {
     ? 'Settings'
     : collectionDateLabel ?? (hasLoadedBlocks ? 'Undated' : '')
   const showConfigureLink = settingsLoaded && baseUrl === ''
+  const isNewCollectionDraft =
+    selectedCollectionId === null &&
+    collectionId === null &&
+    pendingCollection !== null
+  const showSystemPromptSelectorInEmptyState =
+    !isSettingsOpen &&
+    !showConfigureLink &&
+    isNewCollectionDraft &&
+    blocks.length === 0 &&
+    hasLoadedBlocks
+  const systemPromptSelectOptions = useMemo<SystemPromptSelectOption[]>(
+    () =>
+      systemPromptLibrary.map((prompt) => ({
+        id: prompt.id,
+        title: prompt.title,
+        preview: summarizeBlockContent(prompt.content, 360) ?? prompt.title,
+        sourceBlockId: prompt.sourceBlockId,
+        charCount: prompt.content.length,
+      })),
+    [systemPromptLibrary],
+  )
+  const pendingSystemPromptPreset = useMemo(
+    () =>
+      pendingSystemPromptId
+        ? systemPromptLibraryById.get(pendingSystemPromptId) ?? null
+        : null,
+    [pendingSystemPromptId, systemPromptLibraryById],
+  )
   const modelLabel = model || 'Provider default'
   const temperatureLabel = temperature.toFixed(1)
   const importPreviewSummary = importPreview?.summary ?? null
@@ -1688,6 +2010,27 @@ function App() {
   const isBranchesSurfaceVisible =
     !isSettingsOpen && hasPathForks && (isPathsPanelOpen || isPathsPanelClosing)
   const isSidebarVisible = isSidebarOpen
+
+  const loadSystemPromptLibrary = useCallback(async () => {
+    try {
+      const savedPromptBlocks = await listSavedSystemPromptBlocks()
+      if (!isMountedRef.current) {
+        return
+      }
+      const nextLibrary = savedPromptBlocks
+        .map((record) => toSystemPromptPreset(record))
+        .filter((prompt): prompt is SystemPromptPreset => Boolean(prompt))
+      setSystemPromptLibrary(nextLibrary)
+    } catch {
+      if (isMountedRef.current) {
+        setSystemPromptLibrary([])
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setHasLoadedSystemPromptLibrary(true)
+      }
+    }
+  }, [])
 
   const upsertCollection = useCallback((collection: CollectionRecord) => {
     setCollections((prev) => {
@@ -1967,9 +2310,16 @@ function App() {
 
     const loadSettings = async () => {
       try {
-        const [storedBaseUrl, storedModel] = await Promise.all([
+        const [
+          storedBaseUrl,
+          storedModel,
+          storedLegacySystemPromptLibrary,
+          storedSystemPromptLastSelectedId,
+        ] = await Promise.all([
           getKvValue<string>(KV_KEYS.baseUrl),
           getKvValue<string>(KV_KEYS.model),
+          getKvValue<unknown>(KV_KEYS.systemPromptLibrary),
+          getKvValue<string>(KV_KEYS.systemPromptLastSelectedId),
         ])
         if (!isMounted) {
           return
@@ -1987,6 +2337,62 @@ function App() {
         setIsSettingsClosing(false)
         setIsSettingsOpen(!nextBaseUrl)
         setSettingsLoaded(true)
+        setLastSelectedSystemPromptId(
+          typeof storedSystemPromptLastSelectedId === 'string' &&
+            storedSystemPromptLastSelectedId.length > 0
+            ? storedSystemPromptLastSelectedId
+            : null,
+        )
+
+        const legacyPrompts = normalizeLegacySystemPromptLibrary(
+          storedLegacySystemPromptLibrary,
+        )
+        if (legacyPrompts.length > 0) {
+          void Promise.all(
+            legacyPrompts.map((prompt) =>
+              (async () => {
+                const promptId = createDerivedId(
+                  'block',
+                  `sys:${prompt.sourceBlockId}`,
+                )
+                await upsertStandaloneBlock(
+                  {
+                    role: 'system',
+                    content: prompt.content,
+                    localTimestamp: formatLocalTimestamp(new Date()),
+                  },
+                  {
+                    recordId: promptId,
+                  },
+                )
+                const relationState = await ensureBlockHasSourceRelation(
+                  promptId,
+                  prompt.sourceBlockId,
+                )
+                if (relationState === 'missing') {
+                  console.warn(
+                    '[blocks] failed to migrate legacy system prompt source relation',
+                  )
+                }
+              })().catch((error) => {
+                console.error(
+                  '[blocks] failed to migrate legacy system prompt',
+                  error,
+                )
+              }),
+            ),
+          )
+            .then(async () => {
+              const savedPromptBlocks = await listSavedSystemPromptBlocks()
+              if (!isMountedRef.current) {
+                return
+              }
+              const nextLibrary = savedPromptBlocks
+                .map((record) => toSystemPromptPreset(record))
+                .filter((prompt): prompt is SystemPromptPreset => Boolean(prompt))
+              setSystemPromptLibrary(nextLibrary)
+            })
+        }
       } catch {
         if (isMounted) {
           if (settingsCloseTimeoutRef.current) {
@@ -2028,6 +2434,54 @@ function App() {
     }
     void setKvValue(KV_KEYS.model, model)
   }, [model, settingsLoaded])
+
+  useEffect(() => {
+    if (!hasLoadedSystemPromptLibrary || !pendingSystemPromptId) {
+      return
+    }
+    if (systemPromptLibraryById.has(pendingSystemPromptId)) {
+      return
+    }
+    setPendingSystemPromptId(null)
+  }, [
+    hasLoadedSystemPromptLibrary,
+    pendingSystemPromptId,
+    systemPromptLibraryById,
+  ])
+
+  useEffect(() => {
+    if (!hasLoadedSystemPromptLibrary || !lastSelectedSystemPromptId) {
+      return
+    }
+    if (systemPromptLibraryById.has(lastSelectedSystemPromptId)) {
+      return
+    }
+    setLastSelectedSystemPromptId(null)
+  }, [
+    hasLoadedSystemPromptLibrary,
+    lastSelectedSystemPromptId,
+    systemPromptLibraryById,
+  ])
+
+  useEffect(() => {
+    if (!settingsLoaded) {
+      return
+    }
+    if (!lastSelectedSystemPromptId) {
+      void deleteKvValue(KV_KEYS.systemPromptLastSelectedId)
+      return
+    }
+    void setKvValue(KV_KEYS.systemPromptLastSelectedId, lastSelectedSystemPromptId)
+  }, [lastSelectedSystemPromptId, settingsLoaded])
+
+  useEffect(() => {
+    if (!settingsLoaded) {
+      return
+    }
+    void deleteKvValue(KV_KEYS.systemPromptLibrary)
+    void deleteKvValue(KV_KEYS.systemPromptActiveIds)
+    void deleteKvValue(KV_KEYS.systemPromptIdsByCollection)
+  }, [settingsLoaded])
 
   useEffect(() => {
     if (isSettingsOpen) {
@@ -2121,6 +2575,7 @@ function App() {
         setCollectionId(null)
         setActiveCollection(null)
         setPendingCollection(null)
+        setPendingSystemPromptId(null)
         setSelectedCollectionId(null)
         setPathLeafId(null)
         setOpenBranchMenuParentId(null)
@@ -2141,6 +2596,7 @@ function App() {
       setCollectionId(collection.id)
       setActiveCollection(collection)
       setPendingCollection(null)
+      setPendingSystemPromptId(null)
       setSelectedCollectionId(collection.id)
       setPathLeafId(null)
       setOpenBranchMenuParentId(null)
@@ -2172,8 +2628,8 @@ function App() {
   }, [])
 
   useEffect(() => {
-    void Promise.all([loadCollections(), loadBlocks()])
-  }, [loadCollections, loadBlocks])
+    void Promise.all([loadCollections(), loadBlocks(), loadSystemPromptLibrary()])
+  }, [loadBlocks, loadCollections, loadSystemPromptLibrary])
 
   useEffect(() => {
     if (!blocks.length) {
@@ -2575,6 +3031,16 @@ function App() {
     }
     const blockId = activeBlock.id
     handleCopyBlockById(blockId)
+  }, [activeBlock, handleCopyBlockById])
+
+  const handleCopyBlockFromSelectedActions = useCallback(() => {
+    if (!activeBlock) {
+      return
+    }
+    handleCopyBlockById(activeBlock.id)
+    setOpenBranchMenuParentId(null)
+    setIsPathsPanelOpen(false)
+    setActiveBlockId(null)
   }, [activeBlock, handleCopyBlockById])
 
   const handleCopyBlockFromStream = useCallback(
@@ -2993,9 +3459,78 @@ function App() {
     handleSetContinuationCursor(activeBlock.id)
   }, [activeBlock, handleSetContinuationCursor])
 
+  const handleToggleSavedSystemPromptForActiveBlock = useCallback(() => {
+    if (
+      !activeBlock ||
+      !activeBlock.payload ||
+      activeBlock.status ||
+      !isPersistedBlockId(activeBlock.id)
+    ) {
+      return
+    }
+
+    if (activeBlockSavedSystemPrompt) {
+      const removedPromptId = activeBlockSavedSystemPrompt.id
+      void deleteSavedSystemPromptBlock(removedPromptId)
+        .then((didDelete) => {
+          if (!didDelete) {
+            console.warn(
+              '[blocks] skipping system prompt removal because it is already referenced',
+            )
+            return
+          }
+          setPendingSystemPromptId((prev) =>
+            prev === removedPromptId ? null : prev,
+          )
+          void loadSystemPromptLibrary()
+        })
+        .catch((error) => {
+          console.error('[blocks] failed to remove saved system prompt', error)
+        })
+      return
+    }
+
+    const promptId = createDerivedId('block', `sys:${activeBlock.id}`)
+
+    const payload: BlockPayload = {
+      role: 'system',
+      content: activeBlock.content,
+      localTimestamp:
+        activeBlock.payload.localTimestamp ?? formatLocalTimestamp(new Date()),
+    }
+
+    void upsertStandaloneBlock(payload, { recordId: promptId })
+      .then(async () => {
+        const relationState = await ensureBlockHasSourceRelation(
+          promptId,
+          activeBlock.id,
+        )
+        if (relationState === 'missing') {
+          console.warn('[blocks] failed to link saved system prompt source')
+        }
+        await loadSystemPromptLibrary()
+      })
+      .catch((error) => {
+        console.error('[blocks] failed to save system prompt', error)
+      })
+  }, [
+    activeBlock,
+    activeBlockSavedSystemPrompt,
+    loadSystemPromptLibrary,
+  ])
+
+  const handleSelectPendingSystemPrompt = useCallback(
+    (nextPromptId: string | null) => {
+      setPendingSystemPromptId(nextPromptId)
+      setLastSelectedSystemPromptId(nextPromptId)
+    },
+    [],
+  )
+
   const handleSelectCollection = useCallback((collection: CollectionRecord) => {
     const requestId = collectionLoadIdRef.current + 1
     collectionLoadIdRef.current = requestId
+    setPendingSystemPromptId(null)
     setSelectedCollectionId(collection.id)
     setCollectionId(collection.id)
     setActiveCollection(collection)
@@ -3105,6 +3640,71 @@ function App() {
     ],
   )
 
+  const handleOpenSystemPromptSource = useCallback(
+    (sourceBlockId: string) => {
+      if (!sourceBlockId) {
+        return
+      }
+      showSidebarTab('inspect')
+
+      if (collectionId && hasLoadedBlocks && blocksById.has(sourceBlockId)) {
+        const nextLeafId = resolvePathLeafFromBlock(sourceBlockId)
+        setPathLeafId(nextLeafId)
+        scrollToBlock(sourceBlockId)
+        return
+      }
+
+      void listCollectionIdsContainingBlock(sourceBlockId)
+        .then((collectionIds) => {
+          if (!isMountedRef.current) {
+            return
+          }
+          const targetCollectionId =
+            (collectionId && collectionIds.includes(collectionId)
+              ? collectionId
+              : null) ??
+            collectionIds.find((id) => collectionsById.has(id)) ??
+            null
+
+          if (!targetCollectionId) {
+            console.warn(
+              '[blocks] source block is not linked to any collection',
+              sourceBlockId,
+            )
+            return
+          }
+
+          const targetCollection =
+            collectionsById.get(targetCollectionId) ??
+            (activeCollection?.id === targetCollectionId ? activeCollection : null)
+          if (!targetCollection) {
+            return
+          }
+
+          pendingSystemPromptSourceJumpRef.current = {
+            collectionId: targetCollectionId,
+            blockId: sourceBlockId,
+          }
+          setActiveBlockId(null)
+          handleSelectCollection(targetCollection)
+        })
+        .catch((error) => {
+          console.error('[blocks] failed to resolve system prompt source block', error)
+        })
+    },
+    [
+      activeCollection,
+      blocksById,
+      collectionId,
+      collectionsById,
+      handleSelectCollection,
+      hasLoadedBlocks,
+      resolvePathLeafFromBlock,
+      scrollToBlock,
+      showSidebarTab,
+    ],
+  )
+
   useEffect(() => {
     const pendingTarget = pendingSearchJumpRef.current
     if (!pendingTarget) {
@@ -3129,6 +3729,24 @@ function App() {
     resolvePathLeafFromBlock,
     scrollToBlockWithoutSelecting,
   ])
+
+  useEffect(() => {
+    const pendingTarget = pendingSystemPromptSourceJumpRef.current
+    if (!pendingTarget) {
+      return
+    }
+    if (!hasLoadedBlocks || collectionId !== pendingTarget.collectionId) {
+      return
+    }
+    if (!blocksById.has(pendingTarget.blockId)) {
+      pendingSystemPromptSourceJumpRef.current = null
+      return
+    }
+    const nextLeafId = resolvePathLeafFromBlock(pendingTarget.blockId)
+    setPathLeafId(nextLeafId)
+    scrollToBlock(pendingTarget.blockId)
+    pendingSystemPromptSourceJumpRef.current = null
+  }, [blocksById, collectionId, hasLoadedBlocks, resolvePathLeafFromBlock, scrollToBlock])
 
   useEffect(() => {
     if (copyAckId && activeBlock?.id !== copyAckId) {
@@ -3494,6 +4112,32 @@ function App() {
         return
       }
       const nodeRect = node.getBoundingClientRect()
+      const visibleHeight = maxBottom - minTop
+      const isOversized = nodeRect.height > visibleHeight
+      if (isOversized) {
+        const isFullyAbove = nodeRect.bottom <= minTop
+        const isFullyBelow = nodeRect.top >= maxBottom
+        if (!isFullyAbove && !isFullyBelow) {
+          followRef.current = isNearBottom()
+          stickToBottomRef.current = isAtBottom()
+          return
+        }
+        const delta = isFullyAbove
+          ? nodeRect.bottom - minTop
+          : nodeRect.top - maxBottom
+        if (Math.abs(delta) < 1) {
+          followRef.current = isNearBottom()
+          stickToBottomRef.current = isAtBottom()
+          return
+        }
+        const nextScrollTop = container.scrollTop + delta
+        const maxScrollTop = container.scrollHeight - container.clientHeight
+        markProgrammaticScroll()
+        container.scrollTop = Math.min(Math.max(nextScrollTop, 0), maxScrollTop)
+        followRef.current = isNearBottom()
+        stickToBottomRef.current = isAtBottom()
+        return
+      }
       if (nodeRect.top >= minTop && nodeRect.bottom <= maxBottom) {
         followRef.current = isNearBottom()
         stickToBottomRef.current = isAtBottom()
@@ -3893,13 +4537,17 @@ function App() {
       setImportSummary(
         `Imported ${summary.records.imported} records and ${summary.relations.imported} relations. Ignored ${ignoredRecords} records (${summary.records.conflicts} conflicts) and ${ignoredRelations} relations. ${branchingSummary}`,
       )
-      void Promise.all([loadCollections(), loadBlocks()])
+      void Promise.all([
+        loadCollections(),
+        loadBlocks(),
+        loadSystemPromptLibrary(),
+      ])
     } catch {
       setDataError('Import failed.')
     } finally {
       setIsImportingData(false)
     }
-  }, [importPreview, loadBlocks, loadCollections])
+  }, [importPreview, loadBlocks, loadCollections, loadSystemPromptLibrary])
 
   const handleDismissImportSummary = useCallback(() => {
     setImportSummary(null)
@@ -3918,6 +4566,7 @@ function App() {
 
   const startNewCollection = useCallback(() => {
     setSuppressNewCollectionTooltip(true)
+    setPendingSystemPromptId(lastSelectedSystemPromptId)
     setSelectedCollectionId(null)
     setBlocks([])
     setPathLeafId(null)
@@ -3939,7 +4588,7 @@ function App() {
     setLastRunStats(null)
 
     focusComposer()
-  }, [focusComposer])
+  }, [focusComposer, lastSelectedSystemPromptId])
 
   const handleStartNewCollection = useCallback(() => {
     closeSettings()
@@ -4060,9 +4709,11 @@ function App() {
           }
 
           const contextBlocks = getContextBlocksForParent(contextParentId)
-          const contextPayloads = [...contextBlocks, parentUserBlock]
-            .map((block) => block.payload)
-            .filter((payload): payload is BlockPayload => Boolean(payload))
+          const contextPayloads = [
+            ...[...contextBlocks, parentUserBlock]
+              .map((block) => block.payload)
+              .filter((payload): payload is BlockPayload => Boolean(payload)),
+          ]
 
           const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
           abortControllerRef.current = timeoutController
@@ -4316,12 +4967,39 @@ function App() {
 
     try {
       const parentBlockId = defaultContinuationBlock?.id ?? null
+      const isFirstGenerationForNewCollection =
+        selectedCollectionId === null &&
+        collectionId === null &&
+        blocks.length === 0 &&
+        pendingCollection !== null
+      const initialSystemPrompt = isFirstGenerationForNewCollection
+        ? pendingSystemPromptPreset
+        : null
       const derivedTitle = deriveCollectionTitle(trimmedDraft)
       const endpoint = buildChatCompletionEndpoint(baseUrl)
       const request = buildBlockRequest(baseUrl, model, temperature)
       const timestamp = Date.now()
       const userRecordId = createId('block')
       const assistantRecordId = createId('block')
+      const systemPayload: BlockPayload | null = initialSystemPrompt
+        ? {
+            role: 'system',
+            content: initialSystemPrompt.content,
+            localTimestamp: formatLocalTimestamp(
+              new Date(initialSystemPrompt.createdAt),
+            ),
+          }
+        : null
+      const systemBlock: Block | null = initialSystemPrompt && systemPayload
+        ? {
+            id: initialSystemPrompt.id,
+            direction: 'output',
+            content: initialSystemPrompt.content,
+            payload: systemPayload,
+            transientParentId: parentBlockId,
+          }
+        : null
+      const userParentId = systemBlock?.id ?? parentBlockId
       const userPayload = toBlockPayload('user', trimmedDraft, {
         request,
       })
@@ -4330,7 +5008,7 @@ function App() {
         direction: 'input',
         content: trimmedDraft,
         payload: userPayload,
-        transientParentId: parentBlockId,
+        transientParentId: userParentId,
       }
 
       const assistantBlock: Block = {
@@ -4342,7 +5020,11 @@ function App() {
         transientParentId: userBlock.id,
       }
 
-      setBlocks((prev) => [...prev, userBlock, assistantBlock])
+      setBlocks((prev) =>
+        systemBlock
+          ? [...prev, systemBlock, userBlock, assistantBlock]
+          : [...prev, userBlock, assistantBlock],
+      )
       setPathLeafId(assistantBlock.id)
       setDraft('')
       const shouldAutoScroll = isNearBottom()
@@ -4398,18 +5080,51 @@ function App() {
       }
 
       if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
-        const pendingUserRecord = appendBlock(
-          targetCollectionId,
-          userPayload,
-          {
-            parentIds: parentBlockId ? [parentBlockId] : undefined,
-            recordId: userRecordId,
-          },
-        )
-        userRecordPromise = pendingUserRecord
+        const persistedCollectionId = targetCollectionId
+        const pendingUserRecord = (async () => {
+          let resolvedParentId = parentBlockId
+          if (initialSystemPrompt && systemBlock) {
+            const linkState = await ensureCollectionContainsBlock(
+              persistedCollectionId,
+              initialSystemPrompt.id,
+            ).catch((error) => {
+              console.error(
+                '[blocks] failed to link saved system prompt to collection',
+                error,
+              )
+              return 'missing' as const
+            })
+            if (linkState === 'missing') {
+              setBlocks((prev) =>
+                prev
+                  .filter((block) => block.id !== systemBlock.id)
+                  .map((block) =>
+                    block.transientParentId === systemBlock.id
+                      ? { ...block, transientParentId: parentBlockId }
+                      : block,
+                  ),
+              )
+              setActiveBlockId((prev) =>
+                prev === systemBlock.id ? null : prev,
+              )
+            } else {
+              resolvedParentId = initialSystemPrompt.id
+            }
+          }
+          const record = await appendBlock(
+            persistedCollectionId,
+            userPayload,
+            {
+              parentIds: resolvedParentId ? [resolvedParentId] : undefined,
+              recordId: userRecordId,
+            },
+          )
+          return { record, resolvedParentId }
+        })()
+        userRecordPromise = pendingUserRecord.then(({ record }) => record)
         void pendingUserRecord
-          .then((record) => {
-            attachBlockToGraph(record.id, parentBlockId ? [parentBlockId] : [])
+          .then(({ record, resolvedParentId }) => {
+            attachBlockToGraph(record.id, resolvedParentId ? [resolvedParentId] : [])
             setBlocks((prev) =>
               prev.map((block) =>
                 block.id === userBlock.id
@@ -4450,9 +5165,12 @@ function App() {
       }
 
       const contextBlocks = getContextBlocksForParent(parentBlockId)
-      const contextPayloads = [...contextBlocks, userBlock]
-        .map((block) => block.payload)
-        .filter((payload): payload is BlockPayload => Boolean(payload))
+      const contextPayloads = [
+        ...(systemPayload ? [systemPayload] : []),
+        ...[...contextBlocks, userBlock]
+          .map((block) => block.payload)
+          .filter((payload): payload is BlockPayload => Boolean(payload)),
+      ]
       const contextMessages = toChatMessages(contextPayloads)
       const token = apiKey
       const timeoutController = createTimeoutController(REQUEST_TIMEOUT_MS)
@@ -4990,7 +5708,12 @@ function App() {
                 isSending={isSending}
                 showEmptyState={hasLoadedBlocks}
                 showConfigureLink={showConfigureLink}
+                showSystemPromptSelector={showSystemPromptSelectorInEmptyState}
+                systemPromptOptions={systemPromptSelectOptions}
+                selectedSystemPromptId={pendingSystemPromptId}
                 onConfigure={() => openSettingsRef.current()}
+                onSelectSystemPrompt={handleSelectPendingSystemPrompt}
+                onOpenSystemPromptSource={handleOpenSystemPromptSource}
                 endRef={endRef}
                 onChatClick={handleChatClick}
                 onBlockMouseDown={handleBlockMouseDown}
@@ -5372,7 +6095,7 @@ function App() {
                                     : ''
                                 }`}
                                 type="button"
-                                onClick={handleCopyActiveBlock}
+                                onClick={handleCopyBlockFromSelectedActions}
                                 aria-label="Copy block"
                               >
                                 <span
@@ -5885,6 +6608,36 @@ function App() {
                         />
                       </button>
                     </span>
+                    {canSaveActiveBlockAsSystemPrompt ? (
+                      <span
+                        className="tooltip tooltip-hover-only tooltip-left"
+                        data-tooltip={
+                          activeBlockSavedSystemPrompt
+                            ? 'Remove saved system prompt'
+                            : 'Save as system prompt'
+                        }
+                      >
+                        <button
+                          className="sidebar-icon-button"
+                          type="button"
+                          onClick={handleToggleSavedSystemPromptForActiveBlock}
+                          aria-label={
+                            activeBlockSavedSystemPrompt
+                              ? 'Remove saved system prompt'
+                              : 'Save as system prompt'
+                          }
+                        >
+                          <span
+                            className={`codicon ${
+                              activeBlockSavedSystemPrompt
+                                ? 'codicon-repo-selected'
+                                : 'codicon-repo'
+                            }`}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <div className="sidebar-section">

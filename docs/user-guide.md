@@ -127,6 +127,7 @@ How to use branching in the UI:
 
 - Click any block to select it. The selection bar above the composer appears with the label Selected.
 - The selection bar can show Branch from here, Generate new, Copy block, and Clear selection depending on the selected block state.
+- Using Copy block from the selection bar copies the selected block and clears the selection.
 - If the selected block is already the branch source, Branch from here is disabled.
 - Blocks with multiple children show a layers marker with a count (for example 3 branches). Click it to open Branches panel focused on that branch point.
 - Use Branches in the header (layers icon) to open or close Branches panel.
@@ -141,13 +142,29 @@ If a generation fails, Mir keeps the pending generated block and shows Generate 
 
 ### Customizing generation parameters
 
-You can customize parameters passed to the model along with the context when asking it to generate a continuation. Currently, Mir exposes only temperature.
+You can customize parameters passed to the model along with the context when asking it to generate a continuation. Mir currently exposes temperature and first-generation system prompt selection.
 
 #### Temperature
 
 The TEMP pill near the Add button lets you set the temperature for the next continuation.
 
 Temperature controls how deterministic or varied the model output is. Lower values are more focused and repeatable; higher values are more exploratory.
+
+#### System prompt blocks
+
+Mir can seed a new collection with a saved `system` block before the first generation.
+
+- Select a block, open **Inspect**, and use the repo icon to save or remove that block as a reusable system prompt.
+- Saved system prompts can be used across collections.
+- Saved system prompts are stored as normal blocks and linked to their source block via a `source` relation, so they are part of normal export/import sync data.
+- System prompt selection is available only in a new, empty collection before the first generation.
+- In that empty state, a compact `Sys` indicator near the composer border shows the current choice (`—` for none, `<N> ch` when a prompt is selected).
+- Click the indicator to open an inline selector panel with a compact action bar and a scrollable list of saved prompts.
+- Use Clear in the action bar to unset the prompt, or pick a saved prompt from the list.
+- The new-collection selector remembers your last choice on this device and preselects it for the next new collection draft.
+- Each saved prompt row in the selector has a source icon action (`Go to source block`) that jumps to the source block so you can inspect full text or unsave it.
+- When selected, that system prompt block is linked into the new collection ancestry and used in context like any other parent block.
+- A saved system prompt that is already linked in collections is retained to preserve history.
 
 ## Inspect
 
@@ -164,6 +181,7 @@ This summary is followed by any actions applicable to that item type.
 * Copy Block: Copy the block's text.
 * Branch from here: Move the branch source to the selected generated/model block.
 * Generate new: Re-run generation from the selected user block or retry a failed generated/model block.
+* Save as system prompt: Save or remove the selected block as a reusable system prompt.
 
 This is then followed by various sections giving low-level details about the active item, whichever are applicable:
 

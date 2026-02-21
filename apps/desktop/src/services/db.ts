@@ -49,6 +49,11 @@ const isBlockRecord = (
   return record.type === 'block' && !record.deletedAt
 }
 
+export type SavedSystemPromptBlock = {
+  promptBlock: BlockRecord
+  sourceBlockId: string
+}
+
 type MirDbSchema = DBSchema & {
   records: {
     key: string
@@ -647,6 +652,9 @@ export const deleteCollection = async (collectionId: string) => {
     ) {
       sharedBlockIds.add(relation.toId)
     }
+    if (relation.type === 'source' && blockIds.has(relation.toId)) {
+      sharedBlockIds.add(relation.toId)
+    }
   })
   const deletableBlockIds = new Set(
     Array.from(blockIds).filter((id) => !sharedBlockIds.has(id)),
@@ -938,6 +946,210 @@ export const appendBlock = async (
   void indexBlockSearchEntry(record as BlockRecord, collectionId)
 
   return record as BlockRecord
+}
+
+export const upsertStandaloneBlock = async (
+  payload: BlockPayload,
+  options?: {
+    recordId?: string
+  },
+) => {
+  const db = await getDb()
+  if (options?.recordId) {
+    const existing = await db.get('records', options.recordId)
+    if (existing) {
+      if (!isBlockRecord(existing)) {
+        throw new Error(
+          `Record id collision: ${options.recordId} is not an active block.`,
+        )
+      }
+      const existingBlock = existing
+      if (!isSameBlockPayload(existingBlock.payload, payload)) {
+        throw new Error(
+          `Block payload mismatch for recordId ${options.recordId}.`,
+        )
+      }
+      return existingBlock
+    }
+  }
+
+  const record = buildRecord<BlockRecord['type'], BlockPayload>(
+    'block',
+    payload,
+    options?.recordId ? { id: options.recordId } : undefined,
+  )
+  const dbTx = db.transaction(['records'], 'readwrite')
+  await dbTx.objectStore('records').put(record)
+  await dbTx.done
+
+  return record as BlockRecord
+}
+
+export const ensureCollectionContainsBlock = async (
+  collectionId: string,
+  blockId: string,
+) => {
+  const db = await getDb()
+  const tx = db.transaction(['records', 'relations'], 'readwrite')
+  const recordStore = tx.objectStore('records')
+  const relationStore = tx.objectStore('relations')
+
+  const [collectionRecord, blockRecord] = await Promise.all([
+    recordStore.get(collectionId),
+    recordStore.get(blockId),
+  ])
+  if (!isCollectionRecord(collectionRecord) || !isBlockRecord(blockRecord)) {
+    await tx.done
+    return 'missing' as const
+  }
+
+  const relation = buildRelation(collectionId, blockId, 'contains')
+  const existingRelation = await relationStore.get(relation.id)
+  if (existingRelation) {
+    await tx.done
+    return 'already_linked' as const
+  }
+
+  await relationStore.put(relation)
+  await tx.done
+  void indexRelation(relation)
+  void indexBlockSearchEntry(blockRecord, collectionId)
+  return 'linked' as const
+}
+
+export const listCollectionIdsContainingBlock = async (blockId: string) => {
+  const db = await getDb()
+  const relations = await db.getAll('relations')
+  const collectionIds = new Set<string>()
+  relations.forEach((relation) => {
+    if (relation.type === 'contains' && relation.toId === blockId) {
+      collectionIds.add(relation.fromId)
+    }
+  })
+  return Array.from(collectionIds).sort((left, right) =>
+    left.localeCompare(right),
+  )
+}
+
+export const ensureBlockHasSourceRelation = async (
+  blockId: string,
+  sourceBlockId: string,
+) => {
+  const db = await getDb()
+  const tx = db.transaction(['records', 'relations'], 'readwrite')
+  const recordStore = tx.objectStore('records')
+  const relationStore = tx.objectStore('relations')
+
+  const [blockRecord, sourceRecord] = await Promise.all([
+    recordStore.get(blockId),
+    recordStore.get(sourceBlockId),
+  ])
+  if (!isBlockRecord(blockRecord) || !isBlockRecord(sourceRecord)) {
+    await tx.done
+    return 'missing' as const
+  }
+
+  const relation = buildRelation(blockId, sourceBlockId, 'source')
+  const existingRelation = await relationStore.get(relation.id)
+  if (existingRelation) {
+    await tx.done
+    return 'already_linked' as const
+  }
+
+  await relationStore.put(relation)
+  await tx.done
+  void indexRelation(relation)
+  return 'linked' as const
+}
+
+export const deleteSavedSystemPromptBlock = async (blockId: string) => {
+  const db = await getDb()
+  const indexDb = await getIndexDb()
+  const tx = db.transaction(['records', 'relations'], 'readwrite')
+  const recordStore = tx.objectStore('records')
+  const relationStore = tx.objectStore('relations')
+
+  const record = await recordStore.get(blockId)
+  if (!isBlockRecord(record)) {
+    await tx.done
+    return false
+  }
+  if (record.payload.role !== 'system') {
+    await tx.done
+    return false
+  }
+
+  const relations = await relationStore.getAll()
+  const hasBlockingRelation = relations.some(
+    (relation) =>
+      (relation.fromId === blockId || relation.toId === blockId) &&
+      !(relation.type === 'source' && relation.fromId === blockId),
+  )
+  if (hasBlockingRelation) {
+    await tx.done
+    return false
+  }
+  relations.forEach((relation) => {
+    if (relation.type === 'source' && relation.fromId === blockId) {
+      relationStore.delete(relation.id)
+    }
+  })
+
+  const tombstoneTime = Date.now()
+  const { payload: _blockPayload, ...blockBase } = record
+  const updated: BlockTombstone = {
+    ...blockBase,
+    updatedAt: tombstoneTime,
+    deletedAt: tombstoneTime,
+  }
+  await recordStore.put(updated)
+
+  await tx.done
+  await rebuildRelationIndex(db, indexDb)
+  await invalidateSearchIndex()
+  return true
+}
+
+export const listSavedSystemPromptBlocks = async (): Promise<
+  SavedSystemPromptBlock[]
+> => {
+  const db = await getDb()
+  const [records, relations] = await Promise.all([
+    db.getAll('records'),
+    db.getAll('relations'),
+  ])
+  const blockById = new Map(
+    records.filter(isBlockRecord).map((record) => [record.id, record]),
+  )
+  const promptsById = new Map<string, SavedSystemPromptBlock>()
+  relations.forEach((relation) => {
+    if (relation.type !== 'source') {
+      return
+    }
+    const promptBlock = blockById.get(relation.fromId)
+    const sourceBlock = blockById.get(relation.toId)
+    if (!promptBlock || !sourceBlock || promptBlock.payload.role !== 'system') {
+      return
+    }
+    const existing = promptsById.get(promptBlock.id)
+    if (
+      !existing ||
+      sourceBlock.id.localeCompare(existing.sourceBlockId) < 0
+    ) {
+      promptsById.set(promptBlock.id, {
+        promptBlock,
+        sourceBlockId: sourceBlock.id,
+      })
+    }
+  })
+  const prompts = Array.from(promptsById.values())
+  prompts.sort((left, right) => {
+    if (left.promptBlock.createdAt !== right.promptBlock.createdAt) {
+      return right.promptBlock.createdAt - left.promptBlock.createdAt
+    }
+    return left.promptBlock.id.localeCompare(right.promptBlock.id)
+  })
+  return prompts
 }
 
 export const searchBlocks = async (

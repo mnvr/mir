@@ -62,6 +62,7 @@ Relation types:
 
 - `contains`: `fromId = collection`, `toId = block` (grouping)
 - `parent`: `fromId = child`, `toId = parent` (lineage)
+- `source`: `fromId = derived block`, `toId = source block` (derivation)
 
 ### KV
 

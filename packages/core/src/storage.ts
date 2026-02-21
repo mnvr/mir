@@ -1,6 +1,6 @@
 export type RecordType = 'collection' | 'block'
 
-export type RelationType = 'contains' | 'parent'
+export type RelationType = 'contains' | 'parent' | 'source'
 
 type BaseRecord = {
   id: string
