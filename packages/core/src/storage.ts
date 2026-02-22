@@ -1,4 +1,4 @@
-export type RecordType = 'collection' | 'block'
+export type RecordType = 'collection' | 'block' | 'system_prompt_handle'
 
 export type RelationType = 'contains' | 'parent' | 'source'
 
@@ -62,6 +62,15 @@ export type BlockRecord = LiveRecord<BlockPayload> & {
   type: 'block'
 }
 
+export type SystemPromptHandlePayload = {
+  promptBlockId: string
+  inLibrary: boolean
+}
+
+export type SystemPromptHandleRecord = LiveRecord<SystemPromptHandlePayload> & {
+  type: 'system_prompt_handle'
+}
+
 export type CollectionTombstone = TombstoneRecord & {
   type: 'collection'
 }
@@ -70,11 +79,17 @@ export type BlockTombstone = TombstoneRecord & {
   type: 'block'
 }
 
+export type SystemPromptHandleTombstone = TombstoneRecord & {
+  type: 'system_prompt_handle'
+}
+
 export type MirRecord =
   | CollectionRecord
   | BlockRecord
+  | SystemPromptHandleRecord
   | CollectionTombstone
   | BlockTombstone
+  | SystemPromptHandleTombstone
 
 export type Relation = {
   id: string

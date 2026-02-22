@@ -44,6 +44,10 @@ The title of a collection may be mutated in place.
 
 A single immutable "interaction". Blocks are chained together to form the context when generating and linear flow when reading.
 
+#### System Prompt Handles
+
+Mutable records that control whether a system prompt block appears in the reusable prompt library (`inLibrary`), keyed by prompt block id.
+
 ### Relations
 
 Relations encode edges between records. They are immutable.

@@ -8,6 +8,9 @@ import type {
   BlockPayload,
   BlockRecord,
   BlockTombstone,
+  SystemPromptHandlePayload,
+  SystemPromptHandleRecord,
+  SystemPromptHandleTombstone,
   KvEntry,
   MirRecord,
   LiveRecord,
@@ -49,10 +52,31 @@ const isBlockRecord = (
   return record.type === 'block' && !record.deletedAt
 }
 
+const isSystemPromptHandleRecord = (
+  record: MirRecord | undefined | null,
+): record is SystemPromptHandleRecord => {
+  if (!record) {
+    return false
+  }
+  return record.type === 'system_prompt_handle' && !record.deletedAt
+}
+
+const isSystemPromptHandleAnyRecord = (
+  record: MirRecord | undefined | null,
+): record is SystemPromptHandleRecord | SystemPromptHandleTombstone => {
+  if (!record) {
+    return false
+  }
+  return record.type === 'system_prompt_handle'
+}
+
 export type SavedSystemPromptBlock = {
   promptBlock: BlockRecord
   sourceBlockId: string
 }
+
+const getSystemPromptHandleId = (promptBlockId: string) =>
+  createDerivedId('system_prompt_handle', promptBlockId)
 
 type MirDbSchema = DBSchema & {
   records: {
@@ -1062,52 +1086,81 @@ export const ensureBlockHasSourceRelation = async (
   return 'linked' as const
 }
 
-export const deleteSavedSystemPromptBlock = async (blockId: string) => {
+export const setSavedSystemPromptLibraryState = async (
+  promptBlockId: string,
+  inLibrary: boolean,
+) => {
   const db = await getDb()
-  const indexDb = await getIndexDb()
-  const tx = db.transaction(['records', 'relations'], 'readwrite')
+  const tx = db.transaction(['records'], 'readwrite')
   const recordStore = tx.objectStore('records')
-  const relationStore = tx.objectStore('relations')
-
-  const record = await recordStore.get(blockId)
-  if (!isBlockRecord(record)) {
+  const promptRecord = await recordStore.get(promptBlockId)
+  if (
+    !isBlockRecord(promptRecord) ||
+    promptRecord.payload.role !== 'system'
+  ) {
     await tx.done
-    return false
-  }
-  if (record.payload.role !== 'system') {
-    await tx.done
-    return false
+    return 'missing' as const
   }
 
-  const relations = await relationStore.getAll()
-  const hasBlockingRelation = relations.some(
-    (relation) =>
-      (relation.fromId === blockId || relation.toId === blockId) &&
-      !(relation.type === 'source' && relation.fromId === blockId),
-  )
-  if (hasBlockingRelation) {
-    await tx.done
-    return false
-  }
-  relations.forEach((relation) => {
-    if (relation.type === 'source' && relation.fromId === blockId) {
-      relationStore.delete(relation.id)
+  const handleId = getSystemPromptHandleId(promptBlockId)
+  const existingHandle = await recordStore.get(handleId)
+  const now = Date.now()
+  if (existingHandle) {
+    if (!isSystemPromptHandleAnyRecord(existingHandle)) {
+      throw new Error(
+        `Record id collision: ${handleId} is not a system prompt handle.`,
+      )
     }
-  })
-
-  const tombstoneTime = Date.now()
-  const { payload: _blockPayload, ...blockBase } = record
-  const updated: BlockTombstone = {
-    ...blockBase,
-    updatedAt: tombstoneTime,
-    deletedAt: tombstoneTime,
+    if (isSystemPromptHandleRecord(existingHandle)) {
+      if (existingHandle.payload.promptBlockId !== promptBlockId) {
+        throw new Error(
+          `System prompt handle mismatch for ${promptBlockId}.`,
+        )
+      }
+      if (existingHandle.payload.inLibrary === inLibrary) {
+        await tx.done
+        return 'noop' as const
+      }
+      const updatedHandle: SystemPromptHandleRecord = {
+        ...existingHandle,
+        updatedAt: now,
+        payload: {
+          promptBlockId,
+          inLibrary,
+        },
+      }
+      await recordStore.put(updatedHandle)
+      await tx.done
+      return 'updated' as const
+    }
+    const resurrectedHandle: SystemPromptHandleRecord = {
+      id: existingHandle.id,
+      type: 'system_prompt_handle',
+      createdAt: existingHandle.createdAt,
+      updatedAt: now,
+      payload: {
+        promptBlockId,
+        inLibrary,
+      },
+    }
+    await recordStore.put(resurrectedHandle)
+    await tx.done
+    return 'updated' as const
   }
-  await recordStore.put(updated)
 
+  const handle = buildRecord<'system_prompt_handle', SystemPromptHandlePayload>(
+    'system_prompt_handle',
+    {
+      promptBlockId,
+      inLibrary,
+    },
+    {
+      id: handleId,
+    },
+  )
+  await recordStore.put(handle)
   await tx.done
-  await rebuildRelationIndex(db, indexDb)
-  await invalidateSearchIndex()
-  return true
+  return 'updated' as const
 }
 
 export const listSavedSystemPromptBlocks = async (): Promise<
@@ -1121,7 +1174,7 @@ export const listSavedSystemPromptBlocks = async (): Promise<
   const blockById = new Map(
     records.filter(isBlockRecord).map((record) => [record.id, record]),
   )
-  const promptsById = new Map<string, SavedSystemPromptBlock>()
+  const sourceBlockIdByPromptId = new Map<string, string>()
   relations.forEach((relation) => {
     if (relation.type !== 'source') {
       return
@@ -1131,18 +1184,30 @@ export const listSavedSystemPromptBlocks = async (): Promise<
     if (!promptBlock || !sourceBlock || promptBlock.payload.role !== 'system') {
       return
     }
-    const existing = promptsById.get(promptBlock.id)
+    const existingSourceId = sourceBlockIdByPromptId.get(promptBlock.id)
     if (
-      !existing ||
-      sourceBlock.id.localeCompare(existing.sourceBlockId) < 0
+      !existingSourceId ||
+      sourceBlock.id.localeCompare(existingSourceId) < 0
     ) {
-      promptsById.set(promptBlock.id, {
-        promptBlock,
-        sourceBlockId: sourceBlock.id,
-      })
+      sourceBlockIdByPromptId.set(promptBlock.id, sourceBlock.id)
     }
   })
-  const prompts = Array.from(promptsById.values())
+
+  const prompts: SavedSystemPromptBlock[] = []
+  records.forEach((record) => {
+    if (!isSystemPromptHandleRecord(record) || !record.payload.inLibrary) {
+      return
+    }
+    const promptBlock = blockById.get(record.payload.promptBlockId)
+    if (!promptBlock || promptBlock.payload.role !== 'system') {
+      return
+    }
+    prompts.push({
+      promptBlock,
+      sourceBlockId: sourceBlockIdByPromptId.get(promptBlock.id) ?? promptBlock.id,
+    })
+  })
+
   prompts.sort((left, right) => {
     if (left.promptBlock.createdAt !== right.promptBlock.createdAt) {
       return right.promptBlock.createdAt - left.promptBlock.createdAt

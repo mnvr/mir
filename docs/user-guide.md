@@ -160,11 +160,13 @@ Mir can seed a new collection with a saved `system` block before the first gener
 - System prompt selection is available only in a new, empty collection before the first generation.
 - In that empty state, a compact `Sys` indicator near the composer border shows the current choice (`—` for none, `<N> ch` when a prompt is selected).
 - Click the indicator to open an inline selector panel with a compact action bar and a scrollable list of saved prompts.
-- Use Clear in the action bar to unset the prompt, or pick a saved prompt from the list.
+- Use `None` in the action bar to unset the prompt, or pick a saved prompt from the list.
+- Selecting a prompt in the list keeps the selector panel open so you can continue browsing or use row actions.
 - The new-collection selector remembers your last choice on this device and preselects it for the next new collection draft.
-- Each saved prompt row in the selector has a source icon action (`Go to source block`) that jumps to the source block so you can inspect full text or unsave it.
+- Each saved prompt row in the selector has `Edit prompt` and `Go to source block` icon actions.
+- Saving an edit creates a new immutable system prompt block, keeps the previous revision for history, and updates library membership to point at the new revision.
 - When selected, that system prompt block is linked into the new collection ancestry and used in context like any other parent block.
-- A saved system prompt that is already linked in collections is retained to preserve history.
+- Unsaving a system prompt removes it from the library picker for future drafts without changing existing collections that already reference it.
 
 ## Inspect
 
