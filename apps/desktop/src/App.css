@@ -507,7 +507,7 @@
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  padding: 8px 24px calc(var(--chat-bottom-gap) + var(--selected-actions-height));
+  padding: 2px 24px calc(var(--chat-bottom-gap) + var(--selected-actions-height));
   max-width: 820px;
   width: 100%;
   margin: 0 auto;
@@ -888,6 +888,71 @@
 
 .block.input {
   color: #5c5c5c;
+}
+
+.block.block-system {
+  color: #5f5f5f;
+}
+
+.system-block-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.system-block-toggle {
+  border: none;
+  background: transparent;
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: #7e7e7e;
+  line-height: 1;
+}
+
+.system-block-toggle:focus-visible {
+  outline: 2px solid rgba(0, 0, 0, 0.14);
+  outline-offset: 2px;
+}
+
+.system-block-toggle-label {
+  flex: none;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: #8a8a8a;
+}
+
+.system-block-toggle-meta {
+  margin-left: 4px;
+  font-size: 0.62rem;
+  color: #b0b0b0;
+  font-variant-numeric: tabular-nums;
+}
+
+.system-block-toggle .system-block-toggle-caret.codicon {
+  flex: none;
+  width: 8px;
+  min-width: 8px;
+  font-size: 11px;
+  line-height: 1;
+  text-align: left;
+  color: #8e8e8e;
+  transform: translateX(-3px);
+}
+
+.system-block-content {
+  margin: 0;
+  padding: 1px 0 1px 12px;
+  border-left: 2px solid #e3e3e3;
+  color: #7a7a7a;
+  font-size: 0.9rem;
+  line-height: 1.42;
 }
 
 .block.selected::before {
@@ -2937,6 +3002,39 @@
   }
 
   .block.input {
+    color: var(--dm-text-muted);
+  }
+
+  .block.block-system {
+    color: var(--dm-text-muted);
+  }
+
+  .system-block-shell {
+    background: transparent;
+  }
+
+  .system-block-toggle {
+    color: var(--dm-text-muted);
+  }
+
+  .system-block-toggle:focus-visible {
+    outline-color: rgba(220, 220, 220, 0.42);
+  }
+
+  .system-block-toggle .system-block-toggle-caret.codicon {
+    color: var(--dm-text-subtle);
+  }
+
+  .system-block-toggle-label {
+    color: var(--dm-text-subtle);
+  }
+
+  .system-block-toggle-meta {
+    color: var(--dm-text-subtle);
+  }
+
+  .system-block-content {
+    border-left-color: var(--dm-border-soft);
     color: var(--dm-text-muted);
   }
 

@@ -866,6 +866,9 @@ const BlockRow = memo(function BlockRow({
 }: BlockRowProps) {
   const branchChildCount = branchOptions.length
   const hasBranches = branchChildCount > 1
+  const isSystemBlock = block.payload?.role === 'system'
+  const [isSystemCollapsed, setIsSystemCollapsed] = useState(() => isSystemBlock)
+  const systemPromptCharCount = `${block.content.length.toLocaleString()} ch`
   const canSetContinuationCursor =
     block.direction === 'output' &&
     !block.status &&
@@ -876,13 +879,16 @@ const BlockRow = memo(function BlockRow({
     block.direction === 'output' &&
     (block.status === 'error' || block.status === 'canceled')
   const canGenerateNew = canGenerateNewFromInput || canGenerateNewFromOutput
+
   return (
     <div
       ref={(node) => registerRef(block.id, node)}
       data-block-id={block.id}
       className={`block ${block.direction}${
         block.status ? ` ${block.status}` : ''
-      }${isActive ? ' selected' : ''}${hasBranches ? ' has-branches' : ''}`}
+      }${isActive ? ' selected' : ''}${hasBranches ? ' has-branches' : ''}${
+        isSystemBlock ? ' block-system' : ''
+      }`}
       onMouseDown={onMouseDown}
       onClick={(event) => {
         event.stopPropagation()
@@ -910,7 +916,44 @@ const BlockRow = memo(function BlockRow({
           </span>
         </span>
       ) : null}
-      {block.direction === 'input' ? (
+      {isSystemBlock ? (
+        <div className="system-block-shell">
+          <button
+            className="system-block-toggle"
+            type="button"
+            aria-label={`${isSystemCollapsed ? 'Expand' : 'Collapse'} system prompt`}
+            aria-expanded={!isSystemCollapsed}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              setIsSystemCollapsed((prev) => !prev)
+            }}
+          >
+            <span
+              className={`system-block-toggle-caret codicon ${
+                isSystemCollapsed
+                  ? 'codicon-chevron-right'
+                  : 'codicon-chevron-down'
+              }`}
+              aria-hidden="true"
+            />
+            <span className="system-block-toggle-label">System prompt</span>
+            <span className="system-block-toggle-meta">{systemPromptCharCount}</span>
+          </button>
+          {!isSystemCollapsed ? (
+            <blockquote className="system-block-content">
+              <div className="output-markdown">
+                <ReactMarkdown
+                  remarkPlugins={MARKDOWN_PLUGINS}
+                  rehypePlugins={REHYPE_PLUGINS}
+                >
+                  {normalizeMathDelimiters(block.content)}
+                </ReactMarkdown>
+              </div>
+            </blockquote>
+          ) : null}
+        </div>
+      ) : block.direction === 'input' ? (
         <blockquote className="input-quote">
           <ReactMarkdown
             remarkPlugins={MARKDOWN_PLUGINS}
@@ -1287,11 +1330,6 @@ const ChatPane = memo(function ChatPane({
                 type="button"
                 aria-expanded={isSystemPromptPanelOpen}
                 aria-controls="chat-empty-system-panel"
-                title={
-                  selectedSystemPromptOption
-                    ? selectedSystemPromptOption.title
-                    : 'No system prompt selected'
-                }
                 onClick={() => {
                   if (isSystemPromptPanelOpen) {
                     closeSystemPromptPicker()
