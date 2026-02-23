@@ -94,7 +94,7 @@ type SystemPromptPreset = {
   title: string
   content: string
   createdAt: number
-  sourceBlockId: string
+  sourceBlockId: string | null
 }
 
 type SystemPromptSelectOption = {
@@ -102,7 +102,7 @@ type SystemPromptSelectOption = {
   title: string
   content: string
   preview: string
-  sourceBlockId: string
+  sourceBlockId: string | null
   charCount: number
 }
 
@@ -350,12 +350,12 @@ const toSystemPromptPreset = ({
   sourceBlockId,
 }: {
   promptBlock: BlockRecord
-  sourceBlockId: string
+  sourceBlockId: string | null
 }): SystemPromptPreset | null => {
-  const normalizedSourceBlockId = sourceBlockId.trim()
-  if (!normalizedSourceBlockId) {
-    return null
-  }
+  const normalizedSourceBlockId =
+    typeof sourceBlockId === 'string' && sourceBlockId.trim().length > 0
+      ? sourceBlockId.trim()
+      : null
   const record = promptBlock
   if (record.payload.role !== 'system') {
     return null
@@ -994,11 +994,13 @@ type ChatPaneProps = {
   selectedSystemPromptId: string | null
   onConfigure: () => void
   onSelectSystemPrompt: (id: string | null) => void
+  onCreateSystemPrompt: (content: string) => Promise<string | null>
   onEditSystemPrompt: (
     promptId: string,
     nextContent: string,
-    sourceBlockId: string,
+    sourceBlockId: string | null,
   ) => Promise<string | null>
+  onDeleteSystemPrompt: (promptId: string) => Promise<boolean>
   onOpenSystemPromptSource: (sourceBlockId: string) => void
   endRef: React.RefObject<HTMLDivElement | null>
   onChatClick: (event: MouseEvent<HTMLElement>) => void
@@ -1025,7 +1027,9 @@ const ChatPane = memo(function ChatPane({
   selectedSystemPromptId,
   onConfigure,
   onSelectSystemPrompt,
+  onCreateSystemPrompt,
   onEditSystemPrompt,
+  onDeleteSystemPrompt,
   onOpenSystemPromptSource,
   endRef,
   onChatClick,
@@ -1041,13 +1045,16 @@ const ChatPane = memo(function ChatPane({
   const [editingSystemPromptId, setEditingSystemPromptId] = useState<string | null>(
     null,
   )
+  const [isCreatingSystemPrompt, setIsCreatingSystemPrompt] = useState(false)
   const [editingSystemPromptDraft, setEditingSystemPromptDraft] = useState('')
   const [isSavingSystemPromptEdit, setIsSavingSystemPromptEdit] = useState(false)
+  const [isConfirmingSystemPromptDelete, setIsConfirmingSystemPromptDelete] =
+    useState(false)
   const [systemPromptActionTooltip, setSystemPromptActionTooltip] = useState<{
     label: string
     left: number
     top: number
-    placement: 'top' | 'bottom'
+    vertical: 'top' | 'bottom'
   } | null>(null)
   const systemPromptPickerRef = useRef<HTMLDivElement | null>(null)
   const isEmptyState = blocks.length === 0 && showEmptyState
@@ -1065,15 +1072,24 @@ const ChatPane = memo(function ChatPane({
     ? systemPromptOptions.find((option) => option.id === editingSystemPromptId) ??
       null
     : null
+  const isSystemPromptEditorOpen =
+    isCreatingSystemPrompt || Boolean(editingSystemPromptOption)
   const isSystemPromptEditValid =
     editingSystemPromptDraft.trim().length > 0 &&
-    Boolean(editingSystemPromptOption) &&
+    (isCreatingSystemPrompt || Boolean(editingSystemPromptOption)) &&
     !isSavingSystemPromptEdit
+  const systemPromptEditorAriaLabel = isCreatingSystemPrompt
+    ? 'Create system prompt'
+    : editingSystemPromptOption
+      ? `Edit system prompt ${editingSystemPromptOption.title}`
+      : 'Edit system prompt'
 
   const resetSystemPromptEditor = useCallback(() => {
+    setIsCreatingSystemPrompt(false)
     setEditingSystemPromptId(null)
     setEditingSystemPromptDraft('')
     setIsSavingSystemPromptEdit(false)
+    setIsConfirmingSystemPromptDelete(false)
     setSystemPromptActionTooltip(null)
   }, [])
 
@@ -1121,12 +1137,12 @@ const ChatPane = memo(function ChatPane({
   const showSystemPromptActionTooltip = useCallback(
     (label: string, anchorElement: HTMLElement) => {
       const rect = anchorElement.getBoundingClientRect()
-      const placement = rect.top < 44 ? 'bottom' : 'top'
+      const vertical: 'top' | 'bottom' = rect.top < 44 ? 'bottom' : 'top'
       setSystemPromptActionTooltip({
         label,
-        left: Math.round(rect.right),
-        top: Math.round(placement === 'bottom' ? rect.bottom + 8 : rect.top - 8),
-        placement,
+        left: Math.round(rect.left + rect.width / 2),
+        top: Math.round(vertical === 'bottom' ? rect.bottom + 8 : rect.top - 8),
+        vertical,
       })
     },
     [],
@@ -1137,7 +1153,10 @@ const ChatPane = memo(function ChatPane({
   }, [])
 
   const handleSaveSystemPromptEdit = useCallback(() => {
-    if (!editingSystemPromptOption || isSavingSystemPromptEdit) {
+    if (isSavingSystemPromptEdit) {
+      return
+    }
+    if (!editingSystemPromptOption && !isCreatingSystemPrompt) {
       return
     }
     const nextContent = editingSystemPromptDraft
@@ -1145,20 +1164,27 @@ const ChatPane = memo(function ChatPane({
       return
     }
 
-    const wasSelected = selectedSystemPromptId === editingSystemPromptOption.id
+    const wasSelected =
+      !isCreatingSystemPrompt &&
+      selectedSystemPromptId === editingSystemPromptOption?.id
+    setIsConfirmingSystemPromptDelete(false)
     setIsSavingSystemPromptEdit(true)
-    void onEditSystemPrompt(
-      editingSystemPromptOption.id,
-      nextContent,
-      editingSystemPromptOption.sourceBlockId,
-    )
+    const saveOperation = isCreatingSystemPrompt
+      ? onCreateSystemPrompt(nextContent)
+      : onEditSystemPrompt(
+          editingSystemPromptOption!.id,
+          nextContent,
+          editingSystemPromptOption!.sourceBlockId,
+        )
+    void saveOperation
       .then((nextPromptId) => {
         if (!nextPromptId) {
           return
         }
-        if (wasSelected) {
+        if (isCreatingSystemPrompt || wasSelected) {
           onSelectSystemPrompt(nextPromptId)
         }
+        setIsCreatingSystemPrompt(false)
         setEditingSystemPromptId(null)
         setEditingSystemPromptDraft('')
       })
@@ -1171,8 +1197,67 @@ const ChatPane = memo(function ChatPane({
   }, [
     editingSystemPromptDraft,
     editingSystemPromptOption,
+    isCreatingSystemPrompt,
     isSavingSystemPromptEdit,
+    onCreateSystemPrompt,
     onEditSystemPrompt,
+    onSelectSystemPrompt,
+    selectedSystemPromptId,
+  ])
+
+  const handleBeginSystemPromptDeleteConfirm = useCallback(() => {
+    if (!editingSystemPromptOption || isSavingSystemPromptEdit) {
+      return
+    }
+    hideSystemPromptActionTooltip()
+    setIsConfirmingSystemPromptDelete(true)
+  }, [
+    editingSystemPromptOption,
+    hideSystemPromptActionTooltip,
+    isSavingSystemPromptEdit,
+  ])
+
+  const handleCancelSystemPromptDeleteConfirm = useCallback(() => {
+    hideSystemPromptActionTooltip()
+    setIsConfirmingSystemPromptDelete(false)
+  }, [hideSystemPromptActionTooltip])
+
+  const handleDeleteSystemPromptEdit = useCallback(() => {
+    if (
+      !editingSystemPromptOption ||
+      isSavingSystemPromptEdit ||
+      !isConfirmingSystemPromptDelete
+    ) {
+      return
+    }
+    hideSystemPromptActionTooltip()
+    const promptId = editingSystemPromptOption.id
+    setIsSavingSystemPromptEdit(true)
+    void onDeleteSystemPrompt(promptId)
+      .then((didDelete) => {
+        if (!didDelete) {
+          return
+        }
+        if (selectedSystemPromptId === promptId) {
+          onSelectSystemPrompt(null)
+        }
+        setIsCreatingSystemPrompt(false)
+        setEditingSystemPromptId(null)
+        setEditingSystemPromptDraft('')
+        setIsConfirmingSystemPromptDelete(false)
+      })
+      .catch((error) => {
+        console.error('[blocks] failed to delete saved system prompt', error)
+      })
+      .finally(() => {
+        setIsSavingSystemPromptEdit(false)
+      })
+  }, [
+    editingSystemPromptOption,
+    hideSystemPromptActionTooltip,
+    isConfirmingSystemPromptDelete,
+    isSavingSystemPromptEdit,
+    onDeleteSystemPrompt,
     onSelectSystemPrompt,
     selectedSystemPromptId,
   ])
@@ -1232,19 +1317,29 @@ const ChatPane = memo(function ChatPane({
                     </span>
                     <span className="chat-empty-system-toolbar-actions">
                       <button
-                        className={`chat-empty-system-toolbar-action${
-                          selectedSystemPromptOption ? '' : ' is-hidden'
-                        }`}
+                        className="chat-empty-system-toolbar-action"
                         type="button"
                         disabled={!selectedSystemPromptOption}
-                        aria-hidden={!selectedSystemPromptOption}
                         onClick={() => onSelectSystemPrompt(null)}
                       >
                         None
                       </button>
+                      <button
+                        className="chat-empty-system-toolbar-action"
+                        type="button"
+                        onClick={() => {
+                          setIsCreatingSystemPrompt(true)
+                          setEditingSystemPromptId(null)
+                          setEditingSystemPromptDraft('')
+                          setIsConfirmingSystemPromptDelete(false)
+                          setSystemPromptActionTooltip(null)
+                        }}
+                      >
+                        New
+                      </button>
                     </span>
                   </div>
-                  {editingSystemPromptOption ? (
+                  {isSystemPromptEditorOpen ? (
                     <div className="chat-empty-system-editor">
                       <textarea
                         className="chat-empty-system-editor-input"
@@ -1254,28 +1349,124 @@ const ChatPane = memo(function ChatPane({
                         }
                         rows={5}
                         spellCheck={false}
-                        aria-label={`Edit system prompt ${editingSystemPromptOption.title}`}
+                        aria-label={systemPromptEditorAriaLabel}
                       />
                       <div className="chat-empty-system-editor-actions">
-                        <button
-                          className="chat-empty-system-toolbar-action"
-                          type="button"
-                          onClick={() => {
-                            setEditingSystemPromptId(null)
-                            setEditingSystemPromptDraft('')
-                          }}
-                          disabled={isSavingSystemPromptEdit}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          className="chat-empty-system-toolbar-action"
-                          type="button"
-                          onClick={handleSaveSystemPromptEdit}
-                          disabled={!isSystemPromptEditValid}
-                        >
-                          {isSavingSystemPromptEdit ? 'Saving...' : 'Save'}
-                        </button>
+                        <span className="chat-empty-system-editor-actions-left">
+                          {!isCreatingSystemPrompt && editingSystemPromptOption ? (
+                            !isConfirmingSystemPromptDelete ? (
+                              <span
+                                className="chat-empty-system-tooltip-anchor"
+                                onMouseEnter={(event) =>
+                                  showSystemPromptActionTooltip(
+                                    'Delete prompt',
+                                    event.currentTarget,
+                                  )
+                                }
+                                onMouseLeave={hideSystemPromptActionTooltip}
+                                onFocus={(event) =>
+                                  showSystemPromptActionTooltip(
+                                    'Delete prompt',
+                                    event.currentTarget,
+                                  )
+                                }
+                                onBlur={hideSystemPromptActionTooltip}
+                              >
+                                <button
+                                  className="chat-empty-system-option-action-icon"
+                                  type="button"
+                                  aria-label={`Delete prompt ${editingSystemPromptOption.title}`}
+                                  onClick={handleBeginSystemPromptDeleteConfirm}
+                                  disabled={isSavingSystemPromptEdit}
+                                >
+                                  <span className="codicon codicon-trash" aria-hidden="true" />
+                                </button>
+                              </span>
+                            ) : (
+                              <>
+                                <span
+                                  className="chat-empty-system-tooltip-anchor"
+                                  onMouseEnter={(event) =>
+                                    showSystemPromptActionTooltip(
+                                      'Confirm delete',
+                                      event.currentTarget,
+                                    )
+                                  }
+                                  onMouseLeave={hideSystemPromptActionTooltip}
+                                  onFocus={(event) =>
+                                    showSystemPromptActionTooltip(
+                                      'Confirm delete',
+                                      event.currentTarget,
+                                    )
+                                  }
+                                  onBlur={hideSystemPromptActionTooltip}
+                                >
+                                  <button
+                                    className="chat-empty-system-option-action-icon"
+                                    type="button"
+                                    aria-label={`Confirm delete prompt ${editingSystemPromptOption.title}`}
+                                    onClick={handleDeleteSystemPromptEdit}
+                                    disabled={isSavingSystemPromptEdit}
+                                  >
+                                    <span className="codicon codicon-check" aria-hidden="true" />
+                                  </button>
+                                </span>
+                                <span
+                                  className="chat-empty-system-tooltip-anchor"
+                                  onMouseEnter={(event) =>
+                                    showSystemPromptActionTooltip(
+                                      'Cancel delete',
+                                      event.currentTarget,
+                                    )
+                                  }
+                                  onMouseLeave={hideSystemPromptActionTooltip}
+                                  onFocus={(event) =>
+                                    showSystemPromptActionTooltip(
+                                      'Cancel delete',
+                                      event.currentTarget,
+                                    )
+                                  }
+                                  onBlur={hideSystemPromptActionTooltip}
+                                >
+                                  <button
+                                    className="chat-empty-system-option-action-icon"
+                                    type="button"
+                                    aria-label={`Cancel delete prompt ${editingSystemPromptOption.title}`}
+                                    onClick={handleCancelSystemPromptDeleteConfirm}
+                                    disabled={isSavingSystemPromptEdit}
+                                  >
+                                    <span className="codicon codicon-close" aria-hidden="true" />
+                                  </button>
+                                </span>
+                              </>
+                            )
+                          ) : (
+                            <span className="chat-empty-system-editor-actions-spacer" />
+                          )}
+                        </span>
+                        <span className="chat-empty-system-editor-actions-right">
+                          <button
+                            className="chat-empty-system-toolbar-action"
+                            type="button"
+                            onClick={() => {
+                              setIsCreatingSystemPrompt(false)
+                              setEditingSystemPromptId(null)
+                              setEditingSystemPromptDraft('')
+                              setIsConfirmingSystemPromptDelete(false)
+                            }}
+                            disabled={isSavingSystemPromptEdit}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            className="chat-empty-system-toolbar-action"
+                            type="button"
+                            onClick={handleSaveSystemPromptEdit}
+                            disabled={!isSystemPromptEditValid}
+                          >
+                            {isSavingSystemPromptEdit ? 'Saving...' : 'Save'}
+                          </button>
+                        </span>
                       </div>
                     </div>
                   ) : null}
@@ -1328,6 +1519,8 @@ const ChatPane = memo(function ChatPane({
                                   type="button"
                                   aria-label={`Edit prompt ${option.title}`}
                                   onClick={() => {
+                                    setIsCreatingSystemPrompt(false)
+                                    setIsConfirmingSystemPromptDelete(false)
                                     setEditingSystemPromptId(option.id)
                                     setEditingSystemPromptDraft(option.content)
                                   }}
@@ -1339,14 +1532,18 @@ const ChatPane = memo(function ChatPane({
                                 className="chat-empty-system-tooltip-anchor"
                                 onMouseEnter={(event) =>
                                   showSystemPromptActionTooltip(
-                                    'Go to source block',
+                                    option.sourceBlockId
+                                      ? 'Go to source block'
+                                      : 'No source block',
                                     event.currentTarget,
                                   )
                                 }
                                 onMouseLeave={hideSystemPromptActionTooltip}
                                 onFocus={(event) =>
                                   showSystemPromptActionTooltip(
-                                    'Go to source block',
+                                    option.sourceBlockId
+                                      ? 'Go to source block'
+                                      : 'No source block',
                                     event.currentTarget,
                                   )
                                 }
@@ -1357,9 +1554,14 @@ const ChatPane = memo(function ChatPane({
                                   type="button"
                                   aria-label={`Go to source block for ${option.title}`}
                                   onClick={() => {
+                                    const sourceBlockId = option.sourceBlockId
+                                    if (!sourceBlockId) {
+                                      return
+                                    }
                                     closeSystemPromptPicker()
-                                    onOpenSystemPromptSource(option.sourceBlockId)
+                                    onOpenSystemPromptSource(sourceBlockId)
                                   }}
+                                  disabled={!option.sourceBlockId}
                                 >
                                   <span
                                     className="codicon codicon-go-to-file"
@@ -1374,8 +1576,8 @@ const ChatPane = memo(function ChatPane({
                     </div>
                   ) : (
                     <div className="chat-empty-system-panel-empty">
-                      No saved system prompts yet. Save a block in Inspect to use
-                      it here.
+                      No saved system prompts yet. Use New to create one, or save
+                      a block in Inspect.
                     </div>
                   )}
                 </div>
@@ -1385,11 +1587,7 @@ const ChatPane = memo(function ChatPane({
           {systemPromptActionTooltip && typeof document !== 'undefined'
             ? createPortal(
                 <div
-                  className={`chat-empty-system-floating-tooltip${
-                    systemPromptActionTooltip.placement === 'bottom'
-                      ? ' is-bottom'
-                      : ''
-                  }`}
+                  className={`chat-empty-system-floating-tooltip is-${systemPromptActionTooltip.vertical}`}
                   style={{
                     left: `${systemPromptActionTooltip.left}px`,
                     top: `${systemPromptActionTooltip.top}px`,
@@ -2032,6 +2230,9 @@ function App() {
   const systemPromptIdBySourceBlockId = useMemo(() => {
     const bySource = new Map<string, string>()
     systemPromptLibrary.forEach((prompt) => {
+      if (!prompt.sourceBlockId) {
+        return
+      }
       if (!bySource.has(prompt.sourceBlockId)) {
         bySource.set(prompt.sourceBlockId, prompt.id)
       }
@@ -3653,7 +3854,7 @@ function App() {
     async (
       promptId: string,
       nextContent: string,
-      sourceBlockId: string,
+      sourceBlockId: string | null,
     ): Promise<string | null> => {
       const existingPrompt = systemPromptLibraryById.get(promptId)
       if (!existingPrompt) {
@@ -3678,15 +3879,14 @@ function App() {
         { recordId: nextPromptId },
       )
 
-      let relationState = await ensureBlockHasSourceRelation(
-        nextPromptId,
-        sourceBlockId,
-      )
-      if (relationState === 'missing') {
-        relationState = await ensureBlockHasSourceRelation(nextPromptId, promptId)
-      }
-      if (relationState === 'missing') {
-        console.warn('[blocks] failed to link edited system prompt source')
+      if (sourceBlockId) {
+        const relationState = await ensureBlockHasSourceRelation(
+          nextPromptId,
+          sourceBlockId,
+        )
+        if (relationState === 'missing') {
+          console.warn('[blocks] failed to link edited system prompt source')
+        }
       }
 
       const enableResult = await setSavedSystemPromptLibraryState(
@@ -3710,6 +3910,48 @@ function App() {
       return nextPromptId
     },
     [loadSystemPromptLibrary, systemPromptLibraryById],
+  )
+
+  const handleCreateSavedSystemPrompt = useCallback(
+    async (content: string): Promise<string | null> => {
+      const normalizedContent = content.replace(/\r\n/g, '\n')
+      if (!normalizedContent.trim()) {
+        return null
+      }
+
+      const promptId = createId('block')
+      await upsertStandaloneBlock(
+        {
+          role: 'system',
+          content: normalizedContent,
+          localTimestamp: formatLocalTimestamp(new Date()),
+        },
+        { recordId: promptId },
+      )
+
+      const libraryState = await setSavedSystemPromptLibraryState(promptId, true)
+      if (libraryState === 'missing') {
+        console.warn('[blocks] failed to add new saved system prompt to library')
+        return null
+      }
+
+      await loadSystemPromptLibrary()
+      return promptId
+    },
+    [loadSystemPromptLibrary],
+  )
+
+  const handleDeleteSavedSystemPrompt = useCallback(
+    async (promptId: string): Promise<boolean> => {
+      const result = await setSavedSystemPromptLibraryState(promptId, false)
+      if (result === 'missing') {
+        console.warn('[blocks] failed to delete saved system prompt')
+        return false
+      }
+      await loadSystemPromptLibrary()
+      return true
+    },
+    [loadSystemPromptLibrary],
   )
 
   const handleSelectPendingSystemPrompt = useCallback(
@@ -5906,7 +6148,9 @@ function App() {
                 selectedSystemPromptId={pendingSystemPromptId}
                 onConfigure={() => openSettingsRef.current()}
                 onSelectSystemPrompt={handleSelectPendingSystemPrompt}
+                onCreateSystemPrompt={handleCreateSavedSystemPrompt}
                 onEditSystemPrompt={handleEditSavedSystemPrompt}
+                onDeleteSystemPrompt={handleDeleteSavedSystemPrompt}
                 onOpenSystemPromptSource={handleOpenSystemPromptSource}
                 endRef={endRef}
                 onChatClick={handleChatClick}

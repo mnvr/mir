@@ -72,7 +72,7 @@ const isSystemPromptHandleAnyRecord = (
 
 export type SavedSystemPromptBlock = {
   promptBlock: BlockRecord
-  sourceBlockId: string
+  sourceBlockId: string | null
 }
 
 const getSystemPromptHandleId = (promptBlockId: string) =>
@@ -1204,7 +1204,7 @@ export const listSavedSystemPromptBlocks = async (): Promise<
     }
     prompts.push({
       promptBlock,
-      sourceBlockId: sourceBlockIdByPromptId.get(promptBlock.id) ?? promptBlock.id,
+      sourceBlockId: sourceBlockIdByPromptId.get(promptBlock.id) ?? null,
     })
   })
 
