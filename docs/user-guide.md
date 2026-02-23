@@ -160,10 +160,11 @@ Mir can seed a new collection with a saved `system` block before the first gener
 - System prompt selection is available only in a new, empty collection before the first generation.
 - In that empty state, a compact `Sys` indicator near the composer border shows the current choice (`—` for none, `<N> ch` when a prompt is selected).
 - Click the indicator to open an inline selector panel with a compact action bar and a scrollable list of saved prompts.
-- The action bar always shows `None` and `New`.
+- The action bar always shows `None`, `Scan`, and `New`.
 - Use `None` to clear selection for the current draft (`None` is disabled when nothing is selected).
+- Use `Scan` to import previously used system blocks from existing collections into the reusable prompt library. Existing library entries remain unchanged.
 - Use `New` to create a prompt directly from the panel.
-- If no prompts are saved yet, the panel shows an empty-state hint and keeps `New` available.
+- If no prompts are saved yet, the panel shows an empty-state hint and keeps all actions available, including `Scan`.
 - Selecting a prompt in the list keeps the selector panel open so you can continue browsing or use row actions.
 - The new-collection selector remembers your last choice on this device and preselects it for the next new collection draft.
 - Each saved prompt row in the selector has `Edit prompt` and `Go to source block` icon actions.

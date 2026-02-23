@@ -1217,6 +1217,56 @@ export const listSavedSystemPromptBlocks = async (): Promise<
   return prompts
 }
 
+export const importUsedSystemPromptBlocksToLibrary = async (): Promise<{
+  scanned: number
+  added: number
+}> => {
+  const db = await getDb()
+  const [records, relations] = await Promise.all([
+    db.getAll('records'),
+    db.getAll('relations'),
+  ])
+  const collectionIdSet = new Set(
+    records.filter(isCollectionRecord).map((record) => record.id),
+  )
+  const blockById = new Map(
+    records.filter(isBlockRecord).map((record) => [record.id, record]),
+  )
+  const candidatePromptIds = new Set<string>()
+  relations.forEach((relation) => {
+    if (relation.type !== 'contains' || !collectionIdSet.has(relation.fromId)) {
+      return
+    }
+    const block = blockById.get(relation.toId)
+    if (!block || block.payload.role !== 'system') {
+      return
+    }
+    candidatePromptIds.add(block.id)
+  })
+
+  const sortedPromptIds = Array.from(candidatePromptIds).sort((left, right) => {
+    const leftBlock = blockById.get(left)
+    const rightBlock = blockById.get(right)
+    if (leftBlock && rightBlock && leftBlock.createdAt !== rightBlock.createdAt) {
+      return rightBlock.createdAt - leftBlock.createdAt
+    }
+    return left.localeCompare(right)
+  })
+
+  let added = 0
+  for (const promptId of sortedPromptIds) {
+    const result = await setSavedSystemPromptLibraryState(promptId, true)
+    if (result === 'updated') {
+      added += 1
+    }
+  }
+
+  return {
+    scanned: sortedPromptIds.length,
+    added,
+  }
+}
+
 export const searchBlocks = async (
   query: string,
   options?: {

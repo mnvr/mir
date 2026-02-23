@@ -48,6 +48,7 @@ import {
   ensureCollectionContainsBlock,
   getActiveCollection,
   getKvValue,
+  importUsedSystemPromptBlocksToLibrary,
   listCollectionIdsContainingBlock,
   listSavedSystemPromptBlocks,
   listCollectionBlockGraph,
@@ -1044,6 +1045,7 @@ type ChatPaneProps = {
     sourceBlockId: string | null,
   ) => Promise<string | null>
   onDeleteSystemPrompt: (promptId: string) => Promise<boolean>
+  onImportUsedSystemPromptBlocks: () => Promise<number>
   onOpenSystemPromptSource: (sourceBlockId: string) => void
   endRef: React.RefObject<HTMLDivElement | null>
   onChatClick: (event: MouseEvent<HTMLElement>) => void
@@ -1073,6 +1075,7 @@ const ChatPane = memo(function ChatPane({
   onCreateSystemPrompt,
   onEditSystemPrompt,
   onDeleteSystemPrompt,
+  onImportUsedSystemPromptBlocks,
   onOpenSystemPromptSource,
   endRef,
   onChatClick,
@@ -1091,6 +1094,8 @@ const ChatPane = memo(function ChatPane({
   const [isCreatingSystemPrompt, setIsCreatingSystemPrompt] = useState(false)
   const [editingSystemPromptDraft, setEditingSystemPromptDraft] = useState('')
   const [isSavingSystemPromptEdit, setIsSavingSystemPromptEdit] = useState(false)
+  const [isImportingUsedSystemPromptBlocks, setIsImportingUsedSystemPromptBlocks] =
+    useState(false)
   const [isConfirmingSystemPromptDelete, setIsConfirmingSystemPromptDelete] =
     useState(false)
   const [systemPromptActionTooltip, setSystemPromptActionTooltip] = useState<{
@@ -1305,6 +1310,20 @@ const ChatPane = memo(function ChatPane({
     selectedSystemPromptId,
   ])
 
+  const handleImportUsedSystemPromptBlocks = useCallback(() => {
+    if (isImportingUsedSystemPromptBlocks) {
+      return
+    }
+    setIsImportingUsedSystemPromptBlocks(true)
+    void onImportUsedSystemPromptBlocks()
+      .catch((error) => {
+        console.error('[blocks] failed to import used system prompt blocks', error)
+      })
+      .finally(() => {
+        setIsImportingUsedSystemPromptBlocks(false)
+      })
+  }, [isImportingUsedSystemPromptBlocks, onImportUsedSystemPromptBlocks])
+
   return (
     <main className={`chat chat-pane${isEmptyState ? ' is-empty' : ''}`} onClick={onChatClick}>
       {isEmptyState ? (
@@ -1361,6 +1380,16 @@ const ChatPane = memo(function ChatPane({
                         onClick={() => onSelectSystemPrompt(null)}
                       >
                         None
+                      </button>
+                      <button
+                        className="chat-empty-system-toolbar-action"
+                        type="button"
+                        onClick={handleImportUsedSystemPromptBlocks}
+                        disabled={isImportingUsedSystemPromptBlocks}
+                      >
+                        {isImportingUsedSystemPromptBlocks
+                          ? 'Scanning...'
+                          : 'Scan'}
                       </button>
                       <button
                         className="chat-empty-system-toolbar-action"
@@ -1614,8 +1643,11 @@ const ChatPane = memo(function ChatPane({
                     </div>
                   ) : (
                     <div className="chat-empty-system-panel-empty">
-                      No saved system prompts yet. Use New to create one, or save
-                      a block in Inspect.
+                      <p>No saved system prompts yet.</p>
+                      <p>
+                        Use Scan to import system blocks from existing collections,
+                        New to create one, or save an existing block in Inspect.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -3992,6 +4024,15 @@ function App() {
     [loadSystemPromptLibrary],
   )
 
+  const handleImportUsedSystemPromptBlocks = useCallback(
+    async (): Promise<number> => {
+      const result = await importUsedSystemPromptBlocksToLibrary()
+      await loadSystemPromptLibrary()
+      return result.added
+    },
+    [loadSystemPromptLibrary],
+  )
+
   const handleSelectPendingSystemPrompt = useCallback(
     (nextPromptId: string | null) => {
       setPendingSystemPromptId(nextPromptId)
@@ -6189,6 +6230,7 @@ function App() {
                 onCreateSystemPrompt={handleCreateSavedSystemPrompt}
                 onEditSystemPrompt={handleEditSavedSystemPrompt}
                 onDeleteSystemPrompt={handleDeleteSavedSystemPrompt}
+                onImportUsedSystemPromptBlocks={handleImportUsedSystemPromptBlocks}
                 onOpenSystemPromptSource={handleOpenSystemPromptSource}
                 endRef={endRef}
                 onChatClick={handleChatClick}
