@@ -77,6 +77,7 @@ type BlockDirection = 'input' | 'output'
 
 type Block = {
   id: string
+  createdAt?: number
   direction: BlockDirection
   content: string
   payload?: BlockPayload
@@ -201,6 +202,7 @@ const isPersistedBlockId = (id: string) => id.startsWith('block_')
 
 const recordToBlock = (record: BlockRecord): Block => ({
   id: record.id,
+  createdAt: record.createdAt,
   direction: blockDirectionForRole(record.payload.role),
   content: record.payload.content,
   payload: record.payload,
@@ -338,6 +340,16 @@ const formatCollectionListMetaTimestamp = (collection: CollectionRecord) =>
   formatQuickTimestamp(collection.payload.localTimestamp) ??
   collection.payload.localTimestamp ??
   '—'
+
+const compareCollectionsByCreatedAtDesc = (
+  left: CollectionRecord,
+  right: CollectionRecord,
+) => {
+  if (left.createdAt !== right.createdAt) {
+    return right.createdAt - left.createdAt
+  }
+  return left.id.localeCompare(right.id)
+}
 
 const summarizeBlockContent = (content: string, maxLength = 84) => {
   const normalized = content.replace(/\s+/g, ' ').trim()
@@ -1999,19 +2011,51 @@ function App() {
     })
     return byParent
   }, [blockIndexById, resolvedParentIdByBlockId])
-  const leafBlockIds = useMemo(() => {
-    const leaves = blocks
-      .filter((block) => (childIdsByParentId[block.id]?.length ?? 0) === 0)
-      .map((block) => block.id)
-    leaves.sort((a, b) => (blockIndexById[a] ?? 0) - (blockIndexById[b] ?? 0))
-    return leaves
-  }, [blockIndexById, blocks, childIdsByParentId])
-  const latestLeafBlockId =
-    leafBlockIds.length > 0
-      ? leafBlockIds[leafBlockIds.length - 1]
-      : blocks.length > 0
-        ? blocks[blocks.length - 1]?.id ?? null
-        : null
+  const latestLeafBlockId = useMemo(() => {
+    let latestLeafId: string | null = null
+    let latestLeafIndex = -1
+    let latestLeafCreatedAt: number | null = null
+
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index]
+      if (!block) {
+        continue
+      }
+      if ((childIdsByParentId[block.id]?.length ?? 0) > 0) {
+        continue
+      }
+      const candidateCreatedAt =
+        typeof block.createdAt === 'number' && Number.isFinite(block.createdAt)
+          ? block.createdAt
+          : null
+      if (!latestLeafId) {
+        latestLeafId = block.id
+        latestLeafIndex = index
+        latestLeafCreatedAt = candidateCreatedAt
+        continue
+      }
+      const latestCreatedAt = latestLeafCreatedAt
+      const shouldReplace =
+        candidateCreatedAt !== null && latestCreatedAt !== null
+          ? candidateCreatedAt > latestCreatedAt ||
+            (candidateCreatedAt === latestCreatedAt && index > latestLeafIndex)
+          : candidateCreatedAt !== null && latestCreatedAt === null
+            ? true
+            : candidateCreatedAt === null && latestCreatedAt === null
+              ? index > latestLeafIndex
+              : false
+      if (shouldReplace) {
+        latestLeafId = block.id
+        latestLeafIndex = index
+        latestLeafCreatedAt = candidateCreatedAt
+      }
+    }
+
+    if (latestLeafId) {
+      return latestLeafId
+    }
+    return blocks.length > 0 ? blocks[blocks.length - 1]?.id ?? null : null
+  }, [blocks, childIdsByParentId])
   const effectivePathLeafId =
     pathLeafId && blocksById.has(pathLeafId) ? pathLeafId : latestLeafBlockId
   const visiblePathBlockIds = useMemo(() => {
@@ -2556,10 +2600,52 @@ function App() {
 
   const upsertCollection = useCallback((collection: CollectionRecord) => {
     setCollections((prev) => {
-      const next = prev.filter((item) => item.id !== collection.id)
-      return [collection, ...next]
+      const next = [collection, ...prev.filter((item) => item.id !== collection.id)]
+      next.sort(compareCollectionsByCreatedAtDesc)
+      return next
     })
   }, [])
+
+  const bumpCollectionActivity = useCallback(
+    (targetCollectionId: string, activityAt: number) => {
+      if (!Number.isFinite(activityAt)) {
+        return
+      }
+      setCollections((prev) => {
+        const targetIndex = prev.findIndex(
+          (collection) => collection.id === targetCollectionId,
+        )
+        if (targetIndex === -1) {
+          return prev
+        }
+        const current = prev[targetIndex]
+        if (!current || current.createdAt >= activityAt) {
+          return prev
+        }
+        const next = [...prev]
+        next[targetIndex] = {
+          ...current,
+          createdAt: activityAt,
+        }
+        next.sort(compareCollectionsByCreatedAtDesc)
+        return next
+      })
+      setActiveCollection((prev) => {
+        if (
+          !prev ||
+          prev.id !== targetCollectionId ||
+          prev.createdAt >= activityAt
+        ) {
+          return prev
+        }
+        return {
+          ...prev,
+          createdAt: activityAt,
+        }
+      })
+    },
+    [],
+  )
 
   const attachBlockToGraph = useCallback(
     (childId: string, parentIds: string[]) => {
@@ -5414,6 +5500,7 @@ function App() {
                         ? {
                             ...block,
                             id: record.id,
+                            createdAt: record.createdAt,
                             content: nextContent,
                             payload: assistantPayload,
                             status: undefined,
@@ -5426,6 +5513,7 @@ function App() {
                   setPathLeafId((prev) =>
                     prev === assistantBlockId ? record.id : prev,
                   )
+                  bumpCollectionActivity(collectionId, record.createdAt)
                 })
                 .catch((error) => {
                   console.error(
@@ -5497,9 +5585,11 @@ function App() {
         ) {
           const parentUserBlock = targetBlock as Block & { payload: BlockPayload }
           const parentUserId = parentUserBlock.id
-          const pendingAssistantId = `b-${Date.now()}-retry-output`
+          const pendingAssistantCreatedAt = Date.now()
+          const pendingAssistantId = `b-${pendingAssistantCreatedAt}-retry-output`
           const pendingAssistantBlock: Block = {
             id: pendingAssistantId,
+            createdAt: pendingAssistantCreatedAt,
             direction: 'output',
             content: '',
             status: 'pending',
@@ -5587,6 +5677,7 @@ function App() {
       attachBlockToGraph,
       baseUrl,
       blocks,
+      bumpCollectionActivity,
       collectionGraph.parentIdsByBlockId,
       collectionId,
       getContextBlocksForParent,
@@ -5632,6 +5723,7 @@ function App() {
       const systemBlock: Block | null = initialSystemPrompt && systemPayload
         ? {
             id: initialSystemPrompt.id,
+            createdAt: initialSystemPrompt.createdAt,
             direction: 'output',
             content: initialSystemPrompt.content,
             payload: systemPayload,
@@ -5644,6 +5736,7 @@ function App() {
       })
       const userBlock: Block = {
         id: `b-${timestamp}-input`,
+        createdAt: timestamp,
         direction: 'input',
         content: trimmedDraft,
         payload: userPayload,
@@ -5652,6 +5745,7 @@ function App() {
 
       const assistantBlock: Block = {
         id: `b-${timestamp}-output`,
+        createdAt: timestamp,
         direction: 'output',
         content: '',
         status: 'pending',
@@ -5764,7 +5858,7 @@ function App() {
             setBlocks((prev) =>
               prev.map((block) =>
                 block.id === userBlock.id
-                  ? { ...block, id: record.id }
+                  ? { ...block, id: record.id, createdAt: record.createdAt }
                   : block.id === assistantBlock.id &&
                       block.retryParentId === userBlock.id
                     ? {
@@ -5778,6 +5872,7 @@ function App() {
             setActiveBlockId((prev) =>
               prev === userBlock.id ? record.id : prev,
             )
+            bumpCollectionActivity(persistedCollectionId, record.createdAt)
           })
           .catch((error) => {
             console.error('[blocks] failed to persist user block', error)
@@ -5851,13 +5946,14 @@ function App() {
           ),
         )
         if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
+          const persistedCollectionId = targetCollectionId
           let assistantParentId: string | null = null
           if (userRecordPromise) {
             const userRecord = await userRecordPromise.catch(() => null)
             assistantParentId = userRecord?.id ?? null
           }
           void appendBlock(
-            targetCollectionId,
+            persistedCollectionId,
             assistantPayload,
             {
               parentIds: assistantParentId ? [assistantParentId] : undefined,
@@ -5875,6 +5971,7 @@ function App() {
                         ? {
                             ...block,
                             id: record.id,
+                            createdAt: record.createdAt,
                             content: nextContent,
                             retryParentId: undefined,
                             transientParentId: undefined,
@@ -5888,6 +5985,7 @@ function App() {
               setActiveBlockId((prev) =>
                 prev === assistantBlock.id ? record.id : prev,
               )
+              bumpCollectionActivity(persistedCollectionId, record.createdAt)
             })
             .catch((error) => {
               console.error(

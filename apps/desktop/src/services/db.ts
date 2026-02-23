@@ -23,10 +23,11 @@ const DB_VERSION = 1
 
 // Local-only derived indexes; safe to drop and rebuild.
 const INDEX_DB_NAME = 'mir-index'
-const INDEX_DB_VERSION = 3
+const INDEX_DB_VERSION = 5
 const RELATION_INDEX_READY_KEY = 'relation_index_ready'
-const COLLECTION_INDEX_READY_KEY = 'collection_index_ready'
+const COLLECTION_INDEX_READY_KEY = 'collection_index_ready_v2'
 const SEARCH_INDEX_READY_KEY = 'search_index_ready'
+const COLLECTION_ACTIVITY_AT_INDEX = 'by_activity_at'
 
 const SEARCH_RESULT_DEFAULT_LIMIT = 40
 const SEARCH_TERM_MAX_COUNT = 8
@@ -102,8 +103,8 @@ type RelationIndexEntry = {
 }
 
 type CollectionIndexEntry = {
-  createdAt: number
   collectionId: string
+  activityAt: number
 }
 
 type BlockTextIndexEntry = {
@@ -144,8 +145,11 @@ type MirIndexSchema = DBSchema & {
     value: RelationIndexEntry
   }
   collection_index: {
-    key: [number, string]
+    key: string
     value: CollectionIndexEntry
+    indexes: {
+      [COLLECTION_ACTIVITY_AT_INDEX]: [number, string]
+    }
   }
   block_text_index: {
     key: [string, string]
@@ -183,16 +187,35 @@ const getDb = () => {
 const getIndexDb = () => {
   if (!indexDbPromise) {
     indexDbPromise = openDB<MirIndexSchema>(INDEX_DB_NAME, INDEX_DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, oldVersion, _newVersion, tx) {
+        const rawDb = db as unknown as IDBDatabase
         if (!db.objectStoreNames.contains('relation_index')) {
           db.createObjectStore('relation_index', {
             keyPath: ['fromId', 'type', 'createdAt', 'relationId'],
           })
         }
+        if (oldVersion < 5 && db.objectStoreNames.contains('collection_index')) {
+          db.deleteObjectStore('collection_index')
+        }
+        if (rawDb.objectStoreNames.contains('collection_activity_index')) {
+          rawDb.deleteObjectStore('collection_activity_index')
+        }
         if (!db.objectStoreNames.contains('collection_index')) {
-          db.createObjectStore('collection_index', {
-            keyPath: ['createdAt', 'collectionId'],
+          const store = db.createObjectStore('collection_index', {
+            keyPath: 'collectionId',
           })
+          store.createIndex(COLLECTION_ACTIVITY_AT_INDEX, [
+            'activityAt',
+            'collectionId',
+          ])
+        } else {
+          const store = tx.objectStore('collection_index')
+          if (!store.indexNames.contains(COLLECTION_ACTIVITY_AT_INDEX)) {
+            store.createIndex(COLLECTION_ACTIVITY_AT_INDEX, [
+              'activityAt',
+              'collectionId',
+            ])
+          }
         }
         if (!db.objectStoreNames.contains('block_text_index')) {
           db.createObjectStore('block_text_index', {
@@ -258,10 +281,11 @@ const buildRelationIndexEntry = (relation: Relation): RelationIndexEntry => ({
 })
 
 const buildCollectionIndexEntry = (
-  collection: CollectionRecord,
+  collectionId: string,
+  activityAt: number,
 ): CollectionIndexEntry => ({
-  createdAt: collection.createdAt,
-  collectionId: collection.id,
+  collectionId,
+  activityAt,
 })
 
 const normalizeSearchText = (value: string) =>
@@ -446,13 +470,38 @@ const rebuildCollectionIndex = async (
   db: IDBPDatabase<MirDbSchema>,
   indexDb: IDBPDatabase<MirIndexSchema>,
 ) => {
-  const records = await db.getAll('records')
+  const [records, relations] = await Promise.all([
+    db.getAll('records'),
+    db.getAll('relations'),
+  ])
   const collections = records.filter(isCollectionRecord)
+  const blockCreatedAtById = new Map(
+    records
+      .filter(isBlockRecord)
+      .map((block) => [block.id, block.createdAt] as const),
+  )
+  const activityByCollectionId = new Map(
+    collections.map((collection) => [collection.id, collection.createdAt] as const),
+  )
+  relations.forEach((relation) => {
+    if (relation.type !== 'contains') {
+      return
+    }
+    const existing = activityByCollectionId.get(relation.fromId)
+    if (existing === undefined) {
+      return
+    }
+    const blockCreatedAt = blockCreatedAtById.get(relation.toId)
+    if (blockCreatedAt === undefined || blockCreatedAt <= existing) {
+      return
+    }
+    activityByCollectionId.set(relation.fromId, blockCreatedAt)
+  })
   const tx = indexDb.transaction(['collection_index', 'meta'], 'readwrite')
   const store = tx.objectStore('collection_index')
   await store.clear()
-  collections.forEach((collection) => {
-    store.put(buildCollectionIndexEntry(collection))
+  activityByCollectionId.forEach((activityAt, collectionId) => {
+    store.put(buildCollectionIndexEntry(collectionId, activityAt))
   })
   await tx.objectStore('meta').put(Date.now(), COLLECTION_INDEX_READY_KEY)
   await tx.done
@@ -524,17 +573,30 @@ const indexRelation = async (relation: Relation) => {
   }
 }
 
-const indexCollection = async (collection: CollectionRecord) => {
+const invalidateCollectionIndex = async () => {
   try {
     const indexDb = await getIndexDb()
-    await indexDb.put('collection_index', buildCollectionIndexEntry(collection))
+    await indexDb.delete('meta', COLLECTION_INDEX_READY_KEY)
   } catch {
-    try {
-      const indexDb = await getIndexDb()
-      await indexDb.delete('meta', COLLECTION_INDEX_READY_KEY)
-    } catch {
-      // Ignore index failures; it can be rebuilt on demand.
+    // Ignore invalidation failures; a future rebuild can recover.
+  }
+}
+
+const indexCollectionActivity = async (
+  collectionId: string,
+  activityAt: number,
+) => {
+  try {
+    const indexDb = await getIndexDb()
+    const tx = indexDb.transaction(['collection_index'], 'readwrite')
+    const store = tx.objectStore('collection_index')
+    const existing = await store.get(collectionId)
+    if (!existing || existing.activityAt < activityAt) {
+      await store.put(buildCollectionIndexEntry(collectionId, activityAt))
     }
+    await tx.done
+  } catch {
+    await invalidateCollectionIndex()
   }
 }
 
@@ -591,7 +653,7 @@ export const createCollection = async (payload: CollectionPayload) => {
   await recordStore.put(collection)
   await kvStore.put(collection.id, 'activeCollectionId')
   await tx.done
-  void indexCollection(collection)
+  void indexCollectionActivity(collection.id, collection.createdAt)
   return collection
 }
 
@@ -717,11 +779,44 @@ export const deleteCollection = async (collectionId: string) => {
 }
 
 export const listCollections = async (): Promise<CollectionRecord[]> => {
-  const db = await getDb()
-  const allRecords = await db.getAll('records')
-  const collections = allRecords.filter(isCollectionRecord)
-  void ensureCollectionIndexReady().catch(() => {})
-  return collections
+  const [db, indexDb] = await Promise.all([getDb(), getIndexDb()])
+  await ensureCollectionIndexReady()
+  const tx = indexDb.transaction(['collection_index'], 'readonly')
+  const activityIndex = tx
+    .objectStore('collection_index')
+    .index(COLLECTION_ACTIVITY_AT_INDEX)
+  const orderedEntries: CollectionIndexEntry[] = []
+  let cursor = await activityIndex.openCursor(null, 'prev')
+  while (cursor) {
+    orderedEntries.push(cursor.value)
+    cursor = await cursor.continue()
+  }
+  await tx.done
+  if (orderedEntries.length === 0) {
+    return []
+  }
+  const records = await Promise.all(
+    orderedEntries.map((entry) => db.get('records', entry.collectionId)),
+  )
+  return records
+    .map((record, index) => {
+      if (!isCollectionRecord(record)) {
+        return null
+      }
+      const activityAt = orderedEntries[index]?.activityAt
+      if (
+        activityAt === undefined ||
+        !Number.isFinite(activityAt) ||
+        activityAt === record.createdAt
+      ) {
+        return record
+      }
+      return {
+        ...record,
+        createdAt: activityAt,
+      }
+    })
+    .filter((collection): collection is CollectionRecord => Boolean(collection))
 }
 
 const sortBlocksByParent = async (
@@ -967,6 +1062,16 @@ export const appendBlock = async (
   uniqueRelations.forEach((relation) => {
     void indexRelation(relation)
   })
+  if (
+    uniqueRelations.some(
+      (relation) =>
+        relation.type === 'contains' &&
+        relation.fromId === collectionId &&
+        relation.toId === record.id,
+    )
+  ) {
+    void indexCollectionActivity(collectionId, record.createdAt)
+  }
   void indexBlockSearchEntry(record as BlockRecord, collectionId)
 
   return record as BlockRecord
@@ -1037,6 +1142,7 @@ export const ensureCollectionContainsBlock = async (
   await relationStore.put(relation)
   await tx.done
   void indexRelation(relation)
+  void indexCollectionActivity(collectionId, blockRecord.createdAt)
   void indexBlockSearchEntry(blockRecord, collectionId)
   return 'linked' as const
 }
@@ -1422,6 +1528,9 @@ export const writeRecordsAndRelations = async (
   records: MirRecord[],
   relations: Relation[],
 ) => {
+  const hasTombstones = records.some(
+    (record) => typeof (record as { deletedAt?: number }).deletedAt === 'number',
+  )
   const db = await getDb()
   const tx = db.transaction(['records', 'relations'], 'readwrite')
   const recordStore = tx.objectStore('records')
@@ -1433,6 +1542,9 @@ export const writeRecordsAndRelations = async (
     relationStore.put(relation)
   })
   await tx.done
+  if (hasTombstones) {
+    await invalidateCollectionIndex()
+  }
   await invalidateSearchIndex()
 }
 
@@ -1440,10 +1552,49 @@ export const indexCollectionsAndRelations = async (
   collections: CollectionRecord[],
   relations: Relation[],
 ) => {
-  await Promise.all(collections.map((collection) => indexCollection(collection)))
+  await Promise.all(
+    collections.map((collection) =>
+      indexCollectionActivity(collection.id, collection.createdAt),
+    ),
+  )
   relations.forEach((relation) => {
     void indexRelation(relation)
   })
+  const containsRelations = relations.filter((relation) => relation.type === 'contains')
+  if (containsRelations.length === 0) {
+    return
+  }
+  try {
+    const db = await getDb()
+    const blockIds = Array.from(new Set(containsRelations.map((relation) => relation.toId)))
+    const blockRecords = await Promise.all(
+      blockIds.map((blockId) => db.get('records', blockId)),
+    )
+    const blockCreatedAtById = new Map(
+      blockRecords
+        .filter(isBlockRecord)
+        .map((record) => [record.id, record.createdAt] as const),
+    )
+    const latestActivityByCollectionId = new Map<string, number>()
+    containsRelations.forEach((relation) => {
+      const blockCreatedAt = blockCreatedAtById.get(relation.toId)
+      if (blockCreatedAt === undefined) {
+        return
+      }
+      const existing = latestActivityByCollectionId.get(relation.fromId)
+      if (existing === undefined || blockCreatedAt > existing) {
+        latestActivityByCollectionId.set(relation.fromId, blockCreatedAt)
+      }
+    })
+    await Promise.all(
+      Array.from(latestActivityByCollectionId.entries()).map(
+        ([collectionId, activityAt]) =>
+          indexCollectionActivity(collectionId, activityAt),
+      ),
+    )
+  } catch {
+    await invalidateCollectionIndex()
+  }
 }
 
 export const getKvValue = async <T>(key: string): Promise<T | undefined> => {
