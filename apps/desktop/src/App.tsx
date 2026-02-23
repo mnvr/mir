@@ -112,6 +112,8 @@ type PendingScroll = {
   mode: 'bottom' | 'read'
 }
 
+const EMPTY_BRANCH_OPTIONS: BranchOption[] = []
+
 type CollectionGraph = Pick<
   CollectionBlockGraph,
   'parentIdsByBlockId' | 'childIdsByBlockId'
@@ -145,6 +147,8 @@ const IS_MAC =
 const REQUEST_TIMEOUT_MS = 60_000
 const SCROLL_CONTEXT_PEEK_LINES = 3
 const SCROLL_CONTEXT_PEEK_FALLBACK_PX = 48
+const SCROLL_READ_RETRY_MAX = 18
+const COMPOSER_AUTOSIZE_MAX_HEIGHT_PX = 200
 const SCROLL_NEAR_BOTTOM_RATIO = 0.5
 const SCROLL_STICK_BOTTOM_PX = 8
 const COPY_ACK_DURATION_MS = 1200
@@ -834,6 +838,24 @@ const decryptSecret = async (cipherText: string) => {
   )) as string
 }
 
+type MarkdownContentProps = {
+  content: string
+}
+
+const MarkdownContent = memo(function MarkdownContent({
+  content,
+}: MarkdownContentProps) {
+  const normalized = useMemo(() => normalizeMathDelimiters(content), [content])
+  return (
+    <ReactMarkdown
+      remarkPlugins={MARKDOWN_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
+    >
+      {normalized}
+    </ReactMarkdown>
+  )
+})
+
 type BlockRowProps = {
   block: Block
   isActive: boolean
@@ -944,33 +966,18 @@ const BlockRow = memo(function BlockRow({
           {!isSystemCollapsed ? (
             <blockquote className="system-block-content">
               <div className="output-markdown">
-                <ReactMarkdown
-                  remarkPlugins={MARKDOWN_PLUGINS}
-                  rehypePlugins={REHYPE_PLUGINS}
-                >
-                  {normalizeMathDelimiters(block.content)}
-                </ReactMarkdown>
+                <MarkdownContent content={block.content} />
               </div>
             </blockquote>
           ) : null}
         </div>
       ) : block.direction === 'input' ? (
         <blockquote className="input-quote">
-          <ReactMarkdown
-            remarkPlugins={MARKDOWN_PLUGINS}
-            rehypePlugins={REHYPE_PLUGINS}
-          >
-            {normalizeMathDelimiters(block.content)}
-          </ReactMarkdown>
+          <MarkdownContent content={block.content} />
         </blockquote>
       ) : (
         <div className="output-markdown">
-          <ReactMarkdown
-            remarkPlugins={MARKDOWN_PLUGINS}
-            rehypePlugins={REHYPE_PLUGINS}
-          >
-            {normalizeMathDelimiters(block.content)}
-          </ReactMarkdown>
+          <MarkdownContent content={block.content} />
         </div>
       )}
       <div
@@ -1676,7 +1683,7 @@ const ChatPane = memo(function ChatPane({
               key={block.id}
               block={block}
               isActive={block.id === activeBlockId}
-              branchOptions={branchOptionsByParentId[block.id] ?? []}
+              branchOptions={branchOptionsByParentId[block.id] ?? EMPTY_BRANCH_OPTIONS}
               isForkFocused={focusedForkParentId === block.id}
               isContinuationCursor={continuationCursorBlockId === block.id}
               isSending={isSending}
@@ -1693,6 +1700,75 @@ const ChatPane = memo(function ChatPane({
       )}
       <div className="chat-end" ref={endRef} />
     </main>
+  )
+})
+
+type ChatCollectionsPanelProps = {
+  groupedCollections: ReturnType<typeof groupCollectionsByDay>
+  selectedCollectionId: string | null
+  onSelectCollection: (collection: CollectionRecord) => void
+}
+
+const ChatCollectionsPanel = memo(function ChatCollectionsPanel({
+  groupedCollections,
+  selectedCollectionId,
+  onSelectCollection,
+}: ChatCollectionsPanelProps) {
+  return (
+    <div className="chat-list" role="listbox" aria-label="Chats">
+      {groupedCollections.map((group) => (
+        <div key={group.key} className="chat-group">
+          <div className="section-title">{group.label}</div>
+          <div className="chat-group-list" role="group">
+            {group.collections.map((collection) => (
+              <button
+                key={collection.id}
+                type="button"
+                className={`chat-list-item${
+                  selectedCollectionId === collection.id ? ' active' : ''
+                }`}
+                onClick={() => onSelectCollection(collection)}
+                role="option"
+                aria-selected={selectedCollectionId === collection.id}
+              >
+                <div className="chat-list-title">
+                  {getCollectionTitle(collection)}
+                </div>
+                <div className="chat-list-meta">
+                  <span>{formatCollectionListMetaTimestamp(collection)}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+      {demoCollections.length ? (
+        <div className="chat-group chat-group-demo">
+          <div className="section-title">Demo</div>
+          <div className="chat-group-list" role="group">
+            {demoCollections.map((collection) => (
+              <button
+                key={collection.id}
+                type="button"
+                className={`chat-list-item${
+                  selectedCollectionId === collection.id ? ' active' : ''
+                }`}
+                onClick={() => onSelectCollection(collection)}
+                role="option"
+                aria-selected={selectedCollectionId === collection.id}
+              >
+                <div className="chat-list-title">
+                  {getCollectionTitle(collection)}
+                </div>
+                <div className="chat-list-meta">
+                  <span>{formatCollectionListMetaTimestamp(collection)}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
   )
 })
 
@@ -1820,8 +1896,6 @@ function App() {
   const pendingScrollRef = useRef<PendingScroll | null>(null)
   const followRef = useRef(true)
   const stickToBottomRef = useRef(true)
-  const nearBottomBreakRef = useRef(0)
-  const submitFollowBreakRef = useRef<number | null>(null)
   const collectionLoadIdRef = useRef(0)
   const searchRequestIdRef = useRef(0)
   const groupedSearchRequestIdRef = useRef(0)
@@ -1846,8 +1920,8 @@ function App() {
   const selectNextBlockRef = useRef<() => void>(() => {})
   const scrollToTopRef = useRef<() => void>(() => {})
   const scrollToEndRef = useRef<() => void>(() => {})
+  const composerAutosizeRafRef = useRef<number | null>(null)
   const sendMessageGuardRef = useRef(false)
-  const maxRows = 9
   const trimmedDraft = draft.trim()
   const draftRef = useRef(draft)
   const trimmedDraftRef = useRef(trimmedDraft)
@@ -3123,14 +3197,14 @@ function App() {
     }
 
     if (isSearchQueryDirty) {
-      setGroupedSearchResultRows([])
-      setGroupedSearchQuery('')
+      setGroupedSearchResultRows((prev) => (prev.length === 0 ? prev : []))
+      setGroupedSearchQuery((prev) => (prev === '' ? prev : ''))
       return
     }
 
     if (!hasSettledSearchForDisplayQuery) {
-      setGroupedSearchResultRows([])
-      setGroupedSearchQuery('')
+      setGroupedSearchResultRows((prev) => (prev.length === 0 ? prev : []))
+      setGroupedSearchQuery((prev) => (prev === '' ? prev : ''))
       return
     }
 
@@ -4519,9 +4593,6 @@ function App() {
     const bottomDistance = getBottomDistancePx(container)
     const isBottom = bottomDistance <= getNearBottomThresholdPx(container)
     const isStuck = bottomDistance <= SCROLL_STICK_BOTTOM_PX
-    if (followRef.current && !isBottom) {
-      nearBottomBreakRef.current += 1
-    }
     followRef.current = isBottom
     stickToBottomRef.current = isStuck
   }, [getBottomDistancePx, getNearBottomThresholdPx])
@@ -4553,47 +4624,64 @@ function App() {
   }, [markProgrammaticScroll])
 
   const queueScrollToBlockForReading = useCallback((blockId: string) => {
-    window.requestAnimationFrame(() => {
-      const container = mainColumnRef.current
-      const node = blockRefs.current.get(blockId)
-      if (!container || !node) {
-        queueScrollToBottom()
-        return
-      }
-      const containerRect = container.getBoundingClientRect()
-      const composerRect = composerRef.current?.getBoundingClientRect()
-      const selectedActionsRect =
-        selectedActionsDockRef.current?.getBoundingClientRect()
-      const effectiveBottom = Math.min(
-        containerRect.bottom,
-        composerRect?.top ?? containerRect.bottom,
-        selectedActionsRect?.top ?? containerRect.bottom,
-      )
-      const availableHeight = effectiveBottom - containerRect.top
-      if (availableHeight <= 0) {
-        queueScrollToBottom()
-        return
-      }
-      const nodeRect = node.getBoundingClientRect()
-      const rawPeekPx = getScrollPeekPx(node)
-      const peekPx = Math.min(rawPeekPx, availableHeight * 0.5)
-      const desiredTop = containerRect.top + peekPx
-      const delta = nodeRect.top - desiredTop
-      if (Math.abs(delta) < 1 && nodeRect.bottom <= effectiveBottom) {
+    const run = (attempt: number) => {
+      window.requestAnimationFrame(() => {
+        const container = mainColumnRef.current
+        if (!container) {
+          queueScrollToBottom()
+          return
+        }
+        const node =
+          blockRefs.current.get(blockId) ??
+          (container.querySelector(
+            '.chat-stream .block:last-of-type',
+          ) as HTMLDivElement | null)
+        if (!node) {
+          if (attempt < SCROLL_READ_RETRY_MAX) {
+            run(attempt + 1)
+          }
+          return
+        }
+
+        const containerRect = container.getBoundingClientRect()
+        const composerRect = composerRef.current?.getBoundingClientRect()
+        const selectedActionsRect =
+          selectedActionsDockRef.current?.getBoundingClientRect()
+        const effectiveBottom = Math.min(
+          containerRect.bottom,
+          composerRect?.top ?? containerRect.bottom,
+          selectedActionsRect?.top ?? containerRect.bottom,
+        )
+        const availableHeight = effectiveBottom - containerRect.top
+        if (availableHeight <= 0) {
+          if (attempt < SCROLL_READ_RETRY_MAX) {
+            run(attempt + 1)
+          }
+          return
+        }
+        const nodeRect = node.getBoundingClientRect()
+        const rawPeekPx = getScrollPeekPx(node)
+        const peekPx = Math.min(rawPeekPx, availableHeight * 0.5)
+        const desiredTop = containerRect.top + peekPx
+        const delta = nodeRect.top - desiredTop
+        if (Math.abs(delta) < 1 && nodeRect.bottom <= effectiveBottom) {
+          followRef.current = isNearBottom()
+          stickToBottomRef.current = isAtBottom()
+          return
+        }
+        const nextScrollTop = container.scrollTop + delta
+        const maxScrollTop = container.scrollHeight - container.clientHeight
+        markProgrammaticScroll()
+        container.scrollTop = Math.min(
+          Math.max(nextScrollTop, 0),
+          maxScrollTop,
+        )
         followRef.current = isNearBottom()
         stickToBottomRef.current = isAtBottom()
-        return
-      }
-      const nextScrollTop = container.scrollTop + delta
-      const maxScrollTop = container.scrollHeight - container.clientHeight
-      markProgrammaticScroll()
-      container.scrollTop = Math.min(
-        Math.max(nextScrollTop, 0),
-        maxScrollTop,
-      )
-      followRef.current = isNearBottom()
-      stickToBottomRef.current = isAtBottom()
-    })
+      })
+    }
+
+    run(0)
   }, [
     getScrollPeekPx,
     isAtBottom,
@@ -4828,32 +4916,57 @@ function App() {
     updateSidebarOpen,
   ])
 
-
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current
-    if (!textarea) {
-      return
+  useEffect(() => {
+    if (composerAutosizeRafRef.current !== null) {
+      window.cancelAnimationFrame(composerAutosizeRafRef.current)
     }
+    composerAutosizeRafRef.current = window.requestAnimationFrame(() => {
+      composerAutosizeRafRef.current = null
+      const textarea = textareaRef.current
+      if (!textarea) {
+        return
+      }
 
-    const container = mainColumnRef.current
-    const wasAtBottom =
-      container &&
-      getBottomDistancePx(container) <= SCROLL_STICK_BOTTOM_PX
-    stickToBottomRef.current = Boolean(wasAtBottom)
+      const container = mainColumnRef.current
+      const wasAtBottom = Boolean(container) && (
+        stickToBottomRef.current ||
+        getBottomDistancePx(container) <= SCROLL_STICK_BOTTOM_PX
+      )
+      stickToBottomRef.current = wasAtBottom
 
-    textarea.style.height = 'auto'
-    const computed = window.getComputedStyle(textarea)
-    const lineHeight = Number.parseFloat(computed.lineHeight)
-    const maxHeight = lineHeight ? lineHeight * maxRows : 200
-    const nextHeight = Math.min(textarea.scrollHeight, maxHeight)
-    textarea.style.height = `${nextHeight}px`
+      const previousHeightPx = Number.parseFloat(textarea.style.height)
+      const shouldResetToAuto =
+        !Number.isFinite(previousHeightPx) ||
+        previousHeightPx <= 0 ||
+        textarea.scrollHeight <= previousHeightPx + 1
+      if (shouldResetToAuto) {
+        textarea.style.height = 'auto'
+      }
 
-    if (container && wasAtBottom) {
-      markProgrammaticScroll()
-      const maxScrollTop = container.scrollHeight - container.clientHeight
-      container.scrollTop = Math.max(0, maxScrollTop)
+      const nextHeight = Math.min(
+        textarea.scrollHeight,
+        COMPOSER_AUTOSIZE_MAX_HEIGHT_PX,
+      )
+      const nextHeightPx = `${nextHeight}px`
+      if (textarea.style.height !== nextHeightPx) {
+        textarea.style.height = nextHeightPx
+      }
+
+      if (container && wasAtBottom) {
+        const maxScrollTop = container.scrollHeight - container.clientHeight
+        if (Math.abs(container.scrollTop - maxScrollTop) >= 1) {
+          markProgrammaticScroll()
+          container.scrollTop = Math.max(0, maxScrollTop)
+        }
+      }
+    })
+    return () => {
+      if (composerAutosizeRafRef.current !== null) {
+        window.cancelAnimationFrame(composerAutosizeRafRef.current)
+        composerAutosizeRafRef.current = null
+      }
     }
-  }, [draft, getBottomDistancePx, markProgrammaticScroll, maxRows])
+  }, [draft, getBottomDistancePx, markProgrammaticScroll])
 
   useLayoutEffect(() => {
     const pending = pendingScrollRef.current
@@ -4865,8 +4978,20 @@ function App() {
       queueScrollToBottom()
       return
     }
-    queueScrollToBlockForReading(pending.id)
-  }, [blocks, queueScrollToBottom, queueScrollToBlockForReading])
+    const targetId = blocksById.has(pending.id)
+      ? pending.id
+      : effectivePathLeafId
+    if (!targetId) {
+      return
+    }
+    queueScrollToBlockForReading(targetId)
+  }, [
+    blocks,
+    blocksById,
+    effectivePathLeafId,
+    queueScrollToBottom,
+    queueScrollToBlockForReading,
+  ])
 
   useLayoutEffect(() => {
     if (!activeBlockId) {
@@ -5545,10 +5670,7 @@ function App() {
       followRef.current = shouldAutoScroll
 
       if (shouldAutoScroll) {
-        submitFollowBreakRef.current = nearBottomBreakRef.current
         pendingScrollRef.current = { id: assistantBlock.id, mode: 'bottom' }
-      } else {
-        submitFollowBreakRef.current = null
       }
 
       let targetCollectionId = collectionId
@@ -5714,9 +5836,7 @@ function App() {
           response,
         })
 
-        const shouldAutoScroll =
-          submitFollowBreakRef.current !== null &&
-          submitFollowBreakRef.current === nearBottomBreakRef.current
+        const shouldAutoScroll = followRef.current || isNearBottom()
         setBlocks((prev) =>
           prev.map((block) =>
             block.id === assistantBlock.id
@@ -5781,9 +5901,7 @@ function App() {
         }
       } catch (error) {
         if (isAbortError(error)) {
-          const shouldAutoScroll =
-            submitFollowBreakRef.current !== null &&
-            submitFollowBreakRef.current === nearBottomBreakRef.current
+          const shouldAutoScroll = followRef.current || isNearBottom()
           setBlocks((prev) =>
             prev.map((item) =>
               item.id === assistantBlock.id
@@ -5798,9 +5916,7 @@ function App() {
         }
         const errorMessage =
           error instanceof Error ? error.message : 'Unknown error occurred.'
-        const shouldAutoScroll =
-          submitFollowBreakRef.current !== null &&
-          submitFollowBreakRef.current === nearBottomBreakRef.current
+        const shouldAutoScroll = followRef.current || isNearBottom()
         setBlocks((prev) =>
           prev.map((item) =>
             item.id === assistantBlock.id
@@ -5815,7 +5931,6 @@ function App() {
         setIsSending(false)
         timeoutController.clear()
         abortControllerRef.current = null
-        submitFollowBreakRef.current = null
       }
     } finally {
       sendMessageGuardRef.current = false
@@ -5951,6 +6066,10 @@ function App() {
     }
     showSidebarTab(tab)
   }
+
+  const handleConfigureFromChatPane = useCallback(() => {
+    openSettingsRef.current()
+  }, [])
 
   const handleSidebarSelectCollection = useCallback(
     (collection: CollectionRecord) => {
@@ -6225,7 +6344,7 @@ function App() {
                 showSystemPromptSelector={showSystemPromptSelectorInEmptyState}
                 systemPromptOptions={systemPromptSelectOptions}
                 selectedSystemPromptId={pendingSystemPromptId}
-                onConfigure={() => openSettingsRef.current()}
+                onConfigure={handleConfigureFromChatPane}
                 onSelectSystemPrompt={handleSelectPendingSystemPrompt}
                 onCreateSystemPrompt={handleCreateSavedSystemPrompt}
                 onEditSystemPrompt={handleEditSavedSystemPrompt}
@@ -6995,60 +7114,11 @@ function App() {
                 <div className="search-results-spacer" aria-hidden="true" />
               </div>
             ) : sidebarTab === 'chats' ? (
-                  <div className="chat-list" role="listbox" aria-label="Chats">
-                    {groupedCollections.map((group) => (
-                      <div key={group.key} className="chat-group">
-                    <div className="section-title">{group.label}</div>
-                    <div className="chat-group-list" role="group">
-                      {group.collections.map((collection) => (
-                        <button
-                          key={collection.id}
-                          type="button"
-                          className={`chat-list-item${selectedCollectionId === collection.id ? ' active' : ''}`}
-                          onClick={() => handleSidebarSelectCollection(collection)}
-                          role="option"
-                          aria-selected={selectedCollectionId === collection.id}
-                        >
-                          <div className="chat-list-title">
-                            {getCollectionTitle(collection)}
-                          </div>
-                          <div className="chat-list-meta">
-                            <span>
-                              {formatCollectionListMetaTimestamp(collection)}
-                            </span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-                {demoCollections.length ? (
-                  <div className="chat-group chat-group-demo">
-                    <div className="section-title">Demo</div>
-                    <div className="chat-group-list" role="group">
-                      {demoCollections.map((collection) => (
-                        <button
-                          key={collection.id}
-                          type="button"
-                          className={`chat-list-item${selectedCollectionId === collection.id ? ' active' : ''}`}
-                          onClick={() => handleSidebarSelectCollection(collection)}
-                          role="option"
-                          aria-selected={selectedCollectionId === collection.id}
-                        >
-                          <div className="chat-list-title">
-                            {getCollectionTitle(collection)}
-                          </div>
-                          <div className="chat-list-meta">
-                            <span>
-                              {formatCollectionListMetaTimestamp(collection)}
-                            </span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
+              <ChatCollectionsPanel
+                groupedCollections={groupedCollections}
+                selectedCollectionId={selectedCollectionId}
+                onSelectCollection={handleSidebarSelectCollection}
+              />
             ) : activeBlock && inspectorStats ? (
               <>
                 <div className="sidebar-quick-facts">
