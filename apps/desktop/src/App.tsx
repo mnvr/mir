@@ -41,6 +41,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import {
   appendBlock,
+  autoMergeRootSystemPromptForkIntoRecentCollections,
   createCollection,
   deleteKvValue,
   deleteCollection,
@@ -54,6 +55,7 @@ import {
   listCollectionBlockGraph,
   listCollections,
   searchBlocks,
+  shouldPersistNoSystemRootContextForRecentMerge,
   setSavedSystemPromptLibraryState,
   setActiveCollectionId,
   setKvValue,
@@ -84,6 +86,7 @@ type Block = {
   status?: 'pending' | 'error' | 'canceled'
   retryParentId?: string | null
   transientParentId?: string | null
+  rootContextId?: string | null
 }
 
 type BranchOption = {
@@ -167,6 +170,16 @@ const SEARCH_RESULT_PREVIEW_LENGTH = 148
 const SEARCH_RESULT_PREVIEW_CONTEXT = 30
 const COLLECTION_TITLE_MIN_LENGTH = 14
 const COLLECTION_TITLE_MAX_LENGTH = 72
+const ROOT_CONTEXT_NONE = 'none'
+const ROOT_CONTEXT_SYSTEM_PREFIX = 'sys:'
+
+const toSystemRootContextId = (systemPromptBlockId: string) =>
+  `${ROOT_CONTEXT_SYSTEM_PREFIX}${systemPromptBlockId}`
+
+const toSystemRootContextBlockId = (rootContextId: string | null | undefined) =>
+  rootContextId?.startsWith(ROOT_CONTEXT_SYSTEM_PREFIX)
+    ? rootContextId.slice(ROOT_CONTEXT_SYSTEM_PREFIX.length)
+    : null
 
 const MARKDOWN_PLUGINS = [remarkGfm, remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex]
@@ -206,6 +219,7 @@ const recordToBlock = (record: BlockRecord): Block => ({
   direction: blockDirectionForRole(record.payload.role),
   content: record.payload.content,
   payload: record.payload,
+  rootContextId: record.payload.rootContextId ?? null,
 })
 
 const getCollectionTitle = (collection: CollectionRecord) =>
@@ -872,13 +886,19 @@ type BlockRowProps = {
   block: Block
   isActive: boolean
   branchOptions: BranchOption[]
+  systemPromptBranchCount: number
+  systemPromptBranchLabel: string | null
+  isSystemPromptBranchActive: boolean
   isForkFocused: boolean
   isContinuationCursor: boolean
   isSending: boolean
+  forcedSystemCollapsed?: boolean
+  onToggleForcedSystemCollapsed?: (nextCollapsed: boolean) => void
   onMouseDown: () => void
   onClick: (id: string) => void
   onSetContinuationCursor: (id: string) => void
   onOpenPathsFork: (id: string) => void
+  onSelectSystemPromptBranch: (id: string) => void
   onRetry: (id: string) => void
   onCopy: (id: string) => void
   registerRef: (id: string, node: HTMLDivElement | null) => void
@@ -888,26 +908,41 @@ const BlockRow = memo(function BlockRow({
   block,
   isActive,
   branchOptions,
+  systemPromptBranchCount,
+  systemPromptBranchLabel,
+  isSystemPromptBranchActive,
   isForkFocused,
   isContinuationCursor,
   isSending,
+  forcedSystemCollapsed,
+  onToggleForcedSystemCollapsed,
   onMouseDown,
   onClick,
   onSetContinuationCursor,
   onOpenPathsFork,
+  onSelectSystemPromptBranch,
   onRetry,
   onCopy,
   registerRef,
 }: BlockRowProps) {
   const branchChildCount = branchOptions.length
-  const hasBranches = branchChildCount > 1
   const isSystemBlock = block.payload?.role === 'system'
-  const [isSystemCollapsed, setIsSystemCollapsed] = useState(() => isSystemBlock)
+  const hasSystemPromptBranches = isSystemBlock && systemPromptBranchCount > 1
+  const showBranchMarker = !hasSystemPromptBranches && branchChildCount > 1
+  const isBranchMarkerFocused = isForkFocused
+  const [isSystemCollapsedLocal, setIsSystemCollapsedLocal] = useState(
+    () => isSystemBlock,
+  )
+  const isSystemCollapsed =
+    typeof forcedSystemCollapsed === 'boolean'
+      ? forcedSystemCollapsed
+      : isSystemCollapsedLocal
   const systemPromptCharCount = `${block.content.length.toLocaleString()} ch`
   const canSetContinuationCursor =
     block.direction === 'output' &&
     !block.status &&
-    isPersistedBlockId(block.id)
+    isPersistedBlockId(block.id) &&
+    !isSystemBlock
   const canGenerateNewFromInput =
     block.direction === 'input' && isPersistedBlockId(block.id)
   const canGenerateNewFromOutput =
@@ -921,7 +956,7 @@ const BlockRow = memo(function BlockRow({
       data-block-id={block.id}
       className={`block ${block.direction}${
         block.status ? ` ${block.status}` : ''
-      }${isActive ? ' selected' : ''}${hasBranches ? ' has-branches' : ''}${
+      }${isActive ? ' selected' : ''}${showBranchMarker ? ' has-branches' : ''}${
         isSystemBlock ? ' block-system' : ''
       }`}
       onMouseDown={onMouseDown}
@@ -930,15 +965,16 @@ const BlockRow = memo(function BlockRow({
         onClick(block.id)
       }}
     >
-      {hasBranches ? (
+      {showBranchMarker ? (
         <span className="block-branch-marker-anchor">
           <span
             className="tooltip tooltip-hover-only"
             data-tooltip={`${branchChildCount} branches`}
           >
             <button
-              className={`block-branch-marker${isForkFocused ? ' is-active' : ''}`}
+              className={`block-branch-marker${isBranchMarkerFocused ? ' is-active' : ''}`}
               type="button"
+              onMouseDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation()
                 onOpenPathsFork(block.id)
@@ -953,28 +989,58 @@ const BlockRow = memo(function BlockRow({
       ) : null}
       {isSystemBlock ? (
         <div className="system-block-shell">
-          <button
-            className="system-block-toggle"
-            type="button"
-            aria-label={`${isSystemCollapsed ? 'Expand' : 'Collapse'} system prompt`}
-            aria-expanded={!isSystemCollapsed}
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation()
-              setIsSystemCollapsed((prev) => !prev)
-            }}
-          >
-            <span
-              className={`system-block-toggle-caret codicon ${
-                isSystemCollapsed
-                  ? 'codicon-chevron-right'
-                  : 'codicon-chevron-down'
-              }`}
-              aria-hidden="true"
-            />
-            <span className="system-block-toggle-label">System prompt</span>
-            <span className="system-block-toggle-meta">{systemPromptCharCount}</span>
-          </button>
+          <div className="system-block-header">
+            <button
+              className="system-block-toggle"
+              type="button"
+              aria-label={`${isSystemCollapsed ? 'Expand' : 'Collapse'} system prompt`}
+              aria-expanded={!isSystemCollapsed}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation()
+                const nextCollapsed = !isSystemCollapsed
+                if (typeof forcedSystemCollapsed === 'boolean') {
+                  onToggleForcedSystemCollapsed?.(nextCollapsed)
+                  return
+                }
+                setIsSystemCollapsedLocal(nextCollapsed)
+              }}
+            >
+              <span
+                className={`system-block-toggle-caret codicon ${
+                  isSystemCollapsed
+                    ? 'codicon-chevron-right'
+                    : 'codicon-chevron-down'
+                }`}
+                aria-hidden="true"
+              />
+              <span className="system-block-toggle-label">System prompt</span>
+              <span className="system-block-toggle-meta">{systemPromptCharCount}</span>
+            </button>
+            {hasSystemPromptBranches ? (
+              <span
+                className="tooltip tooltip-hover-only"
+                data-tooltip="Cycle system prompt branch"
+              >
+                <button
+                  className={`system-block-cycle${
+                    isSystemPromptBranchActive ? ' is-active' : ''
+                  }`}
+                  type="button"
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onSelectSystemPromptBranch(block.id)
+                  }}
+                  aria-label={`System prompt ${systemPromptBranchLabel ?? systemPromptBranchCount}`}
+                >
+                  <span className="system-block-cycle-value">
+                    {systemPromptBranchLabel ?? `${systemPromptBranchCount}`}
+                  </span>
+                </button>
+              </span>
+            ) : null}
+          </div>
           {!isSystemCollapsed ? (
             <blockquote className="system-block-content">
               <div className="output-markdown">
@@ -1047,6 +1113,11 @@ type ChatPaneProps = {
   blocks: Block[]
   activeBlockId: string | null
   branchOptionsByParentId: Record<string, BranchOption[]>
+  systemPromptBranchCountByBlockId: Record<string, number>
+  systemPromptBranchLabelByBlockId: Record<string, string>
+  activeSystemPromptBranchBlockId: string | null
+  isRootSystemPromptCollapsed: boolean
+  onSetRootSystemPromptCollapsed: (nextCollapsed: boolean) => void
   focusedForkParentId: string | null
   continuationCursorBlockId: string | null
   isSending: boolean
@@ -1072,6 +1143,7 @@ type ChatPaneProps = {
   onBlockClick: (id: string) => void
   onSetContinuationCursor: (id: string) => void
   onOpenPathsFork: (id: string) => void
+  onSelectSystemPromptBranch: (id: string) => void
   onRetryBlock: (id: string) => void
   onCopyBlock: (id: string) => void
   registerBlockRef: (id: string, node: HTMLDivElement | null) => void
@@ -1081,6 +1153,11 @@ const ChatPane = memo(function ChatPane({
   blocks,
   activeBlockId,
   branchOptionsByParentId,
+  systemPromptBranchCountByBlockId,
+  systemPromptBranchLabelByBlockId,
+  activeSystemPromptBranchBlockId,
+  isRootSystemPromptCollapsed,
+  onSetRootSystemPromptCollapsed,
   focusedForkParentId,
   continuationCursorBlockId,
   isSending,
@@ -1102,6 +1179,7 @@ const ChatPane = memo(function ChatPane({
   onBlockClick,
   onSetContinuationCursor,
   onOpenPathsFork,
+  onSelectSystemPromptBranch,
   onRetryBlock,
   onCopyBlock,
   registerBlockRef,
@@ -1690,24 +1768,47 @@ const ChatPane = memo(function ChatPane({
         </div>
       ) : (
         <div className="chat-stream">
-          {blocks.map((block) => (
-            <BlockRow
-              key={block.id}
-              block={block}
-              isActive={block.id === activeBlockId}
-              branchOptions={branchOptionsByParentId[block.id] ?? EMPTY_BRANCH_OPTIONS}
-              isForkFocused={focusedForkParentId === block.id}
-              isContinuationCursor={continuationCursorBlockId === block.id}
-              isSending={isSending}
-              onMouseDown={onBlockMouseDown}
-              onClick={onBlockClick}
-              onSetContinuationCursor={onSetContinuationCursor}
-              onOpenPathsFork={onOpenPathsFork}
-              onRetry={onRetryBlock}
-              onCopy={onCopyBlock}
-              registerRef={registerBlockRef}
-            />
-          ))}
+          {blocks.map((block) => {
+            const systemPromptBranchCount =
+              systemPromptBranchCountByBlockId[block.id] ?? 0
+            const isRootSystemPromptBranchBlock = systemPromptBranchCount > 1
+            return (
+              <BlockRow
+                key={block.id}
+                block={block}
+                isActive={block.id === activeBlockId}
+                branchOptions={branchOptionsByParentId[block.id] ?? EMPTY_BRANCH_OPTIONS}
+                systemPromptBranchCount={systemPromptBranchCount}
+                systemPromptBranchLabel={
+                  systemPromptBranchLabelByBlockId[block.id] ?? null
+                }
+                isSystemPromptBranchActive={
+                  activeSystemPromptBranchBlockId === block.id
+                }
+                isForkFocused={focusedForkParentId === block.id}
+                isContinuationCursor={continuationCursorBlockId === block.id}
+                isSending={isSending}
+                forcedSystemCollapsed={
+                  isRootSystemPromptBranchBlock
+                    ? isRootSystemPromptCollapsed
+                    : undefined
+                }
+                onToggleForcedSystemCollapsed={
+                  isRootSystemPromptBranchBlock
+                    ? onSetRootSystemPromptCollapsed
+                    : undefined
+                }
+                onMouseDown={onBlockMouseDown}
+                onClick={onBlockClick}
+                onSetContinuationCursor={onSetContinuationCursor}
+                onOpenPathsFork={onOpenPathsFork}
+                onSelectSystemPromptBranch={onSelectSystemPromptBranch}
+                onRetry={onRetryBlock}
+                onCopy={onCopyBlock}
+                registerRef={registerBlockRef}
+              />
+            )
+          })}
         </div>
       )}
       <div className="chat-end" ref={endRef} />
@@ -1812,6 +1913,10 @@ function App() {
   const [pendingSystemPromptId, setPendingSystemPromptId] = useState<
     string | null
   >(null)
+  const [selectedRootSystemPromptParentId, setSelectedRootSystemPromptParentId] =
+    useState<string | null>(null)
+  const [isRootSystemPromptCollapsed, setIsRootSystemPromptCollapsed] =
+    useState(true)
   const [showKey, setShowKey] = useState(false)
   const [suppressKeyTooltip, setSuppressKeyTooltip] = useState(false)
   const [suppressNewCollectionTooltip, setSuppressNewCollectionTooltip] =
@@ -1960,12 +2065,258 @@ function App() {
       null,
     [blocksById, effectiveActiveBlockId],
   )
+  const rootUserBlock = useMemo(() => {
+    const userBlocks = blocks
+      .filter(
+        (
+          block,
+        ): block is Block & { payload: BlockPayload } =>
+          isPersistedBlockId(block.id) &&
+          !block.status &&
+          Boolean(block.payload) &&
+          block.payload?.role === 'user',
+      )
+      .slice()
+      .sort((left, right) => {
+        const leftCreatedAt =
+          typeof left.createdAt === 'number' && Number.isFinite(left.createdAt)
+            ? left.createdAt
+            : 0
+        const rightCreatedAt =
+          typeof right.createdAt === 'number' && Number.isFinite(right.createdAt)
+            ? right.createdAt
+            : 0
+        if (leftCreatedAt !== rightCreatedAt) {
+          return leftCreatedAt - rightCreatedAt
+        }
+        return left.id.localeCompare(right.id)
+      })
+    if (userBlocks.length === 0) {
+      return null
+    }
+    const rootCandidate = userBlocks.find((block) => {
+      const parentIds = collectionGraph.parentIdsByBlockId[block.id] ?? []
+      return !parentIds.some((parentId) => {
+        const parent = blocksById.get(parentId)
+        const role = parent?.payload?.role
+        return role === 'user' || role === 'assistant'
+      })
+    })
+    return rootCandidate ?? userBlocks[0] ?? null
+  }, [blocks, blocksById, collectionGraph.parentIdsByBlockId])
+  const rootUserBlockId = rootUserBlock?.id ?? null
+  const rootSystemPromptParentBlocks = useMemo(
+    () =>
+      rootUserBlockId
+        ? (collectionGraph.parentIdsByBlockId[rootUserBlockId] ?? [])
+            .map((parentId) => blocksById.get(parentId))
+            .filter(
+              (
+                block,
+              ): block is Block & { payload: BlockPayload } => {
+                if (!block || !isPersistedBlockId(block.id) || block.status) {
+                  return false
+                }
+                if (!block.payload) {
+                  return false
+                }
+                return block.payload.role === 'system'
+              },
+            )
+            .slice()
+            .sort((left, right) => {
+              const leftCreatedAt =
+                typeof left.createdAt === 'number' && Number.isFinite(left.createdAt)
+                  ? left.createdAt
+                  : 0
+              const rightCreatedAt =
+                typeof right.createdAt === 'number' &&
+                Number.isFinite(right.createdAt)
+                  ? right.createdAt
+                  : 0
+              if (leftCreatedAt !== rightCreatedAt) {
+                return leftCreatedAt - rightCreatedAt
+              }
+              return left.id.localeCompare(right.id)
+            })
+        : ([] as Array<Block & { payload: BlockPayload }>),
+    [blocksById, collectionGraph.parentIdsByBlockId, rootUserBlockId],
+  )
+  const rootSystemPromptParentBlocksById = useMemo(() => {
+    const byId = new Map<string, Block & { payload: BlockPayload }>()
+    rootSystemPromptParentBlocks.forEach((block) => {
+      byId.set(block.id, block)
+    })
+    return byId
+  }, [rootSystemPromptParentBlocks])
+  const hasRootSystemPromptBranching = rootSystemPromptParentBlocks.length > 1
+  const selectedRootContextId = useMemo(() => {
+    if (
+      selectedRootSystemPromptParentId &&
+      rootSystemPromptParentBlocksById.has(selectedRootSystemPromptParentId)
+    ) {
+      return toSystemRootContextId(selectedRootSystemPromptParentId)
+    }
+    const defaultRootSystemPrompt = rootSystemPromptParentBlocks[0]
+    if (defaultRootSystemPrompt) {
+      return toSystemRootContextId(defaultRootSystemPrompt.id)
+    }
+    return ROOT_CONTEXT_NONE
+  }, [
+    rootSystemPromptParentBlocks,
+    rootSystemPromptParentBlocksById,
+    selectedRootSystemPromptParentId,
+  ])
+  const rootContextIdByBlockId = useMemo(() => {
+    const contexts: Record<string, string | null> = {}
+    const rootSystemPromptIdSet = new Set(
+      rootSystemPromptParentBlocks.map((block) => block.id),
+    )
+    const rootUserSystemParentIds = rootUserBlockId
+      ? (collectionGraph.parentIdsByBlockId[rootUserBlockId] ?? []).filter((id) =>
+          rootSystemPromptIdSet.has(id),
+        )
+      : []
+    const rootUserChildIds = rootUserBlockId
+      ? collectionGraph.childIdsByBlockId[rootUserBlockId] ?? []
+      : []
+    const rootUserHasExplicitSystemChild = rootUserChildIds.some((childId) => {
+      const childBlock = blocksById.get(childId)
+      const explicitContextId = childBlock?.payload?.rootContextId
+      return (
+        typeof explicitContextId === 'string' &&
+        explicitContextId.startsWith(ROOT_CONTEXT_SYSTEM_PREFIX)
+      )
+    })
+    const rootUserHasUntaggedChatChild = rootUserChildIds.some((childId) => {
+      const childBlock = blocksById.get(childId)
+      if (!childBlock || !isPersistedBlockId(childBlock.id) || childBlock.status) {
+        return false
+      }
+      const role = childBlock.payload?.role
+      if (role !== 'user' && role !== 'assistant') {
+        return false
+      }
+      return !childBlock.payload?.rootContextId
+    })
+    const hasPotentialNoneRootContext =
+      rootSystemPromptParentBlocks.length >= 1 &&
+      rootUserHasExplicitSystemChild &&
+      rootUserHasUntaggedChatChild
+    const rootUserDefaultContextId =
+      rootUserSystemParentIds.length === 1
+        ? hasPotentialNoneRootContext
+          ? null
+          : toSystemRootContextId(rootUserSystemParentIds[0] as string)
+        : rootUserSystemParentIds.length === 0
+          ? ROOT_CONTEXT_NONE
+          : null
+
+    blocks.forEach((block) => {
+      const explicitContextId = block.payload?.rootContextId
+      if (explicitContextId && explicitContextId.length > 0) {
+        contexts[block.id] = explicitContextId
+        return
+      }
+      if (rootSystemPromptIdSet.has(block.id)) {
+        contexts[block.id] = toSystemRootContextId(block.id)
+        return
+      }
+      if (rootUserBlockId && block.id === rootUserBlockId) {
+        contexts[block.id] = rootUserDefaultContextId
+        return
+      }
+      contexts[block.id] = block.rootContextId ?? null
+    })
+
+    for (let pass = 0; pass < blocks.length; pass += 1) {
+      let changed = false
+      blocks.forEach((block) => {
+        if (contexts[block.id]) {
+          return
+        }
+        const parentIds = collectionGraph.parentIdsByBlockId[block.id] ?? []
+        if (parentIds.length === 0) {
+          return
+        }
+        const parentContextIds = Array.from(
+          new Set(
+            parentIds
+              .map((parentId) => contexts[parentId])
+              .filter((contextId): contextId is string => Boolean(contextId)),
+          ),
+        )
+        if (parentContextIds.length === 1) {
+          contexts[block.id] = parentContextIds[0] ?? null
+          changed = true
+        }
+      })
+      if (!changed) {
+        break
+      }
+    }
+
+    blocks.forEach((block) => {
+      if (contexts[block.id]) {
+        return
+      }
+      const fallbackParentId =
+        block.transientParentId && block.transientParentId.length > 0
+          ? block.transientParentId
+          : block.retryParentId && block.retryParentId.length > 0
+            ? block.retryParentId
+            : null
+      if (!fallbackParentId) {
+        return
+      }
+      const inheritedContextId = contexts[fallbackParentId]
+      if (inheritedContextId) {
+        contexts[block.id] = inheritedContextId
+      }
+    })
+
+    if (!hasRootSystemPromptBranching) {
+      const unresolvedFallbackContextId =
+        rootSystemPromptParentBlocks.length === 0 || hasPotentialNoneRootContext
+          ? ROOT_CONTEXT_NONE
+          : selectedRootContextId
+      blocks.forEach((block) => {
+        if (contexts[block.id]) {
+          return
+        }
+        contexts[block.id] = unresolvedFallbackContextId
+      })
+    }
+
+    return contexts
+  }, [
+    blocks,
+    blocksById,
+    collectionGraph.childIdsByBlockId,
+    collectionGraph.parentIdsByBlockId,
+    hasRootSystemPromptBranching,
+    rootSystemPromptParentBlocks,
+    rootUserBlockId,
+    selectedRootContextId,
+  ])
   const resolvedParentIdByBlockId = useMemo(() => {
     const resolved: Record<string, string | null> = {}
+    const hasPersistedGraphData =
+      Object.keys(collectionGraph.parentIdsByBlockId).length > 0
     blocks.forEach((block, index) => {
       const graphParentIds = collectionGraph.parentIdsByBlockId[block.id] ?? []
+      const preferredRootSystemParentId =
+        rootUserBlockId &&
+        block.id === rootUserBlockId &&
+        selectedRootSystemPromptParentId &&
+        graphParentIds.includes(selectedRootSystemPromptParentId) &&
+        blocksById.has(selectedRootSystemPromptParentId)
+          ? selectedRootSystemPromptParentId
+          : null
       const graphParentId =
-        graphParentIds.find((parentId) => blocksById.has(parentId)) ?? null
+        preferredRootSystemParentId ??
+        graphParentIds.find((parentId) => blocksById.has(parentId)) ??
+        null
       if (graphParentId) {
         resolved[block.id] = graphParentId
         return
@@ -1981,6 +2332,10 @@ function App() {
         resolved[block.id] = block.retryParentId
         return
       }
+      if (hasPersistedGraphData && isPersistedBlockId(block.id)) {
+        resolved[block.id] = null
+        return
+      }
       for (let prevIndex = index - 1; prevIndex >= 0; prevIndex -= 1) {
         const candidate = blocks[prevIndex]
         if (!candidate) {
@@ -1992,7 +2347,13 @@ function App() {
       resolved[block.id] = null
     })
     return resolved
-  }, [blocks, blocksById, collectionGraph.parentIdsByBlockId])
+  }, [
+    blocks,
+    blocksById,
+    collectionGraph.parentIdsByBlockId,
+    rootUserBlockId,
+    selectedRootSystemPromptParentId,
+  ])
   const childIdsByParentId = useMemo(() => {
     const byParent: Record<string, string[]> = {}
     Object.entries(resolvedParentIdByBlockId).forEach(([childId, parentId]) => {
@@ -2056,8 +2417,70 @@ function App() {
     }
     return blocks.length > 0 ? blocks[blocks.length - 1]?.id ?? null : null
   }, [blocks, childIdsByParentId])
+  const latestLeafBlockIdByRootContextId = useMemo(() => {
+    const latestByContext: Record<
+      string,
+      { id: string; index: number; createdAt: number | null }
+    > = {}
+
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index]
+      if (!block) {
+        continue
+      }
+      if ((childIdsByParentId[block.id]?.length ?? 0) > 0) {
+        continue
+      }
+      const rootContextId = rootContextIdByBlockId[block.id]
+      if (!rootContextId) {
+        continue
+      }
+      const candidateCreatedAt =
+        typeof block.createdAt === 'number' && Number.isFinite(block.createdAt)
+          ? block.createdAt
+          : null
+      const current = latestByContext[rootContextId]
+      if (!current) {
+        latestByContext[rootContextId] = {
+          id: block.id,
+          index,
+          createdAt: candidateCreatedAt,
+        }
+        continue
+      }
+      const shouldReplace =
+        candidateCreatedAt !== null && current.createdAt !== null
+          ? candidateCreatedAt > current.createdAt ||
+            (candidateCreatedAt === current.createdAt && index > current.index)
+          : candidateCreatedAt !== null && current.createdAt === null
+            ? true
+            : candidateCreatedAt === null && current.createdAt === null
+              ? index > current.index
+              : false
+      if (!shouldReplace) {
+        continue
+      }
+      latestByContext[rootContextId] = {
+        id: block.id,
+        index,
+        createdAt: candidateCreatedAt,
+      }
+    }
+
+    const byContext: Record<string, string> = {}
+    Object.entries(latestByContext).forEach(([rootContextId, value]) => {
+      byContext[rootContextId] = value.id
+    })
+    return byContext
+  }, [blocks, childIdsByParentId, rootContextIdByBlockId])
+  const preferredLatestLeafBlockId =
+    latestLeafBlockIdByRootContextId[selectedRootContextId] ??
+    rootUserBlockId ??
+    latestLeafBlockId
   const effectivePathLeafId =
-    pathLeafId && blocksById.has(pathLeafId) ? pathLeafId : latestLeafBlockId
+    pathLeafId && blocksById.has(pathLeafId)
+      ? pathLeafId
+      : preferredLatestLeafBlockId
   const visiblePathBlockIds = useMemo(() => {
     if (!effectivePathLeafId) {
       return [] as string[]
@@ -2101,8 +2524,30 @@ function App() {
         if (!persistedBlocksById.has(parentId)) {
           return
         }
+        const parentContextId = rootContextIdByBlockId[parentId] ?? null
         const options = childIds
-          .filter((childId) => persistedBlocksById.has(childId))
+          .filter((childId) => {
+            if (!persistedBlocksById.has(childId)) {
+              return false
+            }
+            const childContextId = rootContextIdByBlockId[childId] ?? null
+            if (
+              hasRootSystemPromptBranching &&
+              rootUserBlockId &&
+              parentId === rootUserBlockId
+            ) {
+              if (selectedRootContextId === ROOT_CONTEXT_NONE) {
+                return (
+                  childContextId === ROOT_CONTEXT_NONE || childContextId === null
+                )
+              }
+              return childContextId === selectedRootContextId
+            }
+            if (!parentContextId || !childContextId) {
+              return true
+            }
+            return childContextId === parentContextId
+          })
           .map((childId) => {
             const childBlock = persistedBlocksById.get(childId)
             return {
@@ -2118,7 +2563,14 @@ function App() {
       },
     )
     return optionsByParent
-  }, [collectionGraph.childIdsByBlockId, persistedBlocksById])
+  }, [
+    collectionGraph.childIdsByBlockId,
+    hasRootSystemPromptBranching,
+    persistedBlocksById,
+    rootContextIdByBlockId,
+    rootUserBlockId,
+    selectedRootContextId,
+  ])
   const branchChildCountById = useMemo(() => {
     const counts: Record<string, number> = {}
     Object.entries(branchOptionsByParentId).forEach(([parentId, options]) => {
@@ -2345,6 +2797,7 @@ function App() {
     activeBlock &&
       isPersistedBlockId(activeBlock.id) &&
       activeBlock.direction === 'output' &&
+      activeBlock.payload?.role !== 'system' &&
       !activeBlock.status,
   )
   const canGenerateNewFromActiveInput = Boolean(
@@ -2465,6 +2918,70 @@ function App() {
     isNewCollectionDraft &&
     blocks.length === 0 &&
     hasLoadedBlocks
+  const recentAutoMergeCandidateCollectionIds = useMemo(
+    () =>
+      orderedCollections
+        .filter((collection) => collection.id !== demoCollection.id)
+        .slice(0, 5)
+        .map((collection) => collection.id),
+    [orderedCollections],
+  )
+  const activeRootSystemPromptBranchBlockId =
+    selectedRootSystemPromptParentId ??
+    rootSystemPromptParentBlocks[0]?.id ??
+    null
+  const systemPromptBranchCountByBlockId = useMemo(() => {
+    const counts: Record<string, number> = {}
+    if (rootSystemPromptParentBlocks.length <= 1) {
+      return counts
+    }
+    const total = rootSystemPromptParentBlocks.length
+    rootSystemPromptParentBlocks.forEach((block) => {
+      counts[block.id] = total
+    })
+    return counts
+  }, [rootSystemPromptParentBlocks])
+  const systemPromptBranchLabelByBlockId = useMemo(() => {
+    const labels: Record<string, string> = {}
+    if (rootSystemPromptParentBlocks.length <= 1) {
+      return labels
+    }
+    const orderedBranches = rootSystemPromptParentBlocks
+      .map((block) => {
+        const contextId = toSystemRootContextId(block.id)
+        const latestLeafId = latestLeafBlockIdByRootContextId[contextId] ?? null
+        const latestLeaf = latestLeafId ? blocksById.get(latestLeafId) : null
+        const latestLeafCreatedAt =
+          typeof latestLeaf?.createdAt === 'number' &&
+          Number.isFinite(latestLeaf.createdAt)
+            ? latestLeaf.createdAt
+            : null
+        const fallbackCreatedAt =
+          typeof block.createdAt === 'number' && Number.isFinite(block.createdAt)
+            ? block.createdAt
+            : 0
+        return {
+          blockId: block.id,
+          sortCreatedAt: latestLeafCreatedAt ?? fallbackCreatedAt,
+        }
+      })
+      .sort((left, right) => {
+        if (left.sortCreatedAt !== right.sortCreatedAt) {
+          return left.sortCreatedAt - right.sortCreatedAt
+        }
+        return left.blockId.localeCompare(right.blockId)
+      })
+
+    const total = orderedBranches.length
+    orderedBranches.forEach((branch, index) => {
+      labels[branch.blockId] = `${index + 1}/${total}`
+    })
+    return labels
+  }, [
+    blocksById,
+    latestLeafBlockIdByRootContextId,
+    rootSystemPromptParentBlocks,
+  ])
   const systemPromptSelectOptions = useMemo<SystemPromptSelectOption[]>(
     () =>
       systemPromptLibrary.map((prompt) => ({
@@ -2569,7 +3086,9 @@ function App() {
     !hasSearchGroups
   const hasDataPanel = Boolean(importPreview || importSummary || exportSummary)
   const isImportLocked =
-    Boolean(importPreview) || isReadingImport || isImportingData
+    Boolean(importPreview) ||
+    isReadingImport ||
+    isImportingData
   const canUseFileDialogs =
     typeof window !== 'undefined' &&
     typeof window.ipcRenderer?.invoke === 'function'
@@ -2741,7 +3260,16 @@ function App() {
         path.push(current)
         const parents: string[] =
           collectionGraph.parentIdsByBlockId[cursorId] ?? []
+        const preferredRootSystemPromptParentId: string | null =
+          rootUserBlockId &&
+          cursorId === rootUserBlockId &&
+          selectedRootSystemPromptParentId &&
+          parents.includes(selectedRootSystemPromptParentId) &&
+          payloadBlockById.has(selectedRootSystemPromptParentId)
+            ? selectedRootSystemPromptParentId
+            : null
         const nextParentId: string | null =
+          preferredRootSystemPromptParentId ??
           parents.find((parentId: string) => payloadBlockById.has(parentId)) ??
           null
         cursorId = nextParentId
@@ -2750,7 +3278,67 @@ function App() {
       path.reverse()
       return path
     },
-    [blocks, collectionGraph.parentIdsByBlockId],
+    [
+      blocks,
+      collectionGraph.parentIdsByBlockId,
+      rootUserBlockId,
+      selectedRootSystemPromptParentId,
+    ],
+  )
+  const resolveRootContextIdForParent = useCallback(
+    (
+      parentBlockId: string | null,
+      explicitSystemPromptBlockId?: string | null,
+    ) => {
+      if (explicitSystemPromptBlockId) {
+        return toSystemRootContextId(explicitSystemPromptBlockId)
+      }
+      if (parentBlockId) {
+        const fromIndex = rootContextIdByBlockId[parentBlockId]
+        if (fromIndex) {
+          return fromIndex
+        }
+        const parentBlock = blocksById.get(parentBlockId)
+        const fromBlockPayload = parentBlock?.payload?.rootContextId
+        if (fromBlockPayload && fromBlockPayload.length > 0) {
+          return fromBlockPayload
+        }
+        const fromBlockState = parentBlock?.rootContextId
+        if (fromBlockState && fromBlockState.length > 0) {
+          return fromBlockState
+        }
+      }
+      return selectedRootContextId || ROOT_CONTEXT_NONE
+    },
+    [blocksById, rootContextIdByBlockId, selectedRootContextId],
+  )
+  const shouldPersistRootContextTag = useCallback(
+    (
+      parentBlockId: string | null,
+      rootContextId: string,
+      options?: {
+        forceWhenParentMissing?: boolean
+      },
+    ) => {
+      if (!rootContextId) {
+        return false
+      }
+      if (parentBlockId && parentBlockId === rootUserBlockId) {
+        return true
+      }
+      if (!parentBlockId) {
+        if (options?.forceWhenParentMissing) {
+          return true
+        }
+        return rootContextId !== ROOT_CONTEXT_NONE
+      }
+      const parentContextId = rootContextIdByBlockId[parentBlockId] ?? null
+      if (!parentContextId) {
+        return rootContextId !== ROOT_CONTEXT_NONE
+      }
+      return parentContextId !== rootContextId
+    },
+    [rootContextIdByBlockId, rootUserBlockId],
   )
 
   const updateSidebarOpen = useCallback(
@@ -3020,6 +3608,47 @@ function App() {
   ])
 
   useEffect(() => {
+    if (rootSystemPromptParentBlocks.length === 0) {
+      if (selectedRootSystemPromptParentId !== null) {
+        setSelectedRootSystemPromptParentId(null)
+      }
+      return
+    }
+    if (
+      selectedRootSystemPromptParentId &&
+      rootSystemPromptParentBlocks.some(
+        (block) => block.id === selectedRootSystemPromptParentId,
+      )
+    ) {
+      return
+    }
+    setSelectedRootSystemPromptParentId(rootSystemPromptParentBlocks[0]?.id ?? null)
+  }, [rootSystemPromptParentBlocks, selectedRootSystemPromptParentId])
+
+  useEffect(() => {
+    if (!hasRootSystemPromptBranching || !effectivePathLeafId) {
+      return
+    }
+    const activeLeafContextId = rootContextIdByBlockId[effectivePathLeafId]
+    const activeLeafSystemPromptBlockId =
+      toSystemRootContextBlockId(activeLeafContextId)
+    if (
+      !activeLeafSystemPromptBlockId ||
+      !rootSystemPromptParentBlocksById.has(activeLeafSystemPromptBlockId) ||
+      selectedRootSystemPromptParentId === activeLeafSystemPromptBlockId
+    ) {
+      return
+    }
+    setSelectedRootSystemPromptParentId(activeLeafSystemPromptBlockId)
+  }, [
+    effectivePathLeafId,
+    hasRootSystemPromptBranching,
+    rootContextIdByBlockId,
+    rootSystemPromptParentBlocksById,
+    selectedRootSystemPromptParentId,
+  ])
+
+  useEffect(() => {
     if (!settingsLoaded) {
       return
     }
@@ -3132,6 +3761,8 @@ function App() {
         setActiveCollection(null)
         setPendingCollection(null)
         setPendingSystemPromptId(null)
+        setSelectedRootSystemPromptParentId(null)
+        setIsRootSystemPromptCollapsed(true)
         setSelectedCollectionId(null)
         setPathLeafId(null)
         setOpenBranchMenuParentId(null)
@@ -3153,6 +3784,8 @@ function App() {
       setActiveCollection(collection)
       setPendingCollection(null)
       setPendingSystemPromptId(null)
+      setSelectedRootSystemPromptParentId(null)
+      setIsRootSystemPromptCollapsed(true)
       setSelectedCollectionId(collection.id)
       setPathLeafId(null)
       setOpenBranchMenuParentId(null)
@@ -3184,7 +3817,17 @@ function App() {
   }, [])
 
   useEffect(() => {
-    void Promise.all([loadCollections(), loadBlocks(), loadSystemPromptLibrary()])
+    let isCanceled = false
+    const runStartupLoad = async () => {
+      if (isCanceled || !isMountedRef.current) {
+        return
+      }
+      await Promise.all([loadCollections(), loadBlocks(), loadSystemPromptLibrary()])
+    }
+    void runStartupLoad()
+    return () => {
+      isCanceled = true
+    }
   }, [loadBlocks, loadCollections, loadSystemPromptLibrary])
 
   useEffect(() => {
@@ -3652,6 +4295,7 @@ function App() {
         !targetBlock ||
         !isPersistedBlockId(blockId) ||
         targetBlock.direction !== 'output' ||
+        targetBlock.payload?.role === 'system' ||
         Boolean(targetBlock.status)
       ) {
         return
@@ -4008,6 +4652,7 @@ function App() {
       !activeBlock ||
       !isPersistedBlockId(activeBlock.id) ||
       activeBlock.direction !== 'output' ||
+      activeBlock.payload?.role === 'system' ||
       Boolean(activeBlock.status)
     ) {
       return
@@ -4201,10 +4846,63 @@ function App() {
     [],
   )
 
+  const handleSelectRootSystemPromptBranch = useCallback(
+    (systemPromptBlockId: string) => {
+      if (!rootSystemPromptParentBlocksById.has(systemPromptBlockId)) {
+        return
+      }
+      const activeId =
+        selectedRootSystemPromptParentId ?? rootSystemPromptParentBlocks[0]?.id
+      const shouldCycle =
+        rootSystemPromptParentBlocks.length > 1 &&
+        activeId === systemPromptBlockId
+      let nextPromptId: string | null = null
+      if (shouldCycle) {
+        const currentIndex = rootSystemPromptParentBlocks.findIndex(
+          (block) => block.id === systemPromptBlockId,
+        )
+        const nextIndex =
+          currentIndex === -1
+            ? 0
+            : (currentIndex + 1) % rootSystemPromptParentBlocks.length
+        const nextPrompt = rootSystemPromptParentBlocks[nextIndex]
+        if (nextPrompt) {
+          nextPromptId = nextPrompt.id
+        }
+      } else {
+        nextPromptId = systemPromptBlockId
+      }
+      if (nextPromptId) {
+        setSelectedRootSystemPromptParentId(nextPromptId)
+        const contextLeafId =
+          latestLeafBlockIdByRootContextId[toSystemRootContextId(nextPromptId)] ??
+          rootUserBlockId ??
+          latestLeafBlockId
+        if (contextLeafId) {
+          setPathLeafId(contextLeafId)
+        }
+      }
+      setOpenBranchMenuParentId(null)
+      setIsPathsPanelOpen(false)
+      focusComposer()
+    },
+    [
+      focusComposer,
+      latestLeafBlockIdByRootContextId,
+      latestLeafBlockId,
+      rootSystemPromptParentBlocks,
+      rootSystemPromptParentBlocksById,
+      rootUserBlockId,
+      selectedRootSystemPromptParentId,
+    ],
+  )
+
   const handleSelectCollection = useCallback((collection: CollectionRecord) => {
     const requestId = collectionLoadIdRef.current + 1
     collectionLoadIdRef.current = requestId
     setPendingSystemPromptId(null)
+    setSelectedRootSystemPromptParentId(null)
+    setIsRootSystemPromptCollapsed(true)
     setSelectedCollectionId(collection.id)
     setCollectionId(collection.id)
     setActiveCollection(collection)
@@ -5292,6 +5990,8 @@ function App() {
   const startNewCollection = useCallback(() => {
     setSuppressNewCollectionTooltip(true)
     setPendingSystemPromptId(lastSelectedSystemPromptId)
+    setSelectedRootSystemPromptParentId(null)
+    setIsRootSystemPromptCollapsed(true)
     setSelectedCollectionId(null)
     setBlocks([])
     setPathLeafId(null)
@@ -5403,8 +6103,24 @@ function App() {
           parentUserBlock: Block & { payload: BlockPayload },
           parentUserId: string,
         ) => {
+          const rootContextId = resolveRootContextIdForParent(parentUserId)
+          const persistRootContextId = shouldPersistRootContextTag(
+            parentUserId,
+            rootContextId,
+          )
+            ? rootContextId
+            : undefined
           const parentIds = collectionGraph.parentIdsByBlockId[parentUserId] ?? []
+          const isRootUserParent = rootUserBlockId && parentUserId === rootUserBlockId
+          const preferredRootSystemParentId =
+            isRootUserParent &&
+            selectedRootSystemPromptParentId &&
+            parentIds.includes(selectedRootSystemPromptParentId) &&
+            persistedBlocksById.has(selectedRootSystemPromptParentId)
+              ? selectedRootSystemPromptParentId
+              : null
           const contextParentId =
+            preferredRootSystemParentId ??
             parentIds.find((parentId) => persistedBlocksById.has(parentId)) ??
             null
           const endpoint = buildChatCompletionEndpoint(baseUrl)
@@ -5465,6 +6181,7 @@ function App() {
             const assistantPayload = toBlockPayload('assistant', nextContent, {
               request,
               response,
+              rootContextId: persistRootContextId,
             })
 
             setBlocks((prev) =>
@@ -5477,6 +6194,7 @@ function App() {
                       payload: assistantPayload,
                       retryParentId: undefined,
                       transientParentId: parentUserId,
+                      rootContextId,
                     }
                   : block,
               ),
@@ -5506,6 +6224,7 @@ function App() {
                             status: undefined,
                             retryParentId: undefined,
                             transientParentId: undefined,
+                            rootContextId,
                           }
                         : block,
                     ),
@@ -5595,6 +6314,7 @@ function App() {
             status: 'pending',
             retryParentId: parentUserId,
             transientParentId: parentUserId,
+            rootContextId: resolveRootContextIdForParent(parentUserId),
           }
           setBlocks((prev) => {
             const parentIndex = prev.findIndex((block) => block.id === parentUserId)
@@ -5661,6 +6381,7 @@ function App() {
                   payload: undefined,
                   retryParentId: parentUserId,
                   transientParentId: parentUserId,
+                  rootContextId: resolveRootContextIdForParent(parentUserId),
                 }
               : block,
           ),
@@ -5684,7 +6405,11 @@ function App() {
       isNearBottom,
       model,
       persistedBlocksById,
+      resolveRootContextIdForParent,
+      rootUserBlockId,
+      selectedRootSystemPromptParentId,
       selectedCollectionId,
+      shouldPersistRootContextTag,
       temperature,
     ],
   )
@@ -5705,12 +6430,19 @@ function App() {
       const initialSystemPrompt = isFirstGenerationForNewCollection
         ? pendingSystemPromptPreset
         : null
+      const shouldTryRecentCollectionAutoMerge =
+        isFirstGenerationForNewCollection &&
+        recentAutoMergeCandidateCollectionIds.length > 0
       const derivedTitle = deriveCollectionTitle(trimmedDraft)
       const endpoint = buildChatCompletionEndpoint(baseUrl)
       const request = buildBlockRequest(baseUrl, model, temperature)
       const timestamp = Date.now()
       const userRecordId = createId('block')
       const assistantRecordId = createId('block')
+      const rootContextId = resolveRootContextIdForParent(
+        parentBlockId,
+        initialSystemPrompt?.id ?? null,
+      )
       const systemPayload: BlockPayload | null = initialSystemPrompt
         ? {
             role: 'system',
@@ -5718,6 +6450,7 @@ function App() {
             localTimestamp: formatLocalTimestamp(
               new Date(initialSystemPrompt.createdAt),
             ),
+            rootContextId: toSystemRootContextId(initialSystemPrompt.id),
           }
         : null
       const systemBlock: Block | null = initialSystemPrompt && systemPayload
@@ -5728,6 +6461,7 @@ function App() {
             content: initialSystemPrompt.content,
             payload: systemPayload,
             transientParentId: parentBlockId,
+            rootContextId: systemPayload.rootContextId ?? null,
           }
         : null
       const userParentId = systemBlock?.id ?? parentBlockId
@@ -5741,7 +6475,23 @@ function App() {
         content: trimmedDraft,
         payload: userPayload,
         transientParentId: userParentId,
+        rootContextId,
       }
+      const forcePersistNoSystemRootContextPromise =
+        shouldTryRecentCollectionAutoMerge &&
+        !initialSystemPrompt &&
+        rootContextId === ROOT_CONTEXT_NONE
+          ? shouldPersistNoSystemRootContextForRecentMerge({
+              firstUserContent: trimmedDraft,
+              recentCollectionIds: recentAutoMergeCandidateCollectionIds,
+            }).catch((error) => {
+              console.error(
+                '[root-fork-merge] failed to probe no-system root context persistence',
+                error,
+              )
+              return false
+            })
+          : Promise.resolve(false)
 
       const assistantBlock: Block = {
         id: `b-${timestamp}-output`,
@@ -5751,6 +6501,7 @@ function App() {
         status: 'pending',
         retryParentId: userBlock.id,
         transientParentId: userBlock.id,
+        rootContextId,
       }
 
       setBlocks((prev) =>
@@ -5926,9 +6677,21 @@ function App() {
           completionTokens: response?.usage?.completionTokens,
           latencyMs,
         })
+        const forcePersistNoSystemRootContext =
+          await forcePersistNoSystemRootContextPromise
+        const persistAssistantRootContextId = shouldPersistRootContextTag(
+          parentBlockId ?? initialSystemPrompt?.id ?? null,
+          rootContextId,
+          {
+            forceWhenParentMissing: forcePersistNoSystemRootContext,
+          },
+        )
+          ? rootContextId
+          : undefined
         const assistantPayload = toBlockPayload('assistant', nextContent, {
           request,
           response,
+          rootContextId: persistAssistantRootContextId,
         })
 
         const shouldAutoScroll = followRef.current || isNearBottom()
@@ -5941,6 +6704,7 @@ function App() {
                   status: undefined,
                   payload: assistantPayload,
                   retryParentId: undefined,
+                  rootContextId,
                 }
               : block,
           ),
@@ -5960,32 +6724,58 @@ function App() {
               recordId: assistantRecordId,
             },
           )
-            .then((record) => {
+            .then(async (record) => {
               attachBlockToGraph(
                 record.id,
                 assistantParentId ? [assistantParentId] : [],
               )
-                  setBlocks((prev) =>
-                    prev.map((block) =>
-                      block.id === assistantBlock.id
-                        ? {
-                            ...block,
-                            id: record.id,
-                            createdAt: record.createdAt,
-                            content: nextContent,
-                            retryParentId: undefined,
-                            transientParentId: undefined,
-                          }
-                        : block,
-                    ),
-                  )
-                  setPathLeafId((prev) =>
-                    prev === assistantBlock.id ? record.id : prev,
-                  )
+              setBlocks((prev) =>
+                prev.map((block) =>
+                  block.id === assistantBlock.id
+                    ? {
+                        ...block,
+                        id: record.id,
+                        createdAt: record.createdAt,
+                        content: nextContent,
+                        retryParentId: undefined,
+                        transientParentId: undefined,
+                        rootContextId,
+                      }
+                    : block,
+                ),
+              )
+              setPathLeafId((prev) =>
+                prev === assistantBlock.id ? record.id : prev,
+              )
               setActiveBlockId((prev) =>
                 prev === assistantBlock.id ? record.id : prev,
               )
               bumpCollectionActivity(persistedCollectionId, record.createdAt)
+              if (!shouldTryRecentCollectionAutoMerge || !isMountedRef.current) {
+                return
+              }
+              try {
+                const mergeResult =
+                  await autoMergeRootSystemPromptForkIntoRecentCollections({
+                    sourceCollectionId: persistedCollectionId,
+                    recentCollectionIds: recentAutoMergeCandidateCollectionIds,
+                  })
+                if (!mergeResult.merged || !mergeResult.targetCollectionId) {
+                  return
+                }
+                console.info(
+                  `[root-fork-merge] auto-merged ${persistedCollectionId} -> ${mergeResult.targetCollectionId}`,
+                )
+                if (!isMountedRef.current) {
+                  return
+                }
+                await Promise.all([loadCollections(), loadBlocks()])
+              } catch (error) {
+                console.error(
+                  '[root-fork-merge] failed to auto-merge',
+                  error,
+                )
+              }
             })
             .catch((error) => {
               console.error(
@@ -6432,6 +7222,13 @@ function App() {
                 blocks={visibleBlocks}
                 activeBlockId={activeBlockId}
                 branchOptionsByParentId={branchOptionsByParentId}
+                systemPromptBranchCountByBlockId={systemPromptBranchCountByBlockId}
+                systemPromptBranchLabelByBlockId={systemPromptBranchLabelByBlockId}
+                activeSystemPromptBranchBlockId={
+                  activeRootSystemPromptBranchBlockId
+                }
+                isRootSystemPromptCollapsed={isRootSystemPromptCollapsed}
+                onSetRootSystemPromptCollapsed={setIsRootSystemPromptCollapsed}
                 focusedForkParentId={
                   isPathsPanelOpen ? effectivePathsForkParentId : null
                 }
@@ -6455,6 +7252,7 @@ function App() {
                 onBlockClick={handleBlockClick}
                 onSetContinuationCursor={handleSetContinuationCursor}
                 onOpenPathsFork={handleOpenPathsFork}
+                onSelectSystemPromptBranch={handleSelectRootSystemPromptBranch}
                 onRetryBlock={handleRetryContinuation}
                 onCopyBlock={handleCopyBlockFromStream}
                 registerBlockRef={registerBlockRef}

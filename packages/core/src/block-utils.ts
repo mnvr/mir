@@ -86,6 +86,7 @@ export const toBlockPayload = (
   options?: {
     request?: BlockRequest
     response?: BlockResponse
+    rootContextId?: string
   },
 ): BlockPayload => ({
   role,
@@ -93,6 +94,7 @@ export const toBlockPayload = (
   localTimestamp: formatLocalTimestamp(new Date()),
   request: options?.request,
   response: options?.response,
+  rootContextId: options?.rootContextId,
 })
 
 export const formatLatency = (latencyMs?: number) => {

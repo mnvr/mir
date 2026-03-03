@@ -130,6 +130,7 @@ How to use branching in the UI:
 - Using Copy block from the selection bar copies the selected block and clears the selection.
 - If the selected block is already the branch source, Branch from here is disabled.
 - Blocks with multiple children show a layers marker with a count (for example 3 branches). Click it to open Branches panel focused on that branch point.
+- Root-level system prompt forks use the dedicated `1/2` cycle control on the system prompt row instead of the layers marker.
 - Use Branches in the header (layers icon) to open or close Branches panel.
 - You can also toggle Branches panel with `Ctrl + Shift + B` on Linux/Windows or `Cmd + Shift + B` on macOS.
 - In Branches panel, select a branch point in the top row, then select a branch (Branch 1, Branch 2, and so on) in the list.
@@ -152,13 +153,19 @@ Temperature controls how deterministic or varied the model output is. Lower valu
 
 #### System prompt blocks
 
-Mir can seed a new collection with a saved `system` block before the first generation.
+Mir supports root-level system prompt branching.
 
 - Select a block, open **Inspect**, and use the repo icon to save or remove that block as a reusable system prompt.
 - Saved system prompts can be used across collections.
 - Saved system prompts are stored as normal blocks and linked to their source block via a `source` relation, so they are part of normal export/import sync data.
-- System prompt selection is available only in a new, empty collection before the first generation.
-- In that empty state, a compact `Sys` indicator near the composer border shows the current choice (`—` for none, `<N> ch` when a prompt is selected).
+- In a new, empty collection, system prompt selection works as before.
+- In started collections with root prompt branching (the first user block has multiple system prompt parents), the root system prompt row shows a small branch cycle control (`1/2`, `2/2`, and so on) next to `SYSTEM PROMPT`.
+- Click the cycle control to switch the active root prompt branch. The visible downstream path updates to that branch context.
+- This control does not insert system prompts at arbitrary later points in the thread.
+- On first generation in a new collection draft, Mir also attempts an automatic root merge against up to the 5 most recent collections shown in the sidebar.
+- Auto-merge happens only when the first user message matches exactly; matching can be between different system prompts, or between no system prompt and a system prompt.
+- If matched, the new root variant is folded into the existing collection as another root branch context.
+- In empty state, a compact `Sys` indicator near the composer border shows the current choice (`—` for none, `<N> ch` when a prompt is selected).
 - Click the indicator to open an inline selector panel with a compact action bar and a scrollable list of saved prompts.
 - The action bar always shows `None`, `Scan`, and `New`.
 - Use `None` to clear selection for the current draft (`None` is disabled when nothing is selected).
@@ -171,7 +178,7 @@ Mir can seed a new collection with a saved `system` block before the first gener
 - `Go to source block` is always shown; it is disabled when no source relation exists.
 - Expanded edit view keeps `Cancel` and `Save` text actions, plus icon-only delete controls (`trash` -> `confirm` / `cancel`) to remove a prompt from the library.
 - Saving an edit creates a new immutable system prompt block, keeps the previous revision for history, and updates library membership to point at the new revision.
-- When selected, that system prompt block is linked into the new collection ancestry and used in context like any other parent block.
+- When selected in a new draft, that system prompt block is linked into the new collection ancestry and used in context like any other parent block.
 - Unsaving a system prompt removes it from the library picker for future drafts without changing existing collections that already reference it.
 
 ## Inspect

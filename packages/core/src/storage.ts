@@ -56,6 +56,8 @@ export type BlockPayload = {
   localTimestamp: string
   request?: BlockRequest
   response?: BlockResponse
+  // Optional root branch context identifier (e.g. "sys:<blockId>" or "none").
+  rootContextId?: string
 }
 
 export type BlockRecord = LiveRecord<BlockPayload> & {

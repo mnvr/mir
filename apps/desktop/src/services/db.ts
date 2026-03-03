@@ -34,7 +34,6 @@ const SEARCH_TERM_MAX_COUNT = 8
 const SEARCH_TERM_MIN_LENGTH = 2
 const SEARCH_SNIPPET_LENGTH = 220
 const SEARCH_SNIPPET_CONTEXT = 80
-
 const isCollectionRecord = (
   record: MirRecord | undefined | null,
 ): record is CollectionRecord => {
@@ -1145,6 +1144,356 @@ export const ensureCollectionContainsBlock = async (
   void indexCollectionActivity(collectionId, blockRecord.createdAt)
   void indexBlockSearchEntry(blockRecord, collectionId)
   return 'linked' as const
+}
+
+export const ensureBlockHasParentRelation = async (
+  childBlockId: string,
+  parentBlockId: string,
+) => {
+  const db = await getDb()
+  const tx = db.transaction(['records', 'relations'], 'readwrite')
+  const recordStore = tx.objectStore('records')
+  const relationStore = tx.objectStore('relations')
+
+  const [childRecord, parentRecord] = await Promise.all([
+    recordStore.get(childBlockId),
+    recordStore.get(parentBlockId),
+  ])
+  if (!isBlockRecord(childRecord) || !isBlockRecord(parentRecord)) {
+    await tx.done
+    return 'missing' as const
+  }
+
+  const relation = buildRelation(childBlockId, parentBlockId, 'parent')
+  const existingRelation = await relationStore.get(relation.id)
+  if (existingRelation) {
+    await tx.done
+    return 'already_linked' as const
+  }
+
+  await relationStore.put(relation)
+  await tx.done
+  void indexRelation(relation)
+  return 'linked' as const
+}
+
+type RootSystemPromptMergeCandidate = {
+  collectionId: string
+  firstUserBlockId: string
+  firstUserContent: string
+  systemPromptBlockIds: string[]
+  systemPromptContents: string[]
+  hasNoSystemRoot: boolean
+}
+
+const compareByCreatedAtThenId = (
+  left: { createdAt: number; id: string },
+  right: { createdAt: number; id: string },
+) => {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt - right.createdAt
+  }
+  return left.id.localeCompare(right.id)
+}
+
+const ROOT_MERGE_NO_SYSTEM_CONTEXT_ID = 'none'
+
+const buildRootSystemPromptMergeCandidates = (
+  records: MirRecord[],
+  relations: Relation[],
+) => {
+  const collections = records.filter(isCollectionRecord)
+  const blocks = records.filter(isBlockRecord)
+  const blockById = new Map(blocks.map((block) => [block.id, block]))
+  const containsBlockIdsByCollectionId = new Map<string, string[]>()
+
+  relations.forEach((relation) => {
+    if (relation.type !== 'contains') {
+      return
+    }
+    if (!blockById.has(relation.toId)) {
+      return
+    }
+    const existing = containsBlockIdsByCollectionId.get(relation.fromId) ?? []
+    existing.push(relation.toId)
+    containsBlockIdsByCollectionId.set(relation.fromId, existing)
+  })
+
+  const parentIdsByChildId = new Map<string, string[]>()
+  const childIdsByParentId = new Map<string, string[]>()
+  relations.forEach((relation) => {
+    if (relation.type !== 'parent') {
+      return
+    }
+    if (!blockById.has(relation.fromId) || !blockById.has(relation.toId)) {
+      return
+    }
+    const existing = parentIdsByChildId.get(relation.fromId) ?? []
+    existing.push(relation.toId)
+    parentIdsByChildId.set(relation.fromId, existing)
+    const existingChildren = childIdsByParentId.get(relation.toId) ?? []
+    existingChildren.push(relation.fromId)
+    childIdsByParentId.set(relation.toId, existingChildren)
+  })
+
+  const candidates: RootSystemPromptMergeCandidate[] = []
+  collections.forEach((collection) => {
+    const containsBlockIds = containsBlockIdsByCollectionId.get(collection.id) ?? []
+    if (containsBlockIds.length === 0) {
+      return
+    }
+    const blockIdSet = new Set(containsBlockIds)
+    const userBlocks = containsBlockIds
+      .map((blockId) => blockById.get(blockId))
+      .filter(
+        (block): block is BlockRecord => {
+          if (!block) {
+            return false
+          }
+          return block.payload.role === 'user'
+        },
+      )
+      .sort((left, right) =>
+        compareByCreatedAtThenId(
+          { createdAt: left.createdAt, id: left.id },
+          { createdAt: right.createdAt, id: right.id },
+        ),
+      )
+    const firstUserBlock = userBlocks[0]
+    if (!firstUserBlock) {
+      return
+    }
+
+    const parentIds = parentIdsByChildId.get(firstUserBlock.id) ?? []
+    const hasNonSystemParent = parentIds.some((parentId) => {
+      if (!blockIdSet.has(parentId)) {
+        return false
+      }
+      const parentBlock = blockById.get(parentId)
+      return Boolean(parentBlock) && parentBlock?.payload.role !== 'system'
+    })
+    if (hasNonSystemParent) {
+      return
+    }
+    const systemParentBlocks = parentIds
+      .filter((parentId) => blockIdSet.has(parentId))
+      .map((parentId) => blockById.get(parentId))
+      .filter(
+        (parent): parent is BlockRecord => {
+          if (!parent) {
+            return false
+          }
+          return parent.payload.role === 'system'
+        },
+      )
+      .sort((left, right) =>
+        compareByCreatedAtThenId(
+          { createdAt: left.createdAt, id: left.id },
+          { createdAt: right.createdAt, id: right.id },
+        ),
+      )
+
+    const systemPromptBlockIds = systemParentBlocks.map((block) => block.id)
+    const systemPromptContents = Array.from(
+      new Set(
+        systemParentBlocks.map((block) => block.payload.content).filter(Boolean),
+      ),
+    )
+    const hasNoSystemChildContext = (
+      childIdsByParentId.get(firstUserBlock.id) ?? []
+    ).some((childId) => {
+      if (!blockIdSet.has(childId)) {
+        return false
+      }
+      const childBlock = blockById.get(childId)
+      if (!childBlock) {
+        return false
+      }
+      const role = childBlock.payload.role
+      if (role !== 'user' && role !== 'assistant') {
+        return false
+      }
+      const rootContextId = childBlock.payload.rootContextId
+      return rootContextId === ROOT_MERGE_NO_SYSTEM_CONTEXT_ID
+    })
+    const hasNoSystemRoot =
+      systemPromptBlockIds.length === 0 || hasNoSystemChildContext
+
+    candidates.push({
+      collectionId: collection.id,
+      firstUserBlockId: firstUserBlock.id,
+      firstUserContent: firstUserBlock.payload.content,
+      systemPromptBlockIds,
+      systemPromptContents,
+      hasNoSystemRoot,
+    })
+  })
+
+  return {
+    candidates,
+    containsBlockIdsByCollectionId,
+  }
+}
+
+export const shouldPersistNoSystemRootContextForRecentMerge = async (
+  options: {
+    firstUserContent: string
+    recentCollectionIds: string[]
+  },
+) => {
+  const firstUserContent = options.firstUserContent
+  if (!firstUserContent) {
+    return false
+  }
+  const recentCollectionIds = Array.from(
+    new Set(options.recentCollectionIds.filter(Boolean)),
+  )
+  if (recentCollectionIds.length === 0) {
+    return false
+  }
+
+  const [records, relations] = await Promise.all([
+    listAllRecords(),
+    listAllRelations(),
+  ])
+  const { candidates } = buildRootSystemPromptMergeCandidates(records, relations)
+  const candidateByCollectionId = new Map(
+    candidates.map((candidate) => [candidate.collectionId, candidate]),
+  )
+
+  for (const collectionId of recentCollectionIds) {
+    const candidate = candidateByCollectionId.get(collectionId)
+    if (!candidate) {
+      continue
+    }
+    if (candidate.firstUserContent !== firstUserContent) {
+      continue
+    }
+    if (candidate.hasNoSystemRoot) {
+      continue
+    }
+    return true
+  }
+
+  return false
+}
+
+export const autoMergeRootSystemPromptForkIntoRecentCollections = async (
+  options: {
+    sourceCollectionId: string
+    recentCollectionIds: string[]
+  },
+): Promise<{
+  merged: boolean
+  targetCollectionId: string | null
+}> => {
+  const sourceCollectionId = options.sourceCollectionId
+  if (!sourceCollectionId) {
+    return {
+      merged: false,
+      targetCollectionId: null,
+    }
+  }
+  const recentCollectionIds = Array.from(
+    new Set(options.recentCollectionIds.filter(Boolean)),
+  ).filter((collectionId) => collectionId !== sourceCollectionId)
+  if (recentCollectionIds.length === 0) {
+    return {
+      merged: false,
+      targetCollectionId: null,
+    }
+  }
+
+  const [records, relations] = await Promise.all([
+    listAllRecords(),
+    listAllRelations(),
+  ])
+  const { candidates, containsBlockIdsByCollectionId } =
+    buildRootSystemPromptMergeCandidates(records, relations)
+  const candidateByCollectionId = new Map(
+    candidates.map((candidate) => [candidate.collectionId, candidate]),
+  )
+  const source = candidateByCollectionId.get(sourceCollectionId)
+  if (!source) {
+    return {
+      merged: false,
+      targetCollectionId: null,
+    }
+  }
+  const sourceSystemPromptBlockId = source.systemPromptBlockIds[0] ?? null
+  const sourceSystemPromptContent = source.systemPromptContents[0] ?? null
+
+  let target: RootSystemPromptMergeCandidate | null = null
+  for (const targetCollectionId of recentCollectionIds) {
+    const candidate = candidateByCollectionId.get(targetCollectionId)
+    if (!candidate) {
+      continue
+    }
+    if (candidate.firstUserContent !== source.firstUserContent) {
+      continue
+    }
+    if (sourceSystemPromptContent) {
+      if (candidate.systemPromptContents.includes(sourceSystemPromptContent)) {
+        continue
+      }
+      target = candidate
+      break
+    }
+    if (candidate.hasNoSystemRoot) {
+      continue
+    }
+    target = candidate
+    break
+  }
+  if (!target) {
+    return {
+      merged: false,
+      targetCollectionId: null,
+    }
+  }
+
+  const childParentRelationsByParentId = new Map<string, Relation[]>()
+  relations.forEach((relation) => {
+    if (relation.type !== 'parent') {
+      return
+    }
+    const existing = childParentRelationsByParentId.get(relation.toId) ?? []
+    existing.push(relation)
+    childParentRelationsByParentId.set(relation.toId, existing)
+  })
+
+  const sourceBlockIds =
+    containsBlockIdsByCollectionId.get(source.collectionId) ?? []
+  for (const blockId of sourceBlockIds) {
+    if (blockId === source.firstUserBlockId) {
+      continue
+    }
+    await ensureCollectionContainsBlock(target.collectionId, blockId)
+  }
+
+  if (sourceSystemPromptBlockId) {
+    await ensureBlockHasParentRelation(
+      target.firstUserBlockId,
+      sourceSystemPromptBlockId,
+    )
+  }
+
+  const childParentRelations =
+    childParentRelationsByParentId.get(source.firstUserBlockId) ?? []
+  for (const relation of childParentRelations) {
+    await ensureBlockHasParentRelation(relation.fromId, target.firstUserBlockId)
+  }
+
+  const activeCollectionId = await getKvValue<string>('activeCollectionId')
+  if (activeCollectionId === source.collectionId) {
+    await setActiveCollectionId(target.collectionId)
+  }
+
+  await deleteCollection(source.collectionId)
+  return {
+    merged: true,
+    targetCollectionId: target.collectionId,
+  }
 }
 
 export const listCollectionIdsContainingBlock = async (blockId: string) => {
