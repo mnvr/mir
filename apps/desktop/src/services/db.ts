@@ -741,6 +741,16 @@ export const deleteCollection = async (collectionId: string) => {
       sharedBlockIds.add(relation.toId)
     }
   })
+  const records = await recordStore.getAll()
+  records.forEach((entry) => {
+    if (
+      isSystemPromptHandleRecord(entry) &&
+      entry.payload.inLibrary &&
+      blockIds.has(entry.payload.promptBlockId)
+    ) {
+      sharedBlockIds.add(entry.payload.promptBlockId)
+    }
+  })
   const deletableBlockIds = new Set(
     Array.from(blockIds).filter((id) => !sharedBlockIds.has(id)),
   )
@@ -816,6 +826,16 @@ export const hardDeleteCollection = async (collectionId: string) => {
     }
     if (relation.type === 'source' && blockIds.has(relation.toId)) {
       sharedBlockIds.add(relation.toId)
+    }
+  })
+  const records = await recordStore.getAll()
+  records.forEach((entry) => {
+    if (
+      isSystemPromptHandleRecord(entry) &&
+      entry.payload.inLibrary &&
+      blockIds.has(entry.payload.promptBlockId)
+    ) {
+      sharedBlockIds.add(entry.payload.promptBlockId)
     }
   })
   const deletableBlockIds = new Set(
