@@ -214,7 +214,7 @@ For generated blocks, this area will also show the model name, the completion to
 This summary is followed by any actions applicable to that item type.
 
 * Copy Collection: Copy all blocks in the selected collection as markdown. Blocks with a role "user" are blockquoted.
-* Delete Collection: Delete the collection and all of its blocks. This action asks for a confirmation first.
+* Delete Collection: Delete the collection and all of its blocks. This action asks for a confirmation first and uses tombstones by default. Hold `Option` on macOS (`Alt` on Linux/Windows) while hovering the delete icon to arm permanent delete (icon turns red). Confirming in that mode permanently removes the collection records and relations instead of tombstoning.
 * Copy Block: Copy the block's text.
 * Branch from here: Move the branch source to the selected generated/model block.
 * Generate new: Re-run generation from the selected user block or retry a failed generated/model block.

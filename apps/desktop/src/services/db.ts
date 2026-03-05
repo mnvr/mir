@@ -777,6 +777,73 @@ export const deleteCollection = async (collectionId: string) => {
   await invalidateSearchIndex()
 }
 
+export const hardDeleteCollection = async (collectionId: string) => {
+  const db = await getDb()
+  const indexDb = await getIndexDb()
+  const tx = db.transaction(['records', 'relations', 'kv'], 'readwrite')
+  const recordStore = tx.objectStore('records')
+  const relationStore = tx.objectStore('relations')
+  const kvStore = tx.objectStore('kv')
+
+  const record = await recordStore.get(collectionId)
+  if (!isCollectionRecord(record)) {
+    await tx.done
+    return
+  }
+
+  await recordStore.delete(collectionId)
+
+  const activeCollectionId = await kvStore.get('activeCollectionId')
+  if (activeCollectionId === collectionId) {
+    await kvStore.delete('activeCollectionId')
+  }
+
+  const relations = await relationStore.getAll()
+  const blockIds = new Set<string>()
+  const sharedBlockIds = new Set<string>()
+  relations.forEach((relation) => {
+    if (relation.type === 'contains' && relation.fromId === collectionId) {
+      blockIds.add(relation.toId)
+    }
+  })
+  relations.forEach((relation) => {
+    if (
+      relation.type === 'contains' &&
+      relation.fromId !== collectionId &&
+      blockIds.has(relation.toId)
+    ) {
+      sharedBlockIds.add(relation.toId)
+    }
+    if (relation.type === 'source' && blockIds.has(relation.toId)) {
+      sharedBlockIds.add(relation.toId)
+    }
+  })
+  const deletableBlockIds = new Set(
+    Array.from(blockIds).filter((id) => !sharedBlockIds.has(id)),
+  )
+
+  for (const blockId of deletableBlockIds) {
+    await recordStore.delete(blockId)
+  }
+
+  relations.forEach((relation) => {
+    if (
+      relation.fromId === collectionId ||
+      relation.toId === collectionId ||
+      deletableBlockIds.has(relation.fromId) ||
+      deletableBlockIds.has(relation.toId)
+    ) {
+      relationStore.delete(relation.id)
+    }
+  })
+
+  await tx.done
+
+  await rebuildRelationIndex(db, indexDb)
+  await rebuildCollectionIndex(db, indexDb)
+  await invalidateSearchIndex()
+}
+
 export const listCollections = async (): Promise<CollectionRecord[]> => {
   const [db, indexDb] = await Promise.all([getDb(), getIndexDb()])
   await ensureCollectionIndexReady()

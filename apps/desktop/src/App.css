@@ -1910,6 +1910,11 @@
   color: #4a4a4a;
 }
 
+.sidebar-icon-button-delete-hard:hover {
+  background: #f7eaea;
+  color: #b03a3a;
+}
+
 .sidebar-icon-button:disabled {
   opacity: 0.4;
   cursor: default;
@@ -3760,6 +3765,11 @@
   .sidebar-icon-button:hover {
     background: rgba(255, 255, 255, 0.1);
     color: var(--dm-text);
+  }
+
+  .sidebar-icon-button-delete-hard:hover {
+    background: rgba(190, 72, 72, 0.22);
+    color: #ff9c9c;
   }
 
 

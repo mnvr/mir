@@ -48,6 +48,7 @@ import {
   createCollection,
   deleteKvValue,
   deleteCollection,
+  hardDeleteCollection,
   ensureBlockHasSourceRelation,
   ensureCollectionContainsBlock,
   getActiveCollection,
@@ -152,6 +153,7 @@ const TEMPERATURE_PRESETS = [0, 0.2, 0.5, 0.7, 1, 1.2, 1.5, 2]
 const IS_MAC =
   typeof navigator !== 'undefined' &&
   /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+const HARD_DELETE_MODIFIER_LABEL = IS_MAC ? 'Option' : 'Alt'
 
 const REQUEST_TIMEOUT_MS = 240_000
 const SCROLL_CONTEXT_PEEK_LINES = 3
@@ -2023,6 +2025,8 @@ function App() {
   const [suppressSettingsTooltip, setSuppressSettingsTooltip] = useState(false)
   const [suppressSidebarTooltip, setSuppressSidebarTooltip] = useState(false)
   const [suppressDeleteCollectionTooltip, setSuppressDeleteCollectionTooltip] =
+    useState(false)
+  const [isHardDeleteModifierPressed, setIsHardDeleteModifierPressed] =
     useState(false)
   const [isSending, setIsSending] = useState(false)
   const [settingsReady, setSettingsReady] = useState(false)
@@ -5291,6 +5295,34 @@ function App() {
   }, [activeCollection?.id])
 
   useEffect(() => {
+    const handleModifierKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Alt') {
+        setIsHardDeleteModifierPressed(true)
+      }
+    }
+
+    const handleModifierKeyUp = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Alt') {
+        setIsHardDeleteModifierPressed(false)
+      }
+    }
+
+    const handleWindowBlur = () => {
+      setIsHardDeleteModifierPressed(false)
+    }
+
+    window.addEventListener('keydown', handleModifierKeyDown)
+    window.addEventListener('keyup', handleModifierKeyUp)
+    window.addEventListener('blur', handleWindowBlur)
+
+    return () => {
+      window.removeEventListener('keydown', handleModifierKeyDown)
+      window.removeEventListener('keyup', handleModifierKeyUp)
+      window.removeEventListener('blur', handleWindowBlur)
+    }
+  }, [])
+
+  useEffect(() => {
     return () => {
       if (copyAckTimeoutRef.current) {
         window.clearTimeout(copyAckTimeoutRef.current)
@@ -6165,48 +6197,58 @@ function App() {
     startNewCollection()
   }, [closeSettings, startNewCollection])
 
-  const handleDeleteCollection = useCallback(() => {
-    if (!activeCollection || activeCollection.id === demoCollection.id) {
-      return
-    }
-    const currentIndex = orderedCollections.findIndex(
-      (collection) => collection.id === activeCollection.id,
-    )
-    const nextCollection =
-      currentIndex >= 0 && orderedCollections.length > 1
-        ? orderedCollections[currentIndex + 1] ??
-          orderedCollections[currentIndex - 1] ??
-          null
-        : null
-    setSuppressDeleteCollectionTooltip(true)
-    window.setTimeout(() => {
-      const title = getCollectionTitle(activeCollection)
-      const confirmed = window.confirm(
-        `Delete "${title}"? This cannot be undone.`,
-      )
-      if (!confirmed) {
+  const handleDeleteCollection = useCallback(
+    (event?: MouseEvent<HTMLButtonElement>) => {
+      const useHardDelete =
+        Boolean(event?.altKey) || isHardDeleteModifierPressed
+      if (!activeCollection || activeCollection.id === demoCollection.id) {
         return
       }
-      setActiveBlockId(null)
-      setLastRunStats(null)
-      void deleteCollection(activeCollection.id)
-        .then(() => {
-          if (nextCollection) {
-            handleSelectCollection(nextCollection)
-          } else {
-            startNewCollection()
-          }
-        })
-        .then(() => loadCollections())
-        .catch(() => {})
-    }, 0)
-  }, [
-    activeCollection,
-    handleSelectCollection,
-    loadCollections,
-    orderedCollections,
-    startNewCollection,
-  ])
+      const currentIndex = orderedCollections.findIndex(
+        (collection) => collection.id === activeCollection.id,
+      )
+      const nextCollection =
+        currentIndex >= 0 && orderedCollections.length > 1
+          ? orderedCollections[currentIndex + 1] ??
+            orderedCollections[currentIndex - 1] ??
+            null
+          : null
+      setSuppressDeleteCollectionTooltip(true)
+      window.setTimeout(() => {
+        const title = getCollectionTitle(activeCollection)
+        const confirmMessage = useHardDelete
+          ? `Permanently delete "${title}"? This permanently removes the collection records and relations. This cannot be undone.`
+          : `Delete "${title}"? This cannot be undone.`
+        const confirmed = window.confirm(confirmMessage)
+        if (!confirmed) {
+          return
+        }
+        setActiveBlockId(null)
+        setLastRunStats(null)
+        const removeCollection = useHardDelete
+          ? hardDeleteCollection
+          : deleteCollection
+        void removeCollection(activeCollection.id)
+          .then(() => {
+            if (nextCollection) {
+              handleSelectCollection(nextCollection)
+            } else {
+              startNewCollection()
+            }
+          })
+          .then(() => loadCollections())
+          .catch(() => {})
+      }, 0)
+    },
+    [
+      activeCollection,
+      handleSelectCollection,
+      isHardDeleteModifierPressed,
+      loadCollections,
+      orderedCollections,
+      startNewCollection,
+    ],
+  )
 
   useEffect(() => {
     startNewCollectionRef.current = startNewCollection
@@ -6317,6 +6359,11 @@ function App() {
               code: 'missing_base_url',
             }
             const errorContent = `Error: ${missingConfigFailure.message}`
+            const failurePayload = toBlockPayload('assistant', errorContent, {
+              request,
+              response: toFailureResponsePayload(missingConfigFailure),
+              rootContextId: persistRootContextId,
+            })
             setBlocks((prev) =>
               prev.map((block) =>
                 block.id === assistantBlockId
@@ -6324,17 +6371,55 @@ function App() {
                       ...block,
                       content: errorContent,
                       status: 'error',
-                      payload: toBlockPayload('assistant', errorContent, {
-                        request,
-                        response: toFailureResponsePayload(missingConfigFailure),
-                        rootContextId: persistRootContextId,
-                      }),
+                      payload: failurePayload,
                       retryParentId: parentUserId,
                       transientParentId: parentUserId,
                     }
                   : block,
               ),
             )
+            if (
+              collectionId &&
+              selectedCollectionId !== demoCollection.id &&
+              isPersistedBlockId(parentUserId) &&
+              !isPersistedBlockId(assistantBlockId)
+            ) {
+              const assistantRecordId = createId('block')
+              void appendBlock(collectionId, failurePayload, {
+                parentIds: [parentUserId],
+                recordId: assistantRecordId,
+              })
+                .then((record) => {
+                  attachBlockToGraph(record.id, [parentUserId])
+                  setBlocks((prev) =>
+                    prev.map((block) =>
+                      block.id === assistantBlockId
+                        ? {
+                            ...block,
+                            id: record.id,
+                            createdAt: record.createdAt,
+                            content: errorContent,
+                            payload: failurePayload,
+                            status: 'error',
+                            retryParentId: parentUserId,
+                            transientParentId: undefined,
+                            rootContextId,
+                          }
+                        : block,
+                    ),
+                  )
+                  setPathLeafId((prev) =>
+                    prev === assistantBlockId ? record.id : prev,
+                  )
+                  bumpCollectionActivity(collectionId, record.createdAt)
+                })
+                .catch((error) => {
+                  console.error(
+                    '[blocks] failed to persist retry assistant error block',
+                    error,
+                  )
+                })
+            }
             return
           }
 
@@ -6442,6 +6527,15 @@ function App() {
               const cancellationFailure = resolveCancellationFailure(
                 timeoutController.didTimeout(),
               )
+              const failurePayload = toBlockPayload(
+                'assistant',
+                cancellationFailure.message,
+                {
+                  request,
+                  response: toFailureResponsePayload(cancellationFailure),
+                  rootContextId: persistRootContextId,
+                },
+              )
               setBlocks((prev) =>
                 prev.map((block) =>
                   block.id === assistantBlockId
@@ -6449,21 +6543,55 @@ function App() {
                         ...block,
                         content: cancellationFailure.message,
                         status: 'canceled',
-                        payload: toBlockPayload(
-                          'assistant',
-                          cancellationFailure.message,
-                          {
-                            request,
-                            response: toFailureResponsePayload(cancellationFailure),
-                            rootContextId: persistRootContextId,
-                          },
-                        ),
+                        payload: failurePayload,
                         retryParentId: parentUserId,
                         transientParentId: parentUserId,
                       }
                     : block,
                 ),
               )
+              if (
+                collectionId &&
+                selectedCollectionId !== demoCollection.id &&
+                isPersistedBlockId(parentUserId) &&
+                !isPersistedBlockId(assistantBlockId)
+              ) {
+                const assistantRecordId = createId('block')
+                void appendBlock(collectionId, failurePayload, {
+                  parentIds: [parentUserId],
+                  recordId: assistantRecordId,
+                })
+                  .then((record) => {
+                    attachBlockToGraph(record.id, [parentUserId])
+                    setBlocks((prev) =>
+                      prev.map((block) =>
+                        block.id === assistantBlockId
+                          ? {
+                              ...block,
+                              id: record.id,
+                              createdAt: record.createdAt,
+                              content: cancellationFailure.message,
+                              payload: failurePayload,
+                              status: 'canceled',
+                              retryParentId: parentUserId,
+                              transientParentId: undefined,
+                              rootContextId,
+                            }
+                          : block,
+                      ),
+                    )
+                    setPathLeafId((prev) =>
+                      prev === assistantBlockId ? record.id : prev,
+                    )
+                    bumpCollectionActivity(collectionId, record.createdAt)
+                  })
+                  .catch((persistError) => {
+                    console.error(
+                      '[blocks] failed to persist retry assistant canceled block',
+                      persistError,
+                    )
+                  })
+              }
               if (shouldAutoScroll) {
                 pendingScrollRef.current = { id: assistantBlockId, mode: 'read' }
               }
@@ -6471,6 +6599,11 @@ function App() {
             }
             const requestFailure = toRequestFailureDetails(error)
             const errorContent = `Error: ${requestFailure.message}`
+            const failurePayload = toBlockPayload('assistant', errorContent, {
+              request,
+              response: toFailureResponsePayload(requestFailure),
+              rootContextId: persistRootContextId,
+            })
             setBlocks((prev) =>
               prev.map((block) =>
                 block.id === assistantBlockId
@@ -6478,17 +6611,55 @@ function App() {
                       ...block,
                       content: errorContent,
                       status: 'error',
-                      payload: toBlockPayload('assistant', errorContent, {
-                        request,
-                        response: toFailureResponsePayload(requestFailure),
-                        rootContextId: persistRootContextId,
-                      }),
+                      payload: failurePayload,
                       retryParentId: parentUserId,
                       transientParentId: parentUserId,
                     }
                   : block,
               ),
             )
+            if (
+              collectionId &&
+              selectedCollectionId !== demoCollection.id &&
+              isPersistedBlockId(parentUserId) &&
+              !isPersistedBlockId(assistantBlockId)
+            ) {
+              const assistantRecordId = createId('block')
+              void appendBlock(collectionId, failurePayload, {
+                parentIds: [parentUserId],
+                recordId: assistantRecordId,
+              })
+                .then((record) => {
+                  attachBlockToGraph(record.id, [parentUserId])
+                  setBlocks((prev) =>
+                    prev.map((block) =>
+                      block.id === assistantBlockId
+                        ? {
+                            ...block,
+                            id: record.id,
+                            createdAt: record.createdAt,
+                            content: errorContent,
+                            payload: failurePayload,
+                            status: 'error',
+                            retryParentId: parentUserId,
+                            transientParentId: undefined,
+                            rootContextId,
+                          }
+                        : block,
+                    ),
+                  )
+                  setPathLeafId((prev) =>
+                    prev === assistantBlockId ? record.id : prev,
+                  )
+                  bumpCollectionActivity(collectionId, record.createdAt)
+                })
+                .catch((persistError) => {
+                  console.error(
+                    '[blocks] failed to persist retry assistant error block',
+                    persistError,
+                  )
+                })
+            }
             if (shouldAutoScroll) {
               pendingScrollRef.current = { id: assistantBlockId, mode: 'read' }
             }
@@ -6576,6 +6747,41 @@ function App() {
                   }
                 : block,
             ),
+          )
+          return
+        }
+
+        if (
+          targetBlock.direction === 'output' &&
+          isPersistedBlockId(targetBlock.id)
+        ) {
+          const parentUserId = parentUserBlock.id
+          const pendingAssistantCreatedAt = Date.now()
+          const pendingAssistantId = `b-${pendingAssistantCreatedAt}-retry-output`
+          const pendingAssistantBlock: Block = {
+            id: pendingAssistantId,
+            createdAt: pendingAssistantCreatedAt,
+            direction: 'output',
+            content: '',
+            status: 'pending',
+            retryParentId: parentUserId,
+            transientParentId: parentUserId,
+            rootContextId: resolveRootContextIdForParent(parentUserId),
+          }
+          setBlocks((prev) => {
+            const currentIndex = prev.findIndex((block) => block.id === targetBlockId)
+            if (currentIndex === -1) {
+              return [...prev, pendingAssistantBlock]
+            }
+            const next = [...prev]
+            next.splice(currentIndex + 1, 0, pendingAssistantBlock)
+            return next
+          })
+          setPathLeafId(pendingAssistantId)
+          await runAssistantAttempt(
+            pendingAssistantId,
+            parentUserBlock,
+            parentUserId,
           )
           return
         }
@@ -6859,6 +7065,11 @@ function App() {
           code: 'missing_base_url',
         }
         const errorContent = `Error: ${missingConfigFailure.message}`
+        const failurePayload = toBlockPayload('assistant', errorContent, {
+          request,
+          response: toFailureResponsePayload(missingConfigFailure),
+          rootContextId,
+        })
         setBlocks((prev) =>
           prev.map((block) =>
             block.id === assistantBlock.id
@@ -6866,15 +7077,62 @@ function App() {
                   ...block,
                   content: errorContent,
                   status: 'error',
-                  payload: toBlockPayload('assistant', errorContent, {
-                    request,
-                    response: toFailureResponsePayload(missingConfigFailure),
-                    rootContextId,
-                  }),
+                  payload: failurePayload,
                 }
               : block,
           ),
         )
+        if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
+          const persistedCollectionId = targetCollectionId
+          let assistantParentId: string | null = null
+          if (userRecordPromise) {
+            const userRecord = await userRecordPromise.catch(() => null)
+            assistantParentId = userRecord?.id ?? null
+          }
+          if (assistantParentId) {
+            void appendBlock(
+              persistedCollectionId,
+              failurePayload,
+              {
+                parentIds: [assistantParentId],
+                recordId: assistantRecordId,
+              },
+            )
+              .then((record) => {
+                attachBlockToGraph(record.id, [assistantParentId])
+                setBlocks((prev) =>
+                  prev.map((block) =>
+                    block.id === assistantBlock.id
+                      ? {
+                          ...block,
+                          id: record.id,
+                          createdAt: record.createdAt,
+                          content: errorContent,
+                          payload: failurePayload,
+                          status: 'error',
+                          retryParentId: assistantParentId,
+                          transientParentId: undefined,
+                          rootContextId,
+                        }
+                      : block,
+                  ),
+                )
+                setPathLeafId((prev) =>
+                  prev === assistantBlock.id ? record.id : prev,
+                )
+                setActiveBlockId((prev) =>
+                  prev === assistantBlock.id ? record.id : prev,
+                )
+                bumpCollectionActivity(persistedCollectionId, record.createdAt)
+              })
+              .catch((persistError) => {
+                console.error(
+                  '[blocks] failed to persist assistant error block',
+                  persistError,
+                )
+              })
+          }
+        }
         return
       }
 
@@ -7027,6 +7285,15 @@ function App() {
           const cancellationFailure = resolveCancellationFailure(
             timeoutController.didTimeout(),
           )
+          const failurePayload = toBlockPayload(
+            'assistant',
+            cancellationFailure.message,
+            {
+              request,
+              response: toFailureResponsePayload(cancellationFailure),
+              rootContextId,
+            },
+          )
           const shouldAutoScroll = followRef.current || isNearBottom()
           setBlocks((prev) =>
             prev.map((item) =>
@@ -7035,19 +7302,62 @@ function App() {
                     ...item,
                     content: cancellationFailure.message,
                     status: 'canceled',
-                    payload: toBlockPayload(
-                      'assistant',
-                      cancellationFailure.message,
-                      {
-                        request,
-                        response: toFailureResponsePayload(cancellationFailure),
-                        rootContextId,
-                      },
-                    ),
+                    payload: failurePayload,
                   }
                 : item,
             ),
           )
+          if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
+            const persistedCollectionId = targetCollectionId
+            let assistantParentId: string | null = null
+            if (userRecordPromise) {
+              const userRecord = await userRecordPromise.catch(() => null)
+              assistantParentId = userRecord?.id ?? null
+            }
+            if (assistantParentId) {
+              void appendBlock(
+                persistedCollectionId,
+                failurePayload,
+                {
+                  parentIds: [assistantParentId],
+                  recordId: assistantRecordId,
+                },
+              )
+                .then((record) => {
+                  attachBlockToGraph(record.id, [assistantParentId])
+                  setBlocks((prev) =>
+                    prev.map((block) =>
+                      block.id === assistantBlock.id
+                        ? {
+                            ...block,
+                            id: record.id,
+                            createdAt: record.createdAt,
+                            content: cancellationFailure.message,
+                            payload: failurePayload,
+                            status: 'canceled',
+                            retryParentId: assistantParentId,
+                            transientParentId: undefined,
+                            rootContextId,
+                          }
+                        : block,
+                    ),
+                  )
+                  setPathLeafId((prev) =>
+                    prev === assistantBlock.id ? record.id : prev,
+                  )
+                  setActiveBlockId((prev) =>
+                    prev === assistantBlock.id ? record.id : prev,
+                  )
+                  bumpCollectionActivity(persistedCollectionId, record.createdAt)
+                })
+                .catch((persistError) => {
+                  console.error(
+                    '[blocks] failed to persist assistant canceled block',
+                    persistError,
+                  )
+                })
+            }
+          }
           if (shouldAutoScroll) {
             pendingScrollRef.current = { id: assistantBlock.id, mode: 'read' }
           }
@@ -7055,6 +7365,11 @@ function App() {
         }
         const requestFailure = toRequestFailureDetails(error)
         const errorContent = `Error: ${requestFailure.message}`
+        const failurePayload = toBlockPayload('assistant', errorContent, {
+          request,
+          response: toFailureResponsePayload(requestFailure),
+          rootContextId,
+        })
         const shouldAutoScroll = followRef.current || isNearBottom()
         setBlocks((prev) =>
           prev.map((item) =>
@@ -7063,15 +7378,62 @@ function App() {
                   ...item,
                   content: errorContent,
                   status: 'error',
-                  payload: toBlockPayload('assistant', errorContent, {
-                    request,
-                    response: toFailureResponsePayload(requestFailure),
-                    rootContextId,
-                  }),
+                  payload: failurePayload,
                 }
               : item,
           ),
         )
+        if (targetCollectionId && selectedCollectionId !== demoCollection.id) {
+          const persistedCollectionId = targetCollectionId
+          let assistantParentId: string | null = null
+          if (userRecordPromise) {
+            const userRecord = await userRecordPromise.catch(() => null)
+            assistantParentId = userRecord?.id ?? null
+          }
+          if (assistantParentId) {
+            void appendBlock(
+              persistedCollectionId,
+              failurePayload,
+              {
+                parentIds: [assistantParentId],
+                recordId: assistantRecordId,
+              },
+            )
+              .then((record) => {
+                attachBlockToGraph(record.id, [assistantParentId])
+                setBlocks((prev) =>
+                  prev.map((block) =>
+                    block.id === assistantBlock.id
+                      ? {
+                          ...block,
+                          id: record.id,
+                          createdAt: record.createdAt,
+                          content: errorContent,
+                          payload: failurePayload,
+                          status: 'error',
+                          retryParentId: assistantParentId,
+                          transientParentId: undefined,
+                          rootContextId,
+                        }
+                      : block,
+                  ),
+                )
+                setPathLeafId((prev) =>
+                  prev === assistantBlock.id ? record.id : prev,
+                )
+                setActiveBlockId((prev) =>
+                  prev === assistantBlock.id ? record.id : prev,
+                )
+                bumpCollectionActivity(persistedCollectionId, record.createdAt)
+              })
+              .catch((persistError) => {
+                console.error(
+                  '[blocks] failed to persist assistant error block',
+                  persistError,
+                )
+              })
+          }
+        }
         if (shouldAutoScroll) {
           pendingScrollRef.current = { id: assistantBlock.id, mode: 'read' }
         }
@@ -8708,16 +9070,28 @@ function App() {
                       {canDeleteCollection ? (
                         <span
                           className={`tooltip tooltip-hover-only tooltip-left${suppressDeleteCollectionTooltip ? ' tooltip-suppressed' : ''}`}
-                          data-tooltip="Delete collection"
+                          data-tooltip={
+                            isHardDeleteModifierPressed
+                              ? 'Permanently delete collection'
+                              : `Delete collection (hold ${HARD_DELETE_MODIFIER_LABEL})`
+                          }
                           onMouseLeave={() =>
                             setSuppressDeleteCollectionTooltip(false)
                           }
                         >
                           <button
-                            className="sidebar-icon-button"
+                            className={`sidebar-icon-button${
+                              isHardDeleteModifierPressed
+                                ? ' sidebar-icon-button-delete-hard'
+                                : ''
+                            }`}
                             type="button"
-                            onClick={handleDeleteCollection}
-                            aria-label="Delete collection"
+                            onClick={(event) => handleDeleteCollection(event)}
+                            aria-label={
+                              isHardDeleteModifierPressed
+                                ? 'Permanently delete collection'
+                                : 'Delete collection'
+                            }
                           >
                             <span
                               className="codicon codicon-trash"
