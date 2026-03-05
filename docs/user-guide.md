@@ -240,6 +240,10 @@ This is then followed by various sections giving low-level details about the act
 #### Response (for generated blocks)
 
 - Model: The model used for the chat completion (shown when it differs from the requested model).
+- Error: Failure message for failed or canceled requests.
+- HTTP status: HTTP status code for failed requests (when available).
+- Error type: Provider error type or local cancel/timeout category (when available).
+- Error code: Provider/local error code (when available).
 - Latency: The total time in milliseconds between sending the request and receiving the response.
 - Prompt tokens: Number of tokens in the prompt.
 - Completion tokens: Number of tokens in the generated completion.

@@ -1,5 +1,6 @@
 import {
   buildChatCompletionEndpoint,
+  ChatCompletionRequestError,
   createChatCompletion,
   createTimeoutController,
   createDerivedId,
@@ -18,6 +19,7 @@ import {
   type CollectionPayload,
   type CollectionRecord,
   type BlockPayload,
+  type BlockResponse,
   type BlockRecord,
   type ReasoningEffort,
 } from 'mir-core'
@@ -151,7 +153,7 @@ const IS_MAC =
   typeof navigator !== 'undefined' &&
   /Mac|iPhone|iPad|iPod/.test(navigator.platform)
 
-const REQUEST_TIMEOUT_MS = 60_000
+const REQUEST_TIMEOUT_MS = 240_000
 const SCROLL_CONTEXT_PEEK_LINES = 3
 const SCROLL_CONTEXT_PEEK_FALLBACK_PX = 48
 const SCROLL_READ_RETRY_MAX = 18
@@ -320,6 +322,37 @@ const formatModelChipValue = (modelName: string) => {
   }
   return `${compact.slice(0, 15)}…`
 }
+
+type RequestFailureDetails = {
+  message: string
+  status?: number
+  type?: string
+  code?: string
+}
+
+const toRequestFailureDetails = (error: unknown): RequestFailureDetails => {
+  if (error instanceof ChatCompletionRequestError) {
+    return {
+      message: error.message,
+      status: error.status,
+      type: error.type,
+      code: error.code,
+    }
+  }
+  if (error instanceof Error) {
+    return { message: error.message }
+  }
+  return { message: 'Unknown error occurred.' }
+}
+
+const toFailureResponsePayload = (
+  failure: RequestFailureDetails,
+): BlockResponse => ({
+  errorMessage: failure.message,
+  errorStatus: failure.status,
+  errorType: failure.type,
+  errorCode: failure.code,
+})
 
 const formatTokenCount = (count?: number) =>
   typeof count === 'number' ? `${count.toLocaleString()} tokens` : null
@@ -2074,6 +2107,7 @@ function App() {
   const isMountedRef = useRef(true)
   const suppressBlockActivationRef = useRef(false)
   const abortControllerRef = useRef<ReturnType<typeof createTimeoutController> | null>(null)
+  const stopRequestByUserRef = useRef(false)
   const scrollIgnoreUntilRef = useRef(0)
   const pendingScrollRef = useRef<PendingScroll | null>(null)
   const followRef = useRef(true)
@@ -2796,6 +2830,10 @@ function App() {
             responseReasoningEffort: activePayload.response?.reasoningEffort,
             responseReasoningTraceCount:
               activePayload.response?.reasoningTraces?.length,
+            responseErrorMessage: activePayload.response?.errorMessage,
+            responseErrorStatus: activePayload.response?.errorStatus,
+            responseErrorType: activePayload.response?.errorType,
+            responseErrorCode: activePayload.response?.errorCode,
             responseId: activePayload.response?.id,
             finishReason: activePayload.response?.finishReason,
             localTimestamp: activePayload.localTimestamp,
@@ -6191,11 +6229,38 @@ function App() {
   }, [])
 
   const stopRequest = () => {
+    stopRequestByUserRef.current = true
     abortControllerRef.current?.abort()
   }
 
   const isAbortError = (error: unknown) =>
     error instanceof Error && error.name === 'AbortError'
+
+  const resolveCancellationFailure = (
+    timedOut: boolean,
+  ): RequestFailureDetails => {
+    if (timedOut) {
+      return {
+        message: `Request timed out after ${Math.round(
+          REQUEST_TIMEOUT_MS / 1000,
+        )}s.`,
+        type: 'timeout',
+        code: 'request_timeout',
+      }
+    }
+    if (stopRequestByUserRef.current) {
+      return {
+        message: 'Request stopped by user.',
+        type: 'canceled',
+        code: 'aborted',
+      }
+    }
+    return {
+      message: 'Request was canceled.',
+      type: 'canceled',
+      code: 'aborted',
+    }
+  }
 
   const handleRetryContinuation = useCallback(
     async (targetBlockId: string) => {
@@ -6237,6 +6302,7 @@ function App() {
             temperature,
             selectedReasoningEffort,
           )
+          stopRequestByUserRef.current = false
 
           const shouldAutoScroll = isNearBottom()
           if (shouldAutoScroll) {
@@ -6244,14 +6310,25 @@ function App() {
           }
 
           if (!endpoint) {
+            const missingConfigFailure: RequestFailureDetails = {
+              message:
+                'Add a base URL (OPENAI_BASE_URL style) in Connection settings first.',
+              type: 'configuration',
+              code: 'missing_base_url',
+            }
+            const errorContent = `Error: ${missingConfigFailure.message}`
             setBlocks((prev) =>
               prev.map((block) =>
                 block.id === assistantBlockId
                   ? {
                       ...block,
-                      content:
-                        'Error: Add a base URL (OPENAI_BASE_URL style) in Connection settings first.',
+                      content: errorContent,
                       status: 'error',
+                      payload: toBlockPayload('assistant', errorContent, {
+                        request,
+                        response: toFailureResponsePayload(missingConfigFailure),
+                        rootContextId: persistRootContextId,
+                      }),
                       retryParentId: parentUserId,
                       transientParentId: parentUserId,
                     }
@@ -6362,13 +6439,25 @@ function App() {
             }
           } catch (error) {
             if (isAbortError(error)) {
+              const cancellationFailure = resolveCancellationFailure(
+                timeoutController.didTimeout(),
+              )
               setBlocks((prev) =>
                 prev.map((block) =>
                   block.id === assistantBlockId
                     ? {
                         ...block,
-                        content: 'Request stopped.',
+                        content: cancellationFailure.message,
                         status: 'canceled',
+                        payload: toBlockPayload(
+                          'assistant',
+                          cancellationFailure.message,
+                          {
+                            request,
+                            response: toFailureResponsePayload(cancellationFailure),
+                            rootContextId: persistRootContextId,
+                          },
+                        ),
                         retryParentId: parentUserId,
                         transientParentId: parentUserId,
                       }
@@ -6380,15 +6469,20 @@ function App() {
               }
               return
             }
-            const errorMessage =
-              error instanceof Error ? error.message : 'Unknown error occurred.'
+            const requestFailure = toRequestFailureDetails(error)
+            const errorContent = `Error: ${requestFailure.message}`
             setBlocks((prev) =>
               prev.map((block) =>
                 block.id === assistantBlockId
                   ? {
                       ...block,
-                      content: `Error: ${errorMessage}`,
+                      content: errorContent,
                       status: 'error',
+                      payload: toBlockPayload('assistant', errorContent, {
+                        request,
+                        response: toFailureResponsePayload(requestFailure),
+                        rootContextId: persistRootContextId,
+                      }),
                       retryParentId: parentUserId,
                       transientParentId: parentUserId,
                     }
@@ -6402,6 +6496,7 @@ function App() {
             setIsSending(false)
             timeoutController.clear()
             abortControllerRef.current = null
+            stopRequestByUserRef.current = false
           }
         }
 
@@ -6557,6 +6652,7 @@ function App() {
         temperature,
         selectedReasoningEffort,
       )
+      stopRequestByUserRef.current = false
       const timestamp = Date.now()
       const userRecordId = createId('block')
       const assistantRecordId = createId('block')
@@ -6620,6 +6716,10 @@ function App() {
         direction: 'output',
         content: '',
         status: 'pending',
+        payload: toBlockPayload('assistant', '', {
+          request,
+          rootContextId,
+        }),
         retryParentId: userBlock.id,
         transientParentId: userBlock.id,
         rootContextId,
@@ -6752,14 +6852,25 @@ function App() {
       }
 
       if (!endpoint) {
+        const missingConfigFailure: RequestFailureDetails = {
+          message:
+            'Add a base URL (OPENAI_BASE_URL style) in Connection settings first.',
+          type: 'configuration',
+          code: 'missing_base_url',
+        }
+        const errorContent = `Error: ${missingConfigFailure.message}`
         setBlocks((prev) =>
           prev.map((block) =>
             block.id === assistantBlock.id
               ? {
                   ...block,
-                  content:
-                    'Error: Add a base URL (OPENAI_BASE_URL style) in Connection settings first.',
+                  content: errorContent,
                   status: 'error',
+                  payload: toBlockPayload('assistant', errorContent, {
+                    request,
+                    response: toFailureResponsePayload(missingConfigFailure),
+                    rootContextId,
+                  }),
                 }
               : block,
           ),
@@ -6913,11 +7024,27 @@ function App() {
         }
       } catch (error) {
         if (isAbortError(error)) {
+          const cancellationFailure = resolveCancellationFailure(
+            timeoutController.didTimeout(),
+          )
           const shouldAutoScroll = followRef.current || isNearBottom()
           setBlocks((prev) =>
             prev.map((item) =>
               item.id === assistantBlock.id
-                ? { ...item, content: 'Request stopped.', status: 'canceled' }
+                ? {
+                    ...item,
+                    content: cancellationFailure.message,
+                    status: 'canceled',
+                    payload: toBlockPayload(
+                      'assistant',
+                      cancellationFailure.message,
+                      {
+                        request,
+                        response: toFailureResponsePayload(cancellationFailure),
+                        rootContextId,
+                      },
+                    ),
+                  }
                 : item,
             ),
           )
@@ -6926,13 +7053,22 @@ function App() {
           }
           return
         }
-        const errorMessage =
-          error instanceof Error ? error.message : 'Unknown error occurred.'
+        const requestFailure = toRequestFailureDetails(error)
+        const errorContent = `Error: ${requestFailure.message}`
         const shouldAutoScroll = followRef.current || isNearBottom()
         setBlocks((prev) =>
           prev.map((item) =>
             item.id === assistantBlock.id
-              ? { ...item, content: `Error: ${errorMessage}`, status: 'error' }
+              ? {
+                  ...item,
+                  content: errorContent,
+                  status: 'error',
+                  payload: toBlockPayload('assistant', errorContent, {
+                    request,
+                    response: toFailureResponsePayload(requestFailure),
+                    rootContextId,
+                  }),
+                }
               : item,
           ),
         )
@@ -6943,6 +7079,7 @@ function App() {
         setIsSending(false)
         timeoutController.clear()
         abortControllerRef.current = null
+        stopRequestByUserRef.current = false
       }
     } finally {
       sendMessageGuardRef.current = false
@@ -8392,6 +8529,45 @@ function App() {
                               <div className="sidebar-field-label">Model</div>
                               <div className="sidebar-field-value">
                                 {inspectorMeta.responseModel}
+                              </div>
+                            </div>
+                          ) : null}
+                          {inspectorMeta?.responseErrorMessage ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">Error</div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.responseErrorMessage}
+                              </div>
+                            </div>
+                          ) : null}
+                          {typeof inspectorMeta?.responseErrorStatus ===
+                          'number' ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                HTTP status
+                              </div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.responseErrorStatus}
+                              </div>
+                            </div>
+                          ) : null}
+                          {inspectorMeta?.responseErrorType ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Error type
+                              </div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.responseErrorType}
+                              </div>
+                            </div>
+                          ) : null}
+                          {inspectorMeta?.responseErrorCode ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Error code
+                              </div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.responseErrorCode}
                               </div>
                             </div>
                           ) : null}

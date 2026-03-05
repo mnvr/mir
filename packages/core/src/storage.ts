@@ -60,6 +60,10 @@ export type BlockResponse = {
   finishReason?: string
   reasoningEffort?: ReasoningEffort
   reasoningTraces?: string[]
+  errorMessage?: string
+  errorStatus?: number
+  errorType?: string
+  errorCode?: string
 }
 
 export type BlockPayload = {

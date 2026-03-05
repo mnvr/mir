@@ -84,6 +84,78 @@ type TimeoutController = {
   signal?: AbortSignalLike
   abort: () => void
   clear: () => void
+  didTimeout: () => boolean
+}
+
+type ParsedResponseError = {
+  message?: string
+  type?: string
+  code?: string
+}
+
+const toErrorString = (value: unknown): string | undefined => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+  return undefined
+}
+
+const parseResponseErrorDetail = (detail: string): ParsedResponseError => {
+  const trimmed = detail.trim()
+  if (!trimmed) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    if (!parsed || typeof parsed !== 'object') {
+      return {}
+    }
+    const parsedRecord = parsed as Record<string, unknown>
+    const nestedError =
+      parsedRecord.error && typeof parsedRecord.error === 'object'
+        ? (parsedRecord.error as Record<string, unknown>)
+        : null
+    return {
+      message:
+        toErrorString(nestedError?.message) ??
+        toErrorString(parsedRecord.message),
+      type:
+        toErrorString(nestedError?.type) ??
+        toErrorString(parsedRecord.type),
+      code:
+        toErrorString(nestedError?.code) ??
+        toErrorString(parsedRecord.code),
+    }
+  } catch {
+    return {}
+  }
+}
+
+export class ChatCompletionRequestError extends Error {
+  status?: number
+  code?: string
+  type?: string
+  rawDetail?: string
+
+  constructor(options: {
+    message: string
+    status?: number
+    code?: string
+    type?: string
+    rawDetail?: string
+  }) {
+    super(options.message)
+    this.name = 'ChatCompletionRequestError'
+    this.status = options.status
+    this.code = options.code
+    this.type = options.type
+    this.rawDetail = options.rawDetail
+  }
 }
 
 const getAbortController = (): AbortControllerLike | null => {
@@ -102,10 +174,12 @@ const getAbortController = (): AbortControllerLike | null => {
 
 export const createTimeoutController = (timeoutMs: number): TimeoutController => {
   const controller = getAbortController()
+  let timedOut = false
   if (!controller) {
     return {
       abort: () => {},
       clear: () => {},
+      didTimeout: () => false,
     }
   }
 
@@ -114,6 +188,7 @@ export const createTimeoutController = (timeoutMs: number): TimeoutController =>
 
   if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
     timeoutId = setTimeout(() => {
+      timedOut = true
       abort()
     }, timeoutMs)
   }
@@ -128,6 +203,7 @@ export const createTimeoutController = (timeoutMs: number): TimeoutController =>
     signal: controller.signal,
     abort,
     clear,
+    didTimeout: () => timedOut,
   }
 }
 
@@ -205,11 +281,19 @@ export const createChatCompletion = async (
 
   if (!response.ok) {
     const detail = await response.text()
-    throw new Error(
-      detail
-        ? `Request failed (${response.status}): ${detail}`
-        : `Request failed (${response.status}).`,
-    )
+    const parsed = detail ? parseResponseErrorDetail(detail) : {}
+    const fallbackDetail = detail?.trim()
+    const messageDetail = parsed.message ?? (fallbackDetail || undefined)
+    const message = messageDetail
+      ? `Request failed (${response.status}): ${messageDetail}`
+      : `Request failed (${response.status}).`
+    throw new ChatCompletionRequestError({
+      message,
+      status: response.status,
+      code: parsed.code,
+      type: parsed.type,
+      rawDetail: detail || undefined,
+    })
   }
 
   const data = (await response.json()) as ChatCompletionResponse
