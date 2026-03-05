@@ -143,13 +143,35 @@ If a generation fails, Mir keeps the pending generated block and shows Generate 
 
 ### Customizing generation parameters
 
-You can customize parameters passed to the model along with the context when asking it to generate a continuation. Mir currently exposes temperature and first-generation system prompt selection.
+You can customize parameters passed to the model along with the context when asking it to generate a continuation. Mir currently exposes temperature, reasoning mode, and first-generation system prompt selection.
+
+The composer now shows compact controls near Add:
+
+- `M`: Current model indicator (`auto` when no model is configured). Long model IDs are shortened in the chip.
+- `T`: Temperature control.
+- `RSN`: Reasoning mode toggle.
+
+Hover these controls to see tooltips with the full current value/state.
 
 #### Temperature
 
-The TEMP pill near the Add button lets you set the temperature for the next continuation.
+The `T` chip near the Add button lets you set the temperature for the next continuation.
 
 Temperature controls how deterministic or varied the model output is. Lower values are more focused and repeatable; higher values are more exploratory.
+
+#### Reasoning mode
+
+The `RSN` chip near the Add button is a toggle (`Off` / `On`). Default is `Off`.
+
+When `On`, Mir sends `reasoning_effort` on chat-completions requests:
+- `xhigh` for `gpt-5.2` and newer `gpt-*` model versions.
+- `high` for other model IDs.
+
+The current composer controls are used for both normal sends and Generate new retries, and temperature/reasoning preferences are remembered on this device.
+
+#### Reasoning traces
+
+When a provider returns reasoning content/traces, generated blocks show a collapsible `Reasoning trace` panel above the model output. The panel header shows how many trace snippets were captured for that response.
 
 #### System prompt blocks
 
@@ -213,6 +235,7 @@ This is then followed by various sections giving low-level details about the act
 - Endpoint: The base URL of the inference provider (for remote generations).
 - Model: The name of the model specified in the completion request.
 - Temperature: Sampling temperature used by the request.
+- Reasoning: Requested reasoning effort for that request.
 
 #### Response (for generated blocks)
 
@@ -220,7 +243,10 @@ This is then followed by various sections giving low-level details about the act
 - Latency: The total time in milliseconds between sending the request and receiving the response.
 - Prompt tokens: Number of tokens in the prompt.
 - Completion tokens: Number of tokens in the generated completion.
+- Reasoning tokens: Provider-reported reasoning token count (when available).
 - Total tokens: Total tokens used (prompt + completion).
+- Reasoning: Reasoning effort reported by the response (when available).
+- Reasoning traces: Number of captured reasoning snippets (when available).
 - Finish reason: The reason the model stopped generating tokens. This will be `stop` if the model hit a natural stop point or a provided stop sequence, `length` if the maximum number of tokens specified in the request was reached, `tool_calls` if the model called a tool, and other provider specific values.
 - Response ID: The provider's unique identifier for the generated completion.
 

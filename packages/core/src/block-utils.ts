@@ -3,16 +3,34 @@ import type {
   BlockPayload,
   BlockRequest,
   BlockResponse,
+  ReasoningEffort,
   BlockUsage,
 } from './storage'
 import { formatLocalTimestamp } from './time'
+
+const REASONING_EFFORT_VALUES = new Set<ReasoningEffort>([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+])
+const MAX_REASONING_TRACE_COUNT = 24
+const MAX_REASONING_TRACE_LENGTH = 2000
+
+const toReasoningEffort = (value: unknown): ReasoningEffort | undefined =>
+  typeof value === 'string' && REASONING_EFFORT_VALUES.has(value as ReasoningEffort)
+    ? (value as ReasoningEffort)
+    : undefined
 
 export const buildBlockRequest = (
   baseUrl: string,
   model: string,
   temperature?: number,
+  reasoningEffort?: ReasoningEffort,
 ): BlockRequest | undefined => {
-  if (!baseUrl && !model) {
+  if (!baseUrl && !model && !reasoningEffort) {
     return undefined
   }
   return {
@@ -23,6 +41,7 @@ export const buildBlockRequest = (
       typeof temperature === 'number' && Number.isFinite(temperature)
         ? temperature
         : undefined,
+    reasoningEffort,
   }
 }
 
@@ -43,16 +62,109 @@ const toBlockUsage = (
   ) {
     return undefined
   }
+  const reasoningTokens =
+    typeof usage.completion_tokens_details?.reasoning_tokens === 'number'
+      ? usage.completion_tokens_details.reasoning_tokens
+      : undefined
   return {
     promptTokens: prompt,
     completionTokens: completion,
     totalTokens: total,
+    reasoningTokens,
   }
+}
+
+const normalizeReasoningTrace = (value: string) => {
+  const normalized = value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_REASONING_TRACE_LENGTH)
+  return normalized.length > 0 ? normalized : null
+}
+
+const collectReasoningTraces = (
+  value: unknown,
+  traces: string[],
+  seen: Set<string>,
+  depth = 0,
+) => {
+  if (depth > 4 || value === null || value === undefined) {
+    return
+  }
+  if (traces.length >= MAX_REASONING_TRACE_COUNT) {
+    return
+  }
+  if (typeof value === 'string') {
+    const normalized = normalizeReasoningTrace(value)
+    if (!normalized || seen.has(normalized)) {
+      return
+    }
+    seen.add(normalized)
+    traces.push(normalized)
+    return
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry) => {
+      collectReasoningTraces(entry, traces, seen, depth + 1)
+    })
+    return
+  }
+  if (typeof value !== 'object') {
+    return
+  }
+  Object.entries(value as Record<string, unknown>).forEach(([key, entry]) => {
+    if (
+      typeof entry === 'string' &&
+      /(reason|trace|summary|content|text)/i.test(key)
+    ) {
+      collectReasoningTraces(entry, traces, seen, depth + 1)
+      return
+    }
+    if (Array.isArray(entry) || (entry && typeof entry === 'object')) {
+      collectReasoningTraces(entry, traces, seen, depth + 1)
+    }
+  })
+}
+
+const extractReasoningTraces = (
+  response: ChatCompletionResponse,
+): string[] | undefined => {
+  const choice = response.choices?.[0]
+  const candidates: unknown[] = [
+    response.reasoning,
+    response.reasoning_content,
+    choice?.reasoning,
+    choice?.reasoning_content,
+    choice?.message?.reasoning,
+    choice?.message?.reasoning_content,
+  ]
+  const traces: string[] = []
+  const seen = new Set<string>()
+  candidates.forEach((candidate) => {
+    collectReasoningTraces(candidate, traces, seen)
+  })
+  return traces.length > 0 ? traces : undefined
+}
+
+const extractResponseReasoningEffort = (
+  response: ChatCompletionResponse,
+  fallbackReasoningEffort?: ReasoningEffort,
+): ReasoningEffort | undefined => {
+  const choice = response.choices?.[0]
+  return (
+    toReasoningEffort(choice?.message?.reasoning_effort) ??
+    toReasoningEffort(choice?.reasoning_effort) ??
+    toReasoningEffort(response.reasoning_effort) ??
+    fallbackReasoningEffort
+  )
 }
 
 export const buildBlockResponse = (
   response: ChatCompletionResponse,
   latencyMs?: number,
+  options?: {
+    requestReasoningEffort?: ReasoningEffort
+  },
 ): BlockResponse | undefined => {
   const usage = toBlockUsage(response)
   const model = typeof response.model === 'string' ? response.model : undefined
@@ -62,12 +174,19 @@ export const buildBlockResponse = (
     choice && typeof choice.finish_reason === 'string'
       ? choice.finish_reason
       : undefined
+  const reasoningEffort = extractResponseReasoningEffort(
+    response,
+    options?.requestReasoningEffort,
+  )
+  const reasoningTraces = extractReasoningTraces(response)
   const hasData =
     Boolean(usage) ||
     typeof latencyMs === 'number' ||
     Boolean(model) ||
     Boolean(id) ||
-    Boolean(finishReason)
+    Boolean(finishReason) ||
+    Boolean(reasoningEffort) ||
+    Boolean(reasoningTraces?.length)
   if (!hasData) {
     return undefined
   }
@@ -77,6 +196,8 @@ export const buildBlockResponse = (
     usage,
     latencyMs,
     finishReason,
+    reasoningEffort,
+    reasoningTraces,
   }
 }
 

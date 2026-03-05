@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from './storage'
+
 export type ChatCompletionMessage = {
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -7,17 +9,27 @@ type ChatCompletionRequest = {
   messages: ChatCompletionMessage[]
   model?: string
   temperature?: number
+  reasoning_effort?: ReasoningEffort
 }
 
 export type ChatCompletionResponse = {
   id?: string
   model?: string
+  reasoning_effort?: ReasoningEffort
+  reasoning?: unknown
+  reasoning_content?: unknown
   choices?: Array<{
     index?: number
     finish_reason?: string
+    reasoning?: unknown
+    reasoning_content?: unknown
+    reasoning_effort?: ReasoningEffort
     message?: {
       content?: string
       role?: string
+      reasoning?: unknown
+      reasoning_content?: unknown
+      reasoning_effort?: ReasoningEffort
     }
     text?: string
   }>
@@ -25,6 +37,9 @@ export type ChatCompletionResponse = {
     prompt_tokens?: number
     completion_tokens?: number
     total_tokens?: number
+    completion_tokens_details?: {
+      reasoning_tokens?: number
+    }
   }
 }
 
@@ -59,6 +74,7 @@ type ChatCompletionOptions = {
   messages: ChatCompletionMessage[]
   model?: string
   temperature?: number
+  reasoningEffort?: ReasoningEffort
   fetchFn: FetchFn
   headers?: Record<string, string>
   signal?: AbortSignalLike
@@ -165,6 +181,10 @@ export const createChatCompletion = async (
 
   if (typeof options.temperature === 'number') {
     payload.temperature = options.temperature
+  }
+
+  if (options.reasoningEffort) {
+    payload.reasoning_effort = options.reasoningEffort
   }
 
   const headers: Record<string, string> = {

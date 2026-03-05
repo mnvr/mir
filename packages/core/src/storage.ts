@@ -34,12 +34,22 @@ export type BlockRequest = {
   engine?: string
   model?: string
   temperature?: number
+  reasoningEffort?: ReasoningEffort
 }
+
+export type ReasoningEffort =
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
 
 export type BlockUsage = {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+  reasoningTokens?: number
 }
 
 export type BlockResponse = {
@@ -48,6 +58,8 @@ export type BlockResponse = {
   usage?: BlockUsage
   latencyMs?: number
   finishReason?: string
+  reasoningEffort?: ReasoningEffort
+  reasoningTraces?: string[]
 }
 
 export type BlockPayload = {

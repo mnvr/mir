@@ -19,6 +19,7 @@ import {
   type CollectionRecord,
   type BlockPayload,
   type BlockRecord,
+  type ReasoningEffort,
 } from 'mir-core'
 import {
   memo,
@@ -132,6 +133,8 @@ const STORAGE_KEYS = {
 const KV_KEYS = {
   baseUrl: 'settings.baseUrl',
   model: 'settings.model',
+  temperature: 'settings.temperature',
+  reasoningEnabled: 'settings.reasoningEnabled',
   apiKeyEncrypted: 'settings.apiKey.encrypted',
   systemPromptLastSelectedId: 'settings.systemPromptLastSelectedId',
   // Legacy key from initial KV-based system prompt library.
@@ -282,6 +285,40 @@ const deriveCollectionTitle = (content: string) => {
     normalizedLines.find((line) => /[A-Za-z0-9]/.test(line)) ??
     normalizeCollectionTitleLine(content)
   return truncateCollectionTitle(candidate)
+}
+
+const isAtLeastGpt52Model = (value: string) => {
+  const normalized = value.trim().toLowerCase()
+  const versionMatch = normalized.match(/^gpt-(\d+)(?:\.(\d+))?/)
+  if (!versionMatch) {
+    return false
+  }
+  const major = Number(versionMatch[1])
+  const minor = Number(versionMatch[2] ?? '0')
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) {
+    return false
+  }
+  if (major > 5) {
+    return true
+  }
+  if (major < 5) {
+    return false
+  }
+  return minor >= 2
+}
+
+const resolveReasoningEffortForModel = (modelName: string): ReasoningEffort =>
+  isAtLeastGpt52Model(modelName) ? 'xhigh' : 'high'
+
+const formatModelChipValue = (modelName: string) => {
+  if (!modelName) {
+    return 'auto'
+  }
+  const compact = modelName.trim()
+  if (compact.length <= 16) {
+    return compact
+  }
+  return `${compact.slice(0, 15)}…`
 }
 
 const formatTokenCount = (count?: number) =>
@@ -949,6 +986,9 @@ const BlockRow = memo(function BlockRow({
     block.direction === 'output' &&
     (block.status === 'error' || block.status === 'canceled')
   const canGenerateNew = canGenerateNewFromInput || canGenerateNewFromOutput
+  const reasoningTraces = block.payload?.response?.reasoningTraces ?? []
+  const hasReasoningTraces =
+    block.direction === 'output' && !isSystemBlock && reasoningTraces.length > 0
 
   return (
     <div
@@ -1054,8 +1094,32 @@ const BlockRow = memo(function BlockRow({
           <MarkdownContent content={block.content} />
         </blockquote>
       ) : (
-        <div className="output-markdown">
-          <MarkdownContent content={block.content} />
+        <div className="output-shell">
+          {hasReasoningTraces ? (
+            <details className="reasoning-trace-panel">
+              <summary className="reasoning-trace-summary">
+                <span>Reasoning trace</span>
+                <span className="reasoning-trace-summary-meta">
+                  {`${reasoningTraces.length} ${
+                    reasoningTraces.length === 1 ? 'snippet' : 'snippets'
+                  }`}
+                </span>
+              </summary>
+              <div className="reasoning-trace-body">
+                {reasoningTraces.map((trace, index) => (
+                  <p
+                    key={`${block.id}:reasoning:${index}`}
+                    className="reasoning-trace-entry"
+                  >
+                    {trace}
+                  </p>
+                ))}
+              </div>
+            </details>
+          ) : null}
+          <div className="output-markdown">
+            <MarkdownContent content={block.content} />
+          </div>
         </div>
       )}
       <div
@@ -1902,6 +1966,7 @@ function App() {
   const [storageMode, setStorageMode] = useState<StorageMode>('session')
   const [keyError, setKeyError] = useState<string | null>(null)
   const [temperature, setTemperature] = useState(1)
+  const [reasoningEnabled, setReasoningEnabled] = useState(false)
   const [systemPromptLibrary, setSystemPromptLibrary] = useState<
     SystemPromptPreset[]
   >([])
@@ -2726,7 +2791,11 @@ function App() {
             role: activePayload.role,
             requestModel: activePayload.request?.model,
             temperature: activePayload.request?.temperature,
+            reasoningEffort: activePayload.request?.reasoningEffort,
             responseModel: activePayload.response?.model,
+            responseReasoningEffort: activePayload.response?.reasoningEffort,
+            responseReasoningTraceCount:
+              activePayload.response?.reasoningTraces?.length,
             responseId: activePayload.response?.id,
             finishReason: activePayload.response?.finishReason,
             localTimestamp: activePayload.localTimestamp,
@@ -3002,7 +3071,11 @@ function App() {
     [pendingSystemPromptId, systemPromptLibraryById],
   )
   const modelLabel = model || 'Provider default'
+  const modelChipValue = formatModelChipValue(model)
   const temperatureLabel = temperature.toFixed(1)
+  const selectedReasoningEffort: ReasoningEffort = reasoningEnabled
+    ? resolveReasoningEffortForModel(model)
+    : 'none'
   const importPreviewSummary = importPreview?.summary ?? null
   const exportPreviewTime = formatExportedAt(importPreview?.payload.exportedAt)
   const exportPreviewFile = importPreview?.filePath
@@ -3509,10 +3582,14 @@ function App() {
         const [
           storedBaseUrl,
           storedModel,
+          storedTemperature,
+          storedReasoningEnabled,
           storedSystemPromptLastSelectedId,
         ] = await Promise.all([
           getKvValue<string>(KV_KEYS.baseUrl),
           getKvValue<string>(KV_KEYS.model),
+          getKvValue<number>(KV_KEYS.temperature),
+          getKvValue<boolean>(KV_KEYS.reasoningEnabled),
           getKvValue<string>(KV_KEYS.systemPromptLastSelectedId),
         ])
         if (!isMounted) {
@@ -3522,8 +3599,16 @@ function App() {
           typeof storedBaseUrl === 'string' ? storedBaseUrl : ''
         const nextModel =
           typeof storedModel === 'string' ? storedModel : ''
+        const nextTemperature =
+          typeof storedTemperature === 'number' &&
+          Number.isFinite(storedTemperature)
+            ? Math.max(0, Math.min(2, Math.round(storedTemperature * 10) / 10))
+            : 1
+        const nextReasoningEnabled = storedReasoningEnabled === true
         setBaseUrl(nextBaseUrl)
         setModel(nextModel)
+        setTemperature(nextTemperature)
+        setReasoningEnabled(nextReasoningEnabled)
         if (settingsCloseTimeoutRef.current) {
           window.clearTimeout(settingsCloseTimeoutRef.current)
           settingsCloseTimeoutRef.current = null
@@ -3578,6 +3663,28 @@ function App() {
     }
     void setKvValue(KV_KEYS.model, model)
   }, [model, settingsLoaded])
+
+  useEffect(() => {
+    if (!settingsLoaded) {
+      return
+    }
+    if (temperature === 1) {
+      void deleteKvValue(KV_KEYS.temperature)
+      return
+    }
+    void setKvValue(KV_KEYS.temperature, temperature)
+  }, [settingsLoaded, temperature])
+
+  useEffect(() => {
+    if (!settingsLoaded) {
+      return
+    }
+    if (!reasoningEnabled) {
+      void deleteKvValue(KV_KEYS.reasoningEnabled)
+      return
+    }
+    void setKvValue(KV_KEYS.reasoningEnabled, true)
+  }, [reasoningEnabled, settingsLoaded])
 
   useEffect(() => {
     if (!hasLoadedSystemPromptLibrary || !pendingSystemPromptId) {
@@ -6124,7 +6231,12 @@ function App() {
             parentIds.find((parentId) => persistedBlocksById.has(parentId)) ??
             null
           const endpoint = buildChatCompletionEndpoint(baseUrl)
-          const request = buildBlockRequest(baseUrl, model, temperature)
+          const request = buildBlockRequest(
+            baseUrl,
+            model,
+            temperature,
+            selectedReasoningEffort,
+          )
 
           const shouldAutoScroll = isNearBottom()
           if (shouldAutoScroll) {
@@ -6168,12 +6280,15 @@ function App() {
               messages: toChatMessages(contextPayloads),
               model: model || undefined,
               temperature,
+              reasoningEffort: selectedReasoningEffort,
               fetchFn: (input, init) =>
                 window.fetch(input, init as RequestInit | undefined),
               signal: timeoutController.signal,
             })
             const latencyMs = Date.now() - requestStart
-            const response = buildBlockResponse(raw, latencyMs)
+            const response = buildBlockResponse(raw, latencyMs, {
+              requestReasoningEffort: selectedReasoningEffort,
+            })
             setLastRunStats({
               completionTokens: response?.usage?.completionTokens,
               latencyMs,
@@ -6409,6 +6524,7 @@ function App() {
       rootUserBlockId,
       selectedRootSystemPromptParentId,
       selectedCollectionId,
+      selectedReasoningEffort,
       shouldPersistRootContextTag,
       temperature,
     ],
@@ -6435,7 +6551,12 @@ function App() {
         recentAutoMergeCandidateCollectionIds.length > 0
       const derivedTitle = deriveCollectionTitle(trimmedDraft)
       const endpoint = buildChatCompletionEndpoint(baseUrl)
-      const request = buildBlockRequest(baseUrl, model, temperature)
+      const request = buildBlockRequest(
+        baseUrl,
+        model,
+        temperature,
+        selectedReasoningEffort,
+      )
       const timestamp = Date.now()
       const userRecordId = createId('block')
       const assistantRecordId = createId('block')
@@ -6667,12 +6788,15 @@ function App() {
           messages: contextMessages,
           model: model || undefined,
           temperature,
+          reasoningEffort: selectedReasoningEffort,
           fetchFn: (input, init) =>
             window.fetch(input, init as RequestInit | undefined),
           signal: timeoutController.signal,
         })
         const latencyMs = Date.now() - requestStart
-        const response = buildBlockResponse(raw, latencyMs)
+        const response = buildBlockResponse(raw, latencyMs, {
+          requestReasoningEffort: selectedReasoningEffort,
+        })
         setLastRunStats({
           completionTokens: response?.usage?.completionTokens,
           latencyMs,
@@ -7713,38 +7837,79 @@ function App() {
                     </div>
                     <div className="composer-actions-right">
                       <div className="composer-controls">
-                        <button
-                          className="composer-chip"
-                          type="button"
-                          aria-label="Model settings"
+                        <span
+                          className="tooltip tooltip-hover-only"
+                          data-tooltip={`Model: ${modelLabel}`}
                         >
-                          <span className="composer-chip-label">Model</span>
-                          <span className="composer-chip-value">{modelLabel}</span>
-                        </button>
-                        <button
-                          className="composer-chip"
-                          type="button"
-                          aria-label="Temperature settings"
-                          onClick={() =>
-                            setTemperature((prev) => {
-                              const rounded = Math.round(prev * 10) / 10
-                              const currentIndex = TEMPERATURE_PRESETS.findIndex(
-                                (value) => value === rounded,
-                              )
-                              const nextIndex =
-                                currentIndex === -1
-                                  ? TEMPERATURE_PRESETS.indexOf(1)
-                                  : (currentIndex + 1) %
-                                    TEMPERATURE_PRESETS.length
-                              return TEMPERATURE_PRESETS[nextIndex] ?? 1
-                            })
+                          <button
+                            className="composer-chip composer-chip-model"
+                            type="button"
+                            aria-label="Model settings"
+                          >
+                            <span className="composer-chip-marker" aria-hidden="true">
+                              M
+                            </span>
+                            <span className="composer-chip-value composer-chip-model-value">
+                              {modelChipValue}
+                            </span>
+                          </button>
+                        </span>
+                        <span
+                          className="tooltip tooltip-hover-only"
+                          data-tooltip={`Temperature: ${temperatureLabel}`}
+                        >
+                          <button
+                            className="composer-chip composer-chip-temp"
+                            type="button"
+                            aria-label="Temperature settings"
+                            onClick={() =>
+                              setTemperature((prev) => {
+                                const rounded = Math.round(prev * 10) / 10
+                                const currentIndex = TEMPERATURE_PRESETS.findIndex(
+                                  (value) => value === rounded,
+                                )
+                                const nextIndex =
+                                  currentIndex === -1
+                                    ? TEMPERATURE_PRESETS.indexOf(1)
+                                    : (currentIndex + 1) %
+                                      TEMPERATURE_PRESETS.length
+                                return TEMPERATURE_PRESETS[nextIndex] ?? 1
+                              })
+                            }
+                          >
+                            <span className="composer-chip-marker" aria-hidden="true">
+                              T
+                            </span>
+                            <span className="composer-chip-value">
+                              {temperatureLabel}
+                            </span>
+                          </button>
+                        </span>
+                        <span
+                          className="tooltip tooltip-hover-only"
+                          data-tooltip={
+                            reasoningEnabled
+                              ? `Reasoning on (${selectedReasoningEffort})`
+                              : 'Reasoning off'
                           }
                         >
-                          <span className="composer-chip-label">Temp</span>
-                          <span className="composer-chip-value">
-                            {temperatureLabel}
-                          </span>
-                        </button>
+                          <button
+                            className={`composer-chip composer-chip-rsn${
+                              reasoningEnabled ? ' is-on' : ' is-off'
+                            }`}
+                            type="button"
+                            aria-label={
+                              reasoningEnabled
+                                ? `Reasoning on (${selectedReasoningEffort})`
+                                : 'Reasoning off'
+                            }
+                            onClick={() => setReasoningEnabled((prev) => !prev)}
+                          >
+                            <span className="composer-chip-label composer-chip-rsn-label">
+                              RSN
+                            </span>
+                          </button>
+                        </span>
                       </div>
                       {isSending ? (
                         <span
@@ -8203,6 +8368,16 @@ function App() {
                               </div>
                             </div>
                           ) : null}
+                          {inspectorMeta?.reasoningEffort ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Reasoning
+                              </div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.reasoningEffort}
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                       <div className="sidebar-group">
@@ -8248,6 +8423,17 @@ function App() {
                               </div>
                             </div>
                           ) : null}
+                          {typeof inspectorMeta?.usage?.reasoningTokens ===
+                          'number' ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Reasoning tokens
+                              </div>
+                              <div className="sidebar-field-value">
+                                {`${inspectorMeta.usage.reasoningTokens.toLocaleString()} tokens`}
+                              </div>
+                            </div>
+                          ) : null}
                           {totalTokens ? (
                             <div className="sidebar-field">
                               <div className="sidebar-field-label">
@@ -8255,6 +8441,28 @@ function App() {
                               </div>
                               <div className="sidebar-field-value">
                                 {totalTokens}
+                              </div>
+                            </div>
+                          ) : null}
+                          {inspectorMeta?.responseReasoningEffort ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Reasoning
+                              </div>
+                              <div className="sidebar-field-value">
+                                {inspectorMeta.responseReasoningEffort}
+                              </div>
+                            </div>
+                          ) : null}
+                          {typeof inspectorMeta?.responseReasoningTraceCount ===
+                            'number' &&
+                          inspectorMeta.responseReasoningTraceCount > 0 ? (
+                            <div className="sidebar-field">
+                              <div className="sidebar-field-label">
+                                Reasoning traces
+                              </div>
+                              <div className="sidebar-field-value">
+                                {`${inspectorMeta.responseReasoningTraceCount.toLocaleString()} captured`}
                               </div>
                             </div>
                           ) : null}
