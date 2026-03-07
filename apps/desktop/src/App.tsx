@@ -155,7 +155,7 @@ const IS_MAC =
   /Mac|iPhone|iPad|iPod/.test(navigator.platform)
 const HARD_DELETE_MODIFIER_LABEL = IS_MAC ? 'Option' : 'Alt'
 
-const REQUEST_TIMEOUT_MS = 240_000
+const REQUEST_TIMEOUT_MS = 5240_000
 const SCROLL_CONTEXT_PEEK_LINES = 3
 const SCROLL_CONTEXT_PEEK_FALLBACK_PX = 48
 const SCROLL_READ_RETRY_MAX = 18
